@@ -5,10 +5,16 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 )
 
 type CreateTopicRequest struct {
 	Name string `json:"name"`
+}
+
+type TopicResponse struct {
+	TopicID string `json:"topic_id"`
+	Name    string `json:"name"`
 }
 
 func main() {
@@ -49,8 +55,17 @@ func handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+
+	resp := TopicResponse{
+		Name:    req.Name,
+		TopicID: fmt.Sprintf("psby:%s", strings.ToLower(req.Name)),
+	}
 
 	log.Printf("Created topic: %+v", req)
 
 	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Printf("Error encoding response: %v", err)
+	}
 }

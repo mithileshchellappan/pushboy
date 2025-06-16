@@ -5,3 +5,4 @@
     - but `name = "John"` would not work because type cant be inferred
     - `:=` can only be used inside functions (not at package level)
 - `log.Fatalf` is used to log a fatal error.
+- Has Swift's `if let` binding, which can be used as if with a short variable declaration. `if err := json.NewEncoder(w).Encode(resp); err != nil`
