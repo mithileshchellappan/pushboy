@@ -1,0 +1,7 @@
+- `net/http` inbuilt package used for spinning up http server
+- := is used to declare & initialize (short hand declaration)
+    - `name := "John"` this would assign and infer type as string
+    - `var name string` `name = "John"` would work
+    - but `name = "John"` would not work because type cant be inferred
+    - `:=` can only be used inside functions (not at package level)
+- `log.Fatalf` is used to log a fatal error.
