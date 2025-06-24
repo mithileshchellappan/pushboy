@@ -1,0 +1,1 @@
+- `main.go` is mostly the dependency injector

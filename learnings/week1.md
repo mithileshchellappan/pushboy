@@ -21,4 +21,12 @@
     - Struct methods often use pointer receivers `(s *Server)` to avoid copying large structs and allow modifications
     - Interfaces are automatically handled as pointers when implemented by pointer receivers
     - Unlike C/C++, Go has garbage collection so manual memory management isn't needed
+- String connontatiosn
+    - `%s` string
+    - `%d` base-10 decimal
+    - `%v` formats in natural way? for structs prints the values but not field names
+    - `%+v` includes field names
+    - `%w` used onl with `fmt.Errorf`
+- No `try...catch` error handling is more explicit forcing user to handle error and then move on as errors are presented as regular return values.
+- `go.mod` - package.json. `go.sum` - package-lock.json
 
