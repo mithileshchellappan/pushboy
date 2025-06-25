@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 )
 
@@ -16,17 +18,27 @@ func New(s *service.PushboyService) *Server {
 	return &Server{service: s}
 }
 
-func (s *Server) Start(addr string) error {
-	log.Printf("Starting server on %s", addr)
+func (s *Server) Start() http.Handler {
 
-	mux := http.NewServeMux()
+	r := chi.NewRouter()
 
-	mux.HandleFunc("/topics", s.handleCreateTopic)
-	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("pong"))
+	r.Use(middleware.RequestID)
+	r.Use(middleware.RealIP)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+
+	r.Route("/v1", func(r chi.Router) {
+		r.Get("/ping", s.handlePing)
+
+		r.Route("/topics", func(r chi.Router) {
+			r.Post("/", s.handleCreateTopic)
+		})
 	})
+	return r
+}
 
-	return http.ListenAndServe(addr, mux)
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("pong"))
 }
 
 func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +63,17 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(topic)
+	s.respond(w, r, topic, http.StatusCreated)
 
+}
+
+func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	if data != nil {
+		if err := json.NewEncoder(w).Encode(data); err != nil {
+			log.Printf("Error encoding response for request %s: %v", middleware.GetReqID(r.Context()), err)
+		}
+	}
 }

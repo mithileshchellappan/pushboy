@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net/http"
 
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
@@ -17,8 +18,12 @@ func main() {
 	pushboyService := service.NewPushBoyService(store)
 
 	httpServer := server.New(pushboyService)
+	router := httpServer.Start()
 
-	if err := httpServer.Start(":8080"); err != nil {
+	addr := ":8080"
+	log.Printf("Starting server on %s", addr)
+
+	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatalf("Could not start server: %v", err)
 	}
 }
