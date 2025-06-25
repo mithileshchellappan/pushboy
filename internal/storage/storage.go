@@ -9,4 +9,5 @@ type Topic struct {
 
 type Store interface {
 	CreateTopic(ctx context.Context, topic *Topic) error
+	ListTopics(ctx context.Context) ([]Topic, error)
 }

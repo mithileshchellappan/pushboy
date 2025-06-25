@@ -24,3 +24,13 @@ func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage
 
 	return topic, nil
 }
+
+func (s *PushboyService) ListTopics(ctx context.Context) ([]storage.Topic, error) {
+	topics, err := s.store.ListTopics(ctx)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return topics, nil
+}

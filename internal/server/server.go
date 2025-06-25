@@ -32,6 +32,7 @@ func (s *Server) Start() http.Handler {
 
 		r.Route("/topics", func(r chi.Router) {
 			r.Post("/", s.handleCreateTopic)
+			r.Get("/", s.handleListTopics)
 		})
 	})
 	return r
@@ -42,11 +43,6 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -65,6 +61,17 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 
 	s.respond(w, r, topic, http.StatusCreated)
 
+}
+
+func (s *Server) handleListTopics(w http.ResponseWriter, r *http.Request) {
+	topics, err := s.service.ListTopics(r.Context())
+
+	if err != nil {
+		http.Error(w, "Error Listing topics", http.StatusInternalServerError)
+		log.Printf("Error creating topic %v", err)
+		return
+	}
+	s.respond(w, r, topics, http.StatusOK)
 }
 
 func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {

@@ -62,3 +62,34 @@ func (s *SQLStore) CreateTopic(ctx context.Context, topic *Topic) error {
 	return nil
 
 }
+
+func (s *SQLStore) ListTopics(ctx context.Context) ([]Topic, error) {
+	var topics []Topic
+	query := "SELECT id, name FROM topics"
+
+	rows, err := s.db.Query(query)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ID string
+		var Name string
+
+		err = rows.Scan(&ID, &Name)
+
+		if err != nil {
+			return nil, err
+		}
+		topics = append(topics, Topic{ID, Name})
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return topics, nil
+
+}

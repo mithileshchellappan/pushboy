@@ -1,1 +1,9 @@
 - `main.go` is mostly the dependency injector
+- Go has Value Types and Reference Types. 
+    - Basic types like int, float, bool, arrays are all Value types by default. i.e we get complete copies.
+    - slices, maps, and channels are Reference types by default. i.e we get copy of the internal pointer (reference) so multiple variable can refer to same underlying data.
+        - in a slice the variable do not hold array data instead a small "header" with pointer, len and cap, this reduces memory overhead while passing stuff.
+        - you can initialize a slice by not providing an array size and just type. Array - := [3]int{1,2,3} Slice - := []int{1,2,3}
+        - changes to a copy of a slice affects parent. to do this in array pass as pointer duh!
+        - a slice created from an array would affect the parent array but not vice versa.
+- no `while` or `do-while` only `for` loop, thank god
