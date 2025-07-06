@@ -34,3 +34,22 @@ func (s *PushboyService) ListTopics(ctx context.Context) ([]storage.Topic, error
 
 	return topics, nil
 }
+
+func (s *PushboyService) GetTopicByID(ctx context.Context, topicID string) (*storage.Topic, error) {
+	topic, err := s.store.GetTopicByID(ctx, topicID)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return topic, nil
+}
+
+func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error {
+	err := s.store.DeleteTopic(ctx, topicID)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

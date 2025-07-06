@@ -93,3 +93,40 @@ func (s *SQLStore) ListTopics(ctx context.Context) ([]Topic, error) {
 	return topics, nil
 
 }
+
+func (s *SQLStore) GetTopicByID(ctx context.Context, topicID string) (*Topic, error) {
+	var topic Topic
+	query := "SELECT id, name FROM topics WHERE id = ? "
+
+	row := s.db.QueryRowContext(ctx, query, topicID)
+
+	err := row.Scan(&topic.ID, &topic.Name)
+
+	if err != nil {
+		return nil, err
+	}
+
+	if topic.ID == "" {
+		return nil, fmt.Errorf("Topic not found")
+	}
+
+	return &topic, nil
+}
+
+func (s *SQLStore) DeleteTopic(ctx context.Context, topicID string) error {
+	query := "DELETE FROM topics WHERE id = ?"
+
+	result, err := s.db.ExecContext(ctx, query, topicID)
+
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("Topic not found")
+	}
+
+	return nil
+}

@@ -33,6 +33,8 @@ func (s *Server) Start() http.Handler {
 		r.Route("/topics", func(r chi.Router) {
 			r.Post("/", s.handleCreateTopic)
 			r.Get("/", s.handleListTopics)
+			r.Get("/{topicID}", s.handleGetTopicByID)
+			r.Delete("/{topicID}", s.handleDeleteTopic)
 		})
 	})
 	return r
@@ -72,6 +74,44 @@ func (s *Server) handleListTopics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respond(w, r, topics, http.StatusOK)
+}
+
+func (s *Server) handleGetTopicByID(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	print(topicID)
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	topic, err := s.service.GetTopicByID(r.Context(), topicID)
+	if err != nil {
+		http.Error(w, "Error getting topic", http.StatusInternalServerError)
+		log.Printf("Error getting topic %v", err)
+		return
+	}
+
+	s.respond(w, r, topic, http.StatusOK)
+}
+
+func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+	err := s.service.DeleteTopic(r.Context(), topicID)
+	if err != nil {
+		if err.Error() == "Topic not found" {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+
+		http.Error(w, "Error deleting topic", http.StatusInternalServerError)
+		log.Printf("Error deleting topic %v", err)
+		return
+	}
+	s.respond(w, r, nil, http.StatusNoContent)
 }
 
 func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {
