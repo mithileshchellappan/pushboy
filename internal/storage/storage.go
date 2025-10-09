@@ -13,3 +13,11 @@ type Store interface {
 	GetTopicByID(ctx context.Context, topicID string) (*Topic, error)
 	DeleteTopic(ctx context.Context, topicID string) error
 }
+
+type Subscription struct {
+	ID        string
+	TopicID   string
+	Platform  string
+	Token     string
+	CreatedAt string
+}

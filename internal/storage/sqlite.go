@@ -33,15 +33,28 @@ func NewSQLStore(dataSourceName string) (*SQLStore, error) {
 }
 
 func (s *SQLStore) migrate() error {
-	query := `
+	topicsQuery := `
 	CREATE TABLE IF NOT EXISTS topics (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL UNIQUE
 	);
 	`
-	_, err := s.db.Exec(query)
+	if _, err := s.db.Exec(topicsQuery); err != nil {
+		return err
+	}
 
-	if err != nil {
+	subscriptionsQuery := `
+		CREATE TABLE IF NOT EXISTS subscriptions (
+		id TEXT PRIMARY KEY,
+		topic_id TEXT NOT NULL,
+		platform TEXT NOT NULL,
+		token TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		FOREIGN KEY(topic_id) REFERENCES topics(id) ON DELETE CASCADE,
+		UNIQUE(topic_id, endpoint)
+	);`
+
+	if _, err := s.db.Exec(subscriptionsQuery); err != nil {
 		return err
 	}
 
