@@ -7,6 +7,9 @@ import (
 	"log"
 	"strings"
 
+	"github.com/golang-migrate/migrate/v4"
+	"github.com/golang-migrate/migrate/v4/database/sqlite"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -22,43 +25,32 @@ func NewSQLStore(dataSourceName string) (*SQLStore, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("could not open database: %w", err)
 	}
-	store := &SQLStore{db: db}
 
-	if err := store.migrate(); err != nil {
-		return nil, fmt.Errorf("could not migrate db: %w", err)
+	driver, err := sqlite.WithInstance(db, &sqlite.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("could not create migration driver: %w", err)
 	}
+
+	m, err := migrate.NewWithDatabaseInstance(
+		"file://db/migrations",
+		"sqlite",
+		driver,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("Could not create migrate instance: %w", err)
+	}
+
+	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		return nil, fmt.Errorf("could not run database migrations: %w", err)
+	}
+
+	log.Println("Migration success!")
+
+	store := &SQLStore{db: db}
 
 	log.Println("Database connection and migration successful")
 	return store, nil
-}
-
-func (s *SQLStore) migrate() error {
-	topicsQuery := `
-	CREATE TABLE IF NOT EXISTS topics (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL UNIQUE
-	);
-	`
-	if _, err := s.db.Exec(topicsQuery); err != nil {
-		return err
-	}
-
-	subscriptionsQuery := `
-		CREATE TABLE IF NOT EXISTS subscriptions (
-		id TEXT PRIMARY KEY,
-		topic_id TEXT NOT NULL,
-		platform TEXT NOT NULL,
-		token TEXT NOT NULL,
-		created_at TEXT NOT NULL,
-		FOREIGN KEY(topic_id) REFERENCES topics(id) ON DELETE CASCADE,
-		UNIQUE(topic_id, endpoint)
-	);`
-
-	if _, err := s.db.Exec(subscriptionsQuery); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (s *SQLStore) CreateTopic(ctx context.Context, topic *Topic) error {

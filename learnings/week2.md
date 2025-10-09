@@ -7,3 +7,12 @@
         - changes to a copy of a slice affects parent. to do this in array pass as pointer duh!
         - a slice created from an array would affect the parent array but not vice versa.
 - no `while` or `do-while` only `for` loop, thank god
+- There is no ORMs in Golang unlike the JS world as Golangians (?) believe in rawdogging SQL. 
+    - As a middle ground we can use `sqlc` package which generates type-safe GO methods based on raw SQl queries in `.sql` files.
+- For DB migrations `golang-migrate/migrate` is used.
+- When installing packages using `go install` `-tags` such as sqlite are important to compile the tool with neccessary driver support.
+    - Ex: `go install -tags 'sqlite' github.com/golang-migrate/migrate/v4/cmd/migrate@latest` here -tags used to install with sqlite driver.
+- `migrate create -ext sql -dir db/migrations -seq init_schema` to create migration using migrate package.
+    - `-ext sql` for writing plain SQL files.
+    - `-dir` directory obv
+    - `-seq` sequential number and name for versioning migrations
