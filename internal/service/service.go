@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
@@ -52,4 +53,20 @@ func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error 
 	}
 
 	return nil
+}
+
+func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, platform string, token string) (*storage.Subscription, error) {
+	if platform != "apns" && platform != "fcm" {
+		return nil, fmt.Errorf("invalid platform for platform")
+	}
+
+	sub, err := s.store.SubscribeToTopic(ctx, &storage.Subscription{
+		TopicID:  topicId,
+		Platform: platform,
+		Token:    token,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sub, nil
 }

@@ -2,12 +2,14 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mithileshchellappan/pushboy/internal/service"
+	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type Server struct {
@@ -35,6 +37,8 @@ func (s *Server) Start() http.Handler {
 			r.Get("/", s.handleListTopics)
 			r.Get("/{topicID}", s.handleGetTopicByID)
 			r.Delete("/{topicID}", s.handleDeleteTopic)
+
+			r.Post("/{topicID}/subscribe", s.handleSubscribeToTopic)
 		})
 	})
 	return r
@@ -55,7 +59,12 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	topic, err := s.service.CreateTopic(r.Context(), req.Name)
+
 	if err != nil {
+		if errors.Is(err, storage.Errors.AlreadyExists) {
+			http.Error(w, "Topic already exists", http.StatusConflict)
+			return
+		}
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		log.Printf("Error creating topic %v", err)
 		return
@@ -112,6 +121,32 @@ func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respond(w, r, nil, http.StatusNoContent)
+}
+
+func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Platform string `json:"platform"`
+		Token    string `json:"token"`
+	}
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	sub, err := s.service.SubscribeToTopic(r.Context(), topicID, req.Platform, req.Token)
+	if err != nil {
+		http.Error(w, "Error subscribing to topic", http.StatusInternalServerError)
+		log.Printf("Error subscribing to topic %v", err)
+		return
+	}
+	s.respond(w, r, sub, http.StatusCreated)
+
 }
 
 func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {

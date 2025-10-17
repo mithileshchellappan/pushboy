@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -134,4 +135,23 @@ func (s *SQLStore) DeleteTopic(ctx context.Context, topicID string) error {
 	}
 
 	return nil
+}
+
+func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error) {
+	sub.ID = fmt.Sprintf("sub:%s:%s", sub.TopicID, sub.Token)
+	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	subSql := `INSERT INTO subscriptions(id, topic_id, platform, token, created_at) VALUES(?, ?, ?, ?, ?)`
+
+	_, err := s.db.ExecContext(ctx, subSql, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.CreatedAt)
+
+	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		return nil, Errors.AlreadyExists
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("error Subscribing to topic creation: %w", err)
+	}
+
+	return sub, nil
 }
