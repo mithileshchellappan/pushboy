@@ -70,3 +70,11 @@ func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, p
 	}
 	return sub, nil
 }
+
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string) (*storage.PublishJob, error) {
+	job, err := s.store.CreatePublishJob(ctx, topicID)
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}

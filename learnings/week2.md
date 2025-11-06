@@ -16,3 +16,7 @@
     - `-ext sql` for writing plain SQL files.
     - `-dir` directory obv
     - `-seq` sequential number and name for versioning migrations
+- Go doesn't have constant, statically-typed structs to hold values like a collection of constants. `const` is reserved for simple, primitive types like int, bool and string.
+    - Work around is to define a **Blueprint**: Creating a struct that describes the collection
+    - And then create an instance to populate a single, package-level `var`.
+    - Go's philosophy is to group code by `domain` or `responsibility`, so a constant is part of the package it describes.

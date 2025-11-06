@@ -16,6 +16,8 @@ type Store interface {
 	GetTopicByID(ctx context.Context, topicID string) (*Topic, error)
 	DeleteTopic(ctx context.Context, topicID string) error
 	SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error)
+
+	CreatePublishJob(ctx context.Context, topicID string) (*PublishJob, error)
 }
 
 type Subscription struct {
@@ -24,6 +26,25 @@ type Subscription struct {
 	Platform  string
 	Token     string
 	CreatedAt string
+}
+
+type PublishJob struct {
+	ID           string
+	TopicID      string
+	Status       string
+	TotalCount   int
+	SuccessCount int
+	FailureCount int
+	CreatedAt    string
+}
+
+type DeliveryReceipt struct {
+	ID             string
+	JobID          string
+	SubscriptionID string
+	Status         string
+	StatusReason   string
+	DispatchedAt   string
 }
 
 type errorCollection struct {

@@ -39,6 +39,7 @@ func (s *Server) Start() http.Handler {
 			r.Delete("/{topicID}", s.handleDeleteTopic)
 
 			r.Post("/{topicID}/subscribe", s.handleSubscribeToTopic)
+			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 		})
 	})
 	return r
@@ -147,6 +148,21 @@ func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) 
 	}
 	s.respond(w, r, sub, http.StatusCreated)
 
+}
+
+func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+	job, err := s.service.CreatePublishJob(r.Context(), topicID)
+	if err != nil {
+		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
+		log.Printf("Error creating publish job %v", err)
+		return
+	}
+	s.respond(w, r, job, http.StatusCreated)
 }
 
 func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {
