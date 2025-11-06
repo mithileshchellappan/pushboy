@@ -146,11 +146,10 @@ func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Su
 
 	_, err := s.db.ExecContext(ctx, subSql, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.CreatedAt)
 
-	if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-		return nil, Errors.AlreadyExists
-	}
-
 	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, Errors.AlreadyExists
+		}
 		return nil, fmt.Errorf("error Subscribing to topic creation: %w", err)
 	}
 

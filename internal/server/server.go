@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -137,6 +138,17 @@ func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) 
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	fmt.Println(req)
+	if req.Platform != "apns" && req.Platform != "fcm" {
+		http.Error(w, "Invalid platform", http.StatusBadRequest)
+		return
+	}
+
+	if req.Token == "" {
+		http.Error(w, "token is required", http.StatusBadRequest)
 		return
 	}
 

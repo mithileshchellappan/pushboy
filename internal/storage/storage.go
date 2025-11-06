@@ -18,6 +18,7 @@ type Store interface {
 	SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error)
 
 	CreatePublishJob(ctx context.Context, topicID string) (*PublishJob, error)
+	// FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 }
 
 type Subscription struct {
