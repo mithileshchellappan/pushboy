@@ -182,3 +182,64 @@ func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string) (*Publi
 	}
 	return job, nil
 }
+
+func (s *SQLStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
+	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE status = 'PENDING' LIMIT ?"
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching pending jobs: %w", err)
+	}
+
+	defer rows.Close()
+
+	var jobs []PublishJob
+
+	for rows.Next() {
+		var job PublishJob
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt); err != nil {
+			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, rows.Err()
+
+}
+
+func (s *SQLStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+	query := "UPDATE publish_jobs SET status = ? WHERE id = ?"
+	_, err := s.db.ExecContext(ctx, query, status, jobID)
+	return err
+}
+
+func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error) {
+	query := "SELECT id, topic_id, platform, token, created_at FROM subscriptions WHERE topic_id=?"
+	rows, err := s.db.QueryContext(ctx, query, topicID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []Subscription
+	for rows.Next() {
+		var sub Subscription
+		if err := rows.Scan(&sub.ID, &sub.TopicID, &sub.Platform, &sub.Token, &sub.CreatedAt); err != nil {
+			return nil, fmt.Errorf("error scanning subscription: %w", err)
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
+func (s *SQLStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.SubscriptionID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
+	return err
+}
+
+func (s *SQLStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
+	query := "UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?"
+	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
+	return err
+}
