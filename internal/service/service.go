@@ -7,15 +7,17 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type PushboyService struct {
-	store storage.Store
+	store       storage.Store
+	dispatchers map[string]dispatch.Dispatcher
 }
 
-func NewPushBoyService(s storage.Store) *PushboyService {
-	return &PushboyService{store: s}
+func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher) *PushboyService {
+	return &PushboyService{store: s, dispatchers: dispatchers}
 }
 
 func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage.Topic, error) {
@@ -107,9 +109,32 @@ func (s *PushboyService) ProcessPendingJobs(ctx context.Context) error {
 		for _, sub := range subscriptions {
 
 			log.Printf("WORKER: Dispatching message to subscription platform=%s token=%s", sub.Platform, sub.Token)
-			time.Sleep(50 * time.Millisecond)
-			sendErr := error(nil)
-			statusReason := "OK"
+
+			dispatcher, ok := s.dispatchers[sub.Platform]
+			var sendErr error
+			var statusReason string
+
+			if !ok {
+				sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
+				statusReason = "UNSUPPORTED_PLATFORM"
+			} else {
+				payload := &dispatch.NotificationPayload{
+					Title: "Test Title",
+					Body:  "Test Body",
+				}
+				sendErr = dispatcher.Send(ctx, &sub, payload)
+				start := time.Now()
+				sendErr = dispatcher.Send(ctx, &sub, payload)
+				duration := time.Since(start)
+
+				if sendErr != nil {
+					statusReason = sendErr.Error()
+					log.Printf("WORKER: -> Error sending notification to platform %s: %v", sub.Platform, sendErr)
+				} else {
+					statusReason = "OK"
+					log.Printf("WORKER: -> Notification sent to platform %s in %s", sub.Platform, duration)
+				}
+			}
 
 			receipt := &storage.DeliveryReceipt{
 				ID:             uuid.New().String(),

@@ -4,8 +4,13 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	_ "github.com/joho/godotenv/autoload"
+
+	"github.com/mithileshchellappan/pushboy/internal/apns"
+	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
@@ -17,7 +22,23 @@ func main() {
 		log.Fatalf("Cannot create store: %v", err)
 	}
 
-	pushboyService := service.NewPushBoyService(store)
+	apnsKeyID := os.Getenv("APNS_KEY_ID")
+	apnsTeamID := os.Getenv("APNS_TEAM_ID")
+
+	p8Bytes, err := os.ReadFile("config/AuthKey_" + apnsKeyID + ".p8")
+
+	if err != nil {
+		//TODO: Change to Fatalf
+		log.Printf("Cannot read APNS key: %v", err)
+	}
+
+	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, true)
+
+	dispatchers := map[string]dispatch.Dispatcher{
+		"apns": apnsClient,
+	}
+
+	pushboyService := service.NewPushBoyService(store, dispatchers)
 
 	httpServer := server.New(pushboyService)
 	router := httpServer.Start()
