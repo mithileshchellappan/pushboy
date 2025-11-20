@@ -11,6 +11,7 @@ import (
 
 	"github.com/mithileshchellappan/pushboy/internal/apns"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/fcm"
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
@@ -34,8 +35,18 @@ func main() {
 
 	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, true)
 
+	serviceAccountBytes, err := os.ReadFile("config/service-account.json")
+	if err != nil {
+		log.Fatalf("Cannot read service account: %v", err)
+	}
+	fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
+	if err != nil {
+		log.Fatalf("Cannot create FCM client: %v", err)
+	}
+
 	dispatchers := map[string]dispatch.Dispatcher{
 		"apns": apnsClient,
+		"fcm":  fcmClient,
 	}
 
 	pushboyService := service.NewPushBoyService(store, dispatchers)

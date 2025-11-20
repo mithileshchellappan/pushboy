@@ -3,3 +3,4 @@ db.sqlite
 config
 *.p8
 /config
+service-account.json
