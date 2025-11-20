@@ -4,3 +4,5 @@ config
 *.p8
 /config
 service-account.json
+.env
+*.env

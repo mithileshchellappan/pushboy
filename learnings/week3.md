@@ -16,3 +16,5 @@ GO ROUTINES
     - one difference is, for Go it is a runtime check, while in TS it is a compile-time check
 - `http` package when created a client using `&http.Client()` comes with a default Transport layer and manages all connection pools.
 - `json.Marshal` is `JSON.stringify()`
+- use package `godotenv` to read `.env` files and access values using `os.Getenv`. 
+- comma-ok idiom. When type asserting or unwrapping use `data, ok :=` use the ok to check and proceed. 

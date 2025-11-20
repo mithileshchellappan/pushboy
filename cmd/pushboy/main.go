@@ -33,15 +33,15 @@ func main() {
 		log.Printf("Cannot read APNS key: %v", err)
 	}
 
-	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, true)
+	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, false)
 
 	serviceAccountBytes, err := os.ReadFile("config/service-account.json")
 	if err != nil {
-		log.Fatalf("Cannot read service account: %v", err)
+		log.Printf("Cannot read service account: %v", err)
 	}
 	fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
 	if err != nil {
-		log.Fatalf("Cannot create FCM client: %v", err)
+		log.Printf("Cannot create FCM client: %v", err)
 	}
 
 	dispatchers := map[string]dispatch.Dispatcher{

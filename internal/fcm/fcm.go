@@ -49,7 +49,10 @@ func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) 
 	if err := json.Unmarshal(serviceAccountJson, &rawJSON); err != nil {
 		return nil, err
 	}
-	projectID := rawJSON["project_id"].(string)
+	projectID, ok := rawJSON["project_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("project_id not found in service account JSON")
+	}
 	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
 	httpClient.Timeout = 10 * time.Second
 
@@ -57,15 +60,17 @@ func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) 
 }
 
 func (c *Client) Send(ctx context.Context, sub *storage.Subscription, payload *dispatch.NotificationPayload) error {
-	message := FcmMessage{
-		Token: sub.Token,
-		Notification: Notification{
-			Title: payload.Title,
-			Body:  payload.Body,
+	request := FcmRequest{
+		Message: FcmMessage{
+			Token: sub.Token,
+			Notification: Notification{
+				Title: payload.Title,
+				Body:  payload.Body,
+			},
 		},
 	}
 
-	payloadBytes, err := json.Marshal(message)
+	payloadBytes, err := json.Marshal(request)
 
 	if err != nil {
 		log.Printf("Error marshalling message: %v", err)
