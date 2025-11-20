@@ -25,6 +25,7 @@ func main() {
 
 	apnsKeyID := os.Getenv("APNS_KEY_ID")
 	apnsTeamID := os.Getenv("APNS_TEAM_ID")
+	apnsTopicID := os.Getenv("APNS_TOPIC_ID")
 
 	p8Bytes, err := os.ReadFile("config/AuthKey_" + apnsKeyID + ".p8")
 
@@ -33,7 +34,7 @@ func main() {
 		log.Printf("Cannot read APNS key: %v", err)
 	}
 
-	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, false)
+	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, apnsTopicID, false)
 
 	serviceAccountBytes, err := os.ReadFile("config/service-account.json")
 	if err != nil {

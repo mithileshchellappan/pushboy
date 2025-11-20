@@ -23,6 +23,7 @@ type Client struct {
 	httpClient *http.Client
 	keyID      string
 	teamID     string
+	topicID    string
 	signingKey []byte
 	endpoint   string
 }
@@ -40,7 +41,7 @@ type ApnsRequest struct {
 	Aps ApsPayload `json:"aps"`
 }
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, useSandbox bool) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, useSandbox bool) *Client {
 	var endpoint string
 	if useSandbox {
 		endpoint = DevelopmentEndpoint
@@ -54,6 +55,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, useSandbox bool) 
 		},
 		keyID:      keyID,
 		teamID:     teamID,
+		topicID:    topicID,
 		signingKey: p8KeyBytes,
 		endpoint:   endpoint,
 	}
@@ -109,7 +111,7 @@ func (c *Client) Send(ctx context.Context, sub *storage.Subscription, payload *d
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwt))
-	req.Header.Set("apns-topic", "hardcoded.app")
+	req.Header.Set("apns-topic", c.topicID)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
