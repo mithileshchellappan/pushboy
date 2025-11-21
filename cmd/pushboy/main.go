@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 
 	_ "github.com/joho/godotenv/autoload"
 
@@ -15,6 +14,7 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/worker"
 )
 
 func main() {
@@ -52,28 +52,15 @@ func main() {
 
 	pushboyService := service.NewPushBoyService(store, dispatchers)
 
-	httpServer := server.New(pushboyService)
+	workerPool := worker.NewPool(pushboyService, 5, 100)
+	workerPool.Start()
+
+	httpServer := server.New(pushboyService, workerPool)
 	router := httpServer.Start()
 
 	addr := ":8080"
 	log.Printf("Starting server on %s", addr)
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
 
-		for {
-			<-ticker.C
-
-			log.Println("WORKER: Checking for pending jobs...")
-
-			ctx := context.Background()
-
-			if err := pushboyService.ProcessPendingJobs(ctx); err != nil {
-				log.Printf("WORKER: Error processing pending jobs: %v", err)
-			}
-
-		}
-	}()
 	if err := http.ListenAndServe(addr, router); err != nil {
 		log.Fatalf("Could not start server: %v", err)
 	}

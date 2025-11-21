@@ -91,79 +91,82 @@ func (s *PushboyService) ProcessPendingJobs(ctx context.Context) error {
 	}
 
 	for _, job := range jobs {
-		log.Printf("WORKER: Processing job... %s", job.ID)
-
-		// Mark job as in progress
-		if err := s.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS"); err != nil {
-			log.Printf("WORKER: Error marking job %s as IN_PROGRESS: %v", job.ID, err)
-			continue
+		if err := s.ProcessJobs(ctx, &job); err != nil {
+			log.Printf("Error processing job %s: %v", job.ID, err)
 		}
+	}
+	return nil
+}
 
-		subscriptions, err := s.store.ListSubscriptionsByTopic(ctx, job.TopicID)
-		if err != nil {
-			log.Printf("WORKER: Error listing subscriptions for topic %s: %v", job.TopicID, err)
-			s.store.UpdateJobStatus(ctx, job.ID, "FAILED")
-			continue
-		}
+func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJob) error {
+	log.Printf("WORKER: Processing job... %s", job.ID)
 
-		for _, sub := range subscriptions {
+	// Mark job as in progress
+	if err := s.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS"); err != nil {
+		return fmt.Errorf("marking in_progress failed: %w", err)
+	}
 
-			log.Printf("WORKER: Dispatching message to subscription platform=%s token=%s", sub.Platform, sub.Token)
+	subscriptions, err := s.store.ListSubscriptionsByTopic(ctx, job.TopicID)
+	if err != nil {
+		s.store.UpdateJobStatus(ctx, job.ID, "FAILED")
+		return fmt.Errorf("listing subscriptions failed: %w", err)
+	}
 
-			dispatcher, ok := s.dispatchers[sub.Platform]
-			var sendErr error
-			var statusReason string
+	for _, sub := range subscriptions {
 
-			if !ok {
-				sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
-				statusReason = "UNSUPPORTED_PLATFORM"
-			} else {
-				payload := &dispatch.NotificationPayload{
-					Title: "Test Title",
-					Body:  "Test Body",
-				}
-				sendErr = dispatcher.Send(ctx, &sub, payload)
-				start := time.Now()
-				sendErr = dispatcher.Send(ctx, &sub, payload)
-				duration := time.Since(start)
+		log.Printf("WORKER: Dispatching message to subscription platform=%s token=%s", sub.Platform, sub.Token)
 
-				if sendErr != nil {
-					statusReason = sendErr.Error()
-					log.Printf("WORKER: -> Error sending notification to platform %s: %v", sub.Platform, sendErr)
-				} else {
-					statusReason = "OK"
-					log.Printf("WORKER: -> Notification sent to platform %s in %s", sub.Platform, duration)
-				}
+		dispatcher, ok := s.dispatchers[sub.Platform]
+		var sendErr error
+		var statusReason string
+
+		if !ok {
+			sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
+			statusReason = "UNSUPPORTED_PLATFORM"
+		} else {
+			payload := &dispatch.NotificationPayload{
+				Title: "Test Title",
+				Body:  "Test Body",
 			}
-
-			receipt := &storage.DeliveryReceipt{
-				ID:             uuid.New().String(),
-				JobID:          job.ID,
-				SubscriptionID: sub.ID,
-				DispatchedAt:   time.Now().UTC().Format(time.RFC3339),
-			}
+			start := time.Now()
+			sendErr = dispatcher.Send(ctx, &sub, payload)
+			duration := time.Since(start)
 
 			if sendErr != nil {
-				receipt.Status = "FAILED"
-				receipt.StatusReason = sendErr.Error()
-				s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
+				statusReason = sendErr.Error()
+				log.Printf("WORKER: -> Error sending notification to platform %s: %v", sub.Platform, sendErr)
 			} else {
-				receipt.Status = "SENT"
-				receipt.StatusReason = statusReason
-				s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
-			}
-
-			if err := s.store.RecordDeliveryReceipt(ctx, receipt); err != nil {
-				log.Printf("WORKER: -> CRITICAL: failed to record delivery receipt for job %s: %v", job.ID, err)
+				statusReason = "OK"
+				log.Printf("WORKER: -> Notification sent to platform %s in %s", sub.Platform, duration)
 			}
 		}
 
-		if err := s.store.UpdateJobStatus(ctx, job.ID, "COMPLETED"); err != nil {
-			log.Printf("WORKER: Error marking job %s as COMPLETED: %v", job.ID, err)
-			continue
+		receipt := &storage.DeliveryReceipt{
+			ID:             uuid.New().String(),
+			JobID:          job.ID,
+			SubscriptionID: sub.ID,
+			DispatchedAt:   time.Now().UTC().Format(time.RFC3339),
 		}
 
-		log.Printf("WORKER: Job %s completed successfully", job.ID)
+		if sendErr != nil {
+			receipt.Status = "FAILED"
+			receipt.StatusReason = sendErr.Error()
+			s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
+		} else {
+			receipt.Status = "SENT"
+			receipt.StatusReason = statusReason
+			s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
+		}
+
+		if err := s.store.RecordDeliveryReceipt(ctx, receipt); err != nil {
+			log.Printf("WORKER: -> CRITICAL: failed to record delivery receipt for job %s: %v", job.ID, err)
+		}
 	}
+
+	if err := s.store.UpdateJobStatus(ctx, job.ID, "COMPLETED"); err != nil {
+		return fmt.Errorf("updating job status failed: %w", err)
+	}
+
+	log.Printf("WORKER: Job %s completed successfully", job.ID)
 	return nil
 }

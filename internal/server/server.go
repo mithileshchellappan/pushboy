@@ -11,14 +11,16 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/worker"
 )
 
 type Server struct {
-	service *service.PushboyService
+	service    *service.PushboyService
+	workerPool *worker.Pool
 }
 
-func New(s *service.PushboyService) *Server {
-	return &Server{service: s}
+func New(s *service.PushboyService, pool *worker.Pool) *Server {
+	return &Server{service: s, workerPool: pool}
 }
 
 func (s *Server) Start() http.Handler {
@@ -174,6 +176,8 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error creating publish job %v", err)
 		return
 	}
+
+	s.workerPool.Submit(job)
 	s.respond(w, r, job, http.StatusCreated)
 }
 
