@@ -23,7 +23,7 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ServerPort:        getEnv("SERVER_PORT", "8080"),
+		ServerPort:        getEnv("SERVER_PORT", ":8080"),
 		WorkerCount:       getIntEnv("WORKER_COUNT", 5),
 		DatabaseDriver:    getEnv("DATABASE_DRIVER", "sqlite"),
 		DatabaseURL:       getEnv("DATABASE_URL", "./pushboy.db"),

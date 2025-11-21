@@ -5,6 +5,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	_ "github.com/joho/godotenv/autoload"
 
@@ -37,7 +40,7 @@ func main() {
 	}
 
 	//Initializing APNS Client
-	p8Bytes, err := os.ReadFile("config/AuthKey_" + cfg.APNSKeyID + ".p8")
+	p8Bytes, err := os.ReadFile("keys/AuthKey_" + cfg.APNSKeyID + ".p8")
 	if err != nil {
 		//TODO: Change to Fatalf
 		log.Printf("Cannot read APNS key: %v", err)
@@ -45,7 +48,7 @@ func main() {
 	apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
 
 	//Initializing FCM Client
-	serviceAccountBytes, err := os.ReadFile("config/service-account.json")
+	serviceAccountBytes, err := os.ReadFile("keys/service-account.json")
 	if err != nil {
 		log.Printf("Cannot read service account: %v", err)
 	}
@@ -68,12 +71,28 @@ func main() {
 
 	//Initializing HTTP Server
 	httpServer := server.New(pushboyService, workerPool)
-	router := httpServer.Start()
 
-	addr := cfg.ServerPort
-	log.Printf("Starting server on %s", addr)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	if err := http.ListenAndServe(addr, router); err != nil {
-		log.Fatalf("Could not start server: %v", err)
+	go func() {
+		//Running HTTP server as go routine to avoid blocking the main thread
+		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Could not start server: %v", err)
+		}
+	}()
+	<-ctx.Done()
+
+	log.Println("Shutdown signal received, stopping app")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP server shutting down")
 	}
+
+	workerPool.Stop()
+
+	log.Println("Server exiting")
 }

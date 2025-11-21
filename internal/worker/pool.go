@@ -53,4 +53,5 @@ func (p *Pool) Submit(job *storage.PublishJob) {
 func (p *Pool) Stop() {
 	close(p.jobChan)
 	p.wg.Wait()
+	log.Println("Worker pool stopped")
 }

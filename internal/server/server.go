@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,14 +18,27 @@ import (
 type Server struct {
 	service    *service.PushboyService
 	workerPool *worker.Pool
+	httpServer *http.Server
+	router     chi.Router
 }
 
 func New(s *service.PushboyService, pool *worker.Pool) *Server {
 	return &Server{service: s, workerPool: pool}
 }
 
-func (s *Server) Start() http.Handler {
+func (s *Server) Start(addr string) error {
 
+	log.Printf("Starting server on %s", addr)
+	s.router = s.setupRouter()
+	s.httpServer = &http.Server{
+		Addr:    addr,
+		Handler: s.router,
+	}
+
+	return s.httpServer.ListenAndServe()
+}
+
+func (s *Server) setupRouter() chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -45,7 +59,12 @@ func (s *Server) Start() http.Handler {
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 		})
 	})
+
 	return r
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
