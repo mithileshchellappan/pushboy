@@ -1,8 +1,7 @@
 tmp
 db.sqlite
-config
+keys
 *.p8
-/config
 service-account.json
 .env
 *.env

@@ -9,6 +9,7 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 
 	"github.com/mithileshchellappan/pushboy/internal/apns"
+	"github.com/mithileshchellappan/pushboy/internal/config"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/fcm"
 	"github.com/mithileshchellappan/pushboy/internal/server"
@@ -18,24 +19,32 @@ import (
 )
 
 func main() {
-	store, err := storage.NewSQLStore("./pushboy.db")
-	if err != nil {
-		log.Fatalf("Cannot create store: %v", err)
+	cfg := config.Load()
+
+	var store storage.Store
+	var err error
+
+	//Initializing Store with Database Driver
+	switch cfg.DatabaseDriver {
+	case "sqlite":
+		store, err = storage.NewSQLStore(cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("Cannot create store: %v", err)
+		}
+	default:
+		log.Fatalf("Unsupported database driver: %s", cfg.DatabaseDriver)
+		return
 	}
 
-	apnsKeyID := os.Getenv("APNS_KEY_ID")
-	apnsTeamID := os.Getenv("APNS_TEAM_ID")
-	apnsTopicID := os.Getenv("APNS_TOPIC_ID")
-
-	p8Bytes, err := os.ReadFile("config/AuthKey_" + apnsKeyID + ".p8")
-
+	//Initializing APNS Client
+	p8Bytes, err := os.ReadFile("config/AuthKey_" + cfg.APNSKeyID + ".p8")
 	if err != nil {
 		//TODO: Change to Fatalf
 		log.Printf("Cannot read APNS key: %v", err)
 	}
+	apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
 
-	apnsClient := apns.NewClient(p8Bytes, apnsKeyID, apnsTeamID, apnsTopicID, false)
-
+	//Initializing FCM Client
 	serviceAccountBytes, err := os.ReadFile("config/service-account.json")
 	if err != nil {
 		log.Printf("Cannot read service account: %v", err)
@@ -50,15 +59,18 @@ func main() {
 		"fcm":  fcmClient,
 	}
 
+	//Initializing Pushboy Service
 	pushboyService := service.NewPushBoyService(store, dispatchers)
 
-	workerPool := worker.NewPool(pushboyService, 5, 100)
+	//Initializing Worker Pool
+	workerPool := worker.NewPool(pushboyService, cfg.WorkerCount, 100)
 	workerPool.Start()
 
+	//Initializing HTTP Server
 	httpServer := server.New(pushboyService, workerPool)
 	router := httpServer.Start()
 
-	addr := ":8080"
+	addr := cfg.ServerPort
 	log.Printf("Starting server on %s", addr)
 
 	if err := http.ListenAndServe(addr, router); err != nil {
