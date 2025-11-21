@@ -64,7 +64,7 @@ func main() {
 
 	//Initializing Pushboy Service
 	pushboyService := service.NewPushBoyService(store, dispatchers)
-
+	go pushboyService.StartAggregator(context.Background())
 	//Initializing Worker Pool
 	workerPool := worker.NewPool(pushboyService, cfg.WorkerCount, 100)
 	workerPool.Start()

@@ -14,10 +14,11 @@ import (
 type PushboyService struct {
 	store       storage.Store
 	dispatchers map[string]dispatch.Dispatcher
+	resultsChan chan storage.DeliveryReceipt
 }
 
 func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher) *PushboyService {
-	return &PushboyService{store: s, dispatchers: dispatchers}
+	return &PushboyService{store: s, dispatchers: dispatchers, resultsChan: make(chan storage.DeliveryReceipt, 2000)}
 }
 
 func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage.Topic, error) {
@@ -147,6 +148,7 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 			SubscriptionID: sub.ID,
 			DispatchedAt:   time.Now().UTC().Format(time.RFC3339),
 		}
+		s.resultsChan <- *receipt
 
 		if sendErr != nil {
 			receipt.Status = "FAILED"
@@ -157,10 +159,6 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 			receipt.StatusReason = statusReason
 			s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
 		}
-
-		if err := s.store.RecordDeliveryReceipt(ctx, receipt); err != nil {
-			log.Printf("WORKER: -> CRITICAL: failed to record delivery receipt for job %s: %v", job.ID, err)
-		}
 	}
 
 	if err := s.store.UpdateJobStatus(ctx, job.ID, "COMPLETED"); err != nil {
@@ -169,4 +167,39 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 
 	log.Printf("WORKER: Job %s completed successfully", job.ID)
 	return nil
+}
+
+func (s *PushboyService) StartAggregator(ctx context.Context) {
+	var batch []storage.DeliveryReceipt
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		if err := s.store.BulkInsertReceipts(ctx, batch); err != nil {
+			log.Printf("WORKER: -> CRITICAL: failed to bulk insert delivery receipts: %v", err)
+		}
+
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case receipt := <-s.resultsChan:
+			batch = append(batch, receipt)
+			if len(batch) >= 1000 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-ctx.Done():
+			flush()
+			return
+		}
+
+	}
 }

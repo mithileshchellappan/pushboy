@@ -24,6 +24,7 @@ type Store interface {
 	ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error)
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
+	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
 }
 
 type Subscription struct {

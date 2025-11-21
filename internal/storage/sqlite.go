@@ -243,3 +243,32 @@ func (s *SQLStore) IncrementJobCounters(ctx context.Context, jobID string, succe
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
 }
+
+func (s *SQLStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+
+	defer tx.Rollback()
+
+	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, r := range receipts {
+		_, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.SubscriptionID, r.Status, r.StatusReason, r.DispatchedAt)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
