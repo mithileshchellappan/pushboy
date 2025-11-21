@@ -20,6 +20,7 @@ type Store interface {
 	CreatePublishJob(ctx context.Context, topicID string) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
+	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
 
 	ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error)
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error

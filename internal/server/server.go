@@ -57,6 +57,7 @@ func (s *Server) setupRouter() chi.Router {
 
 			r.Post("/{topicID}/subscribe", s.handleSubscribeToTopic)
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
+			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
 		})
 	})
 
@@ -200,6 +201,27 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, job, http.StatusCreated)
 }
 
+func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
+	jobID := chi.URLParam(r, "jobID")
+	if jobID == "" {
+		http.Error(w, "jobID is required", http.StatusBadRequest)
+		return
+	}
+
+	job, err := s.service.GetJobStatus(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, "Error getting job status", http.StatusInternalServerError)
+		log.Printf("Error getting job status %v", err)
+		return
+	}
+	if job == nil {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+	s.respond(w, r, job, http.StatusOK)
+}
+
+// MARK: Helpers
 func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{}, status int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

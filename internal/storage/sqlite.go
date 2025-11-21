@@ -272,3 +272,18 @@ func (s *SQLStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryRe
 
 	return tx.Commit()
 }
+
+func (s *SQLStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
+	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE id = ?"
+	row := s.db.QueryRowContext(ctx, query, jobID)
+
+	var job PublishJob
+	err := row.Scan(&job.ID, &job.TopicID, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("error scanning publish job: %w", err)
+	}
+	return &job, nil
+}

@@ -169,6 +169,14 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 	return nil
 }
 
+func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {
+	job, err := s.store.GetJobStatus(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
 func (s *PushboyService) StartAggregator(ctx context.Context) {
 	var batch []storage.DeliveryReceipt
 
