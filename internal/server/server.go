@@ -49,6 +49,10 @@ func (s *Server) setupRouter() chi.Router {
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/ping", s.handlePing)
 
+		r.Route("/users", func(r chi.Router) {
+			r.Post("/{externalID}/send", s.handleSendToUser)
+		})
+
 		r.Route("/topics", func(r chi.Router) {
 			r.Post("/", s.handleCreateTopic)
 			r.Get("/", s.handleListTopics)
@@ -149,8 +153,9 @@ func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Platform string `json:"platform"`
-		Token    string `json:"token"`
+		Platform   string `json:"platform"`
+		Token      string `json:"token"`
+		ExternalID string `json:"external_id,omitempty"`
 	}
 	topicID := chi.URLParam(r, "topicID")
 	if topicID == "" {
@@ -174,7 +179,7 @@ func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	sub, err := s.service.SubscribeToTopic(r.Context(), topicID, req.Platform, req.Token)
+	sub, err := s.service.SubscribeToTopic(r.Context(), topicID, req.Platform, req.Token, req.ExternalID)
 	if err != nil {
 		http.Error(w, "Error subscribing to topic", http.StatusInternalServerError)
 		log.Printf("Error subscribing to topic %v", err)
@@ -229,6 +234,33 @@ func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respond(w, r, job, http.StatusOK)
+}
+
+func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
+	externalID := chi.URLParam(r, "externalID")
+
+	var req struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if externalID == "" {
+		http.Error(w, "externalID is required", http.StatusBadRequest)
+		return
+	}
+
+	err := s.service.SendToUser(r.Context(), externalID, req.Title, req.Body)
+	if err != nil {
+		http.Error(w, "Error sending notification to user", http.StatusInternalServerError)
+		log.Printf("Error sending notification to user %v", err)
+		return
+	}
+
+	s.respond(w, r, map[string]string{"status": "sent"}, http.StatusOK)
 }
 
 // MARK: Helpers

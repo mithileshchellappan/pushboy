@@ -61,15 +61,20 @@ func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error 
 	return nil
 }
 
-func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, platform string, token string) (*storage.Subscription, error) {
+func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, platform string, token string, externalID string) (*storage.Subscription, error) {
 	if platform != "apns" && platform != "fcm" {
 		return nil, fmt.Errorf("invalid platform for platform")
 	}
 
+	if externalID == "" {
+		externalID = uuid.New().String()
+	}
+
 	sub, err := s.store.SubscribeToTopic(ctx, &storage.Subscription{
-		TopicID:  topicId,
-		Platform: platform,
-		Token:    token,
+		TopicID:    topicId,
+		Platform:   platform,
+		Token:      token,
+		ExternalID: externalID,
 	})
 	if err != nil {
 		return nil, err
@@ -188,6 +193,50 @@ func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*stora
 		return nil, err
 	}
 	return job, nil
+}
+
+func (s *PushboyService) SendToUser(ctx context.Context, externalID string, title string, body string) error {
+	subscriptions, err := s.store.GetSubscriptionsByExternalID(ctx, externalID)
+	if err != nil {
+		return fmt.Errorf("failed to get subscriptions for external ID: %w", err)
+	}
+
+	if len(subscriptions) == 0 {
+		return fmt.Errorf("no subscriptions found for external ID: %s", externalID)
+	}
+
+	for _, sub := range subscriptions {
+		log.Printf("WORKER: Dispatching user notification to subscription platform=%s token=%s", sub.Platform, sub.Token)
+
+		dispatcher, ok := s.dispatchers[sub.Platform]
+		var sendErr error
+
+		if !ok {
+			sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
+		} else {
+			payload := &dispatch.NotificationPayload{
+				Title: title,
+				Body:  body,
+			}
+			start := time.Now()
+			sendErr = dispatcher.Send(ctx, &sub, payload)
+			duration := time.Since(start)
+
+			if sendErr != nil {
+				log.Printf("WORKER: -> Error sending user notification to platform %s: %v", sub.Platform, sendErr)
+			} else {
+				log.Printf("WORKER: -> User notification sent to platform %s in %s", sub.Platform, duration)
+			}
+		}
+
+		// For user notifications, we don't create delivery receipts since there's no job
+		// But we could log the delivery attempt for debugging/monitoring purposes
+		if sendErr != nil {
+			log.Printf("WORKER: -> User notification failed for platform %s: %v", sub.Platform, sendErr)
+		}
+	}
+
+	return nil
 }
 
 func (s *PushboyService) StartAggregator(ctx context.Context) {

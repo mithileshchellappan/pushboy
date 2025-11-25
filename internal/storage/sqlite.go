@@ -39,7 +39,7 @@ func NewSQLStore(dataSourceName string) (*SQLStore, error) {
 	)
 
 	if err != nil {
-		return nil, fmt.Errorf("Could not create migrate instance: %w", err)
+		return nil, fmt.Errorf("could not create migrate instance: %w", err)
 	}
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
@@ -141,9 +141,9 @@ func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Su
 	sub.ID = fmt.Sprintf("sub:%s:%s", sub.TopicID, sub.Token)
 	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	subSql := `INSERT INTO subscriptions(id, topic_id, platform, token, created_at) VALUES(?, ?, ?, ?, ?)`
+	subSql := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES(?, ?, ?, ?, ?, ?)`
 
-	_, err := s.db.ExecContext(ctx, subSql, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.CreatedAt)
+	_, err := s.db.ExecContext(ctx, subSql, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.ExternalID, sub.CreatedAt)
 
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -203,7 +203,7 @@ func (s *SQLStore) UpdateJobStatus(ctx context.Context, jobID string, status str
 }
 
 func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error) {
-	query := "SELECT id, topic_id, platform, token, created_at FROM subscriptions WHERE topic_id=?"
+	query := "SELECT id, topic_id, platform, token, external_id, created_at FROM subscriptions WHERE topic_id=?"
 	rows, err := s.db.QueryContext(ctx, query, topicID)
 	if err != nil {
 		return nil, err
@@ -213,7 +213,26 @@ func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string)
 	var subs []Subscription
 	for rows.Next() {
 		var sub Subscription
-		if err := rows.Scan(&sub.ID, &sub.TopicID, &sub.Platform, &sub.Token, &sub.CreatedAt); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.TopicID, &sub.Platform, &sub.Token, &sub.ExternalID, &sub.CreatedAt); err != nil {
+			return nil, fmt.Errorf("error scanning subscription: %w", err)
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
+func (s *SQLStore) GetSubscriptionsByExternalID(ctx context.Context, externalID string) ([]Subscription, error) {
+	query := "SELECT id, topic_id, platform, token, external_id, created_at FROM subscriptions WHERE external_id=?"
+	rows, err := s.db.QueryContext(ctx, query, externalID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var subs []Subscription
+	for rows.Next() {
+		var sub Subscription
+		if err := rows.Scan(&sub.ID, &sub.TopicID, &sub.Platform, &sub.Token, &sub.ExternalID, &sub.CreatedAt); err != nil {
 			return nil, fmt.Errorf("error scanning subscription: %w", err)
 		}
 		subs = append(subs, sub)

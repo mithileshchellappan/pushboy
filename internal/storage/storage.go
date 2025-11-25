@@ -23,17 +23,19 @@ type Store interface {
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
 
 	ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error)
+	GetSubscriptionsByExternalID(ctx context.Context, externalID string) ([]Subscription, error)
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
 	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
 }
 
 type Subscription struct {
-	ID        string
-	TopicID   string
-	Platform  string
-	Token     string
-	CreatedAt string
+	ID         string
+	TopicID    string
+	Platform   string
+	Token      string
+	ExternalID string
+	CreatedAt  string
 }
 
 type PublishJob struct {
