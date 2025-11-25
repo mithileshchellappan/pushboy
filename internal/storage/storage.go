@@ -17,7 +17,7 @@ type Store interface {
 	DeleteTopic(ctx context.Context, topicID string) error
 	SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error)
 
-	CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*PublishJob, error)
+	CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)

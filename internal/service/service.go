@@ -78,7 +78,20 @@ func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, p
 }
 
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*storage.PublishJob, error) {
-	job, err := s.store.CreatePublishJob(ctx, topicID, title, body)
+
+	job := &storage.PublishJob{
+		ID:           uuid.New().String(),
+		TopicID:      topicID,
+		Title:        title,
+		Body:         body,
+		Status:       "PENDING",
+		TotalCount:   0,
+		SuccessCount: 0,
+		FailureCount: 0,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	job, err := s.store.CreatePublishJob(ctx, job)
 	if err != nil {
 		return nil, err
 	}

@@ -11,7 +11,6 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -156,27 +155,15 @@ func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Su
 	return sub, nil
 }
 
-func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*PublishJob, error) {
+func (s *SQLStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
 
 	var totalCount int
 	countQuery := "SELECT COUNT(*) FROM subscriptions WHERE topic_id = ?"
-	row := s.db.QueryRowContext(ctx, countQuery, topicID)
+	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
 	if err := row.Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("Subscription unavailable: %w", err)
 	}
-
-	job := &PublishJob{
-		ID:           uuid.New().String(),
-		TopicID:      topicID,
-		Title:        title,
-		Body:         body,
-		Status:       "PENDING",
-		TotalCount:   totalCount,
-		SuccessCount: 0,
-		FailureCount: 0,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-	}
-
+	job.TotalCount = totalCount
 	query := `INSERT INTO publish_jobs(id, topic_id, title, body, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, job.ID, job.TopicID, job.Title, job.Body, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
