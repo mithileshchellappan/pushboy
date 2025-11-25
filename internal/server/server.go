@@ -50,6 +50,7 @@ func (s *Server) setupRouter() chi.Router {
 		r.Get("/ping", s.handlePing)
 
 		r.Route("/users", func(r chi.Router) {
+			r.Post("/tokens", s.handleRegisterUserToken)
 			r.Post("/{externalID}/send", s.handleSendToUser)
 		})
 
@@ -234,6 +235,41 @@ func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respond(w, r, job, http.StatusOK)
+}
+
+func (s *Server) handleRegisterUserToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Platform   string `json:"platform"`
+		Token      string `json:"token"`
+		ExternalID string `json:"external_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Platform != "apns" && req.Platform != "fcm" {
+		http.Error(w, "Invalid platform", http.StatusBadRequest)
+		return
+	}
+
+	if req.Token == "" {
+		http.Error(w, "token is required", http.StatusBadRequest)
+		return
+	}
+
+	sub, err := s.service.RegisterUserToken(r.Context(), req.ExternalID, req.Platform, req.Token)
+	if err != nil {
+		if errors.Is(err, storage.Errors.AlreadyExists) {
+			http.Error(w, "Token already registered", http.StatusConflict)
+			return
+		}
+		http.Error(w, "Error registering token", http.StatusInternalServerError)
+		log.Printf("Error registering user token %v", err)
+		return
+	}
+
+	s.respond(w, r, sub, http.StatusCreated)
 }
 
 func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {

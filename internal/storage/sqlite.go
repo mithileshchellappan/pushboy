@@ -203,7 +203,7 @@ func (s *SQLStore) UpdateJobStatus(ctx context.Context, jobID string, status str
 }
 
 func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error) {
-	query := "SELECT id, topic_id, platform, token, external_id, created_at FROM subscriptions WHERE topic_id=?"
+	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE topic_id=?"
 	rows, err := s.db.QueryContext(ctx, query, topicID)
 	if err != nil {
 		return nil, err
@@ -222,7 +222,7 @@ func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string)
 }
 
 func (s *SQLStore) GetSubscriptionsByExternalID(ctx context.Context, externalID string) ([]Subscription, error) {
-	query := "SELECT id, topic_id, platform, token, external_id, created_at FROM subscriptions WHERE external_id=?"
+	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE external_id=?"
 	rows, err := s.db.QueryContext(ctx, query, externalID)
 	if err != nil {
 		return nil, err
@@ -238,6 +238,24 @@ func (s *SQLStore) GetSubscriptionsByExternalID(ctx context.Context, externalID 
 		subs = append(subs, sub)
 	}
 	return subs, rows.Err()
+}
+
+func (s *SQLStore) RegisterUserToken(ctx context.Context, sub *Subscription) (*Subscription, error) {
+	sub.ID = fmt.Sprintf("usr:%s:%s", sub.ExternalID, sub.Token)
+	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+
+	query := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES(?, NULL, ?, ?, ?, ?)`
+
+	_, err := s.db.ExecContext(ctx, query, sub.ID, sub.Platform, sub.Token, sub.ExternalID, sub.CreatedAt)
+
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+			return nil, Errors.AlreadyExists
+		}
+		return nil, fmt.Errorf("error registering user token: %w", err)
+	}
+
+	return sub, nil
 }
 
 func (s *SQLStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {

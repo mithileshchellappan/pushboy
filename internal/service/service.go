@@ -195,6 +195,26 @@ func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*stora
 	return job, nil
 }
 
+func (s *PushboyService) RegisterUserToken(ctx context.Context, externalID string, platform string, token string) (*storage.Subscription, error) {
+	if platform != "apns" && platform != "fcm" {
+		return nil, fmt.Errorf("invalid platform")
+	}
+
+	if externalID == "" {
+		externalID = uuid.New().String()
+	}
+
+	sub, err := s.store.RegisterUserToken(ctx, &storage.Subscription{
+		Platform:   platform,
+		Token:      token,
+		ExternalID: externalID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
 func (s *PushboyService) SendToUser(ctx context.Context, externalID string, title string, body string) error {
 	subscriptions, err := s.store.GetSubscriptionsByExternalID(ctx, externalID)
 	if err != nil {

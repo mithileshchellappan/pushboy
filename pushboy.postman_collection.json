@@ -1,0 +1,289 @@
+{
+	"info": {
+		"_postman_id": "pushboy-api-collection",
+		"name": "Pushboy API",
+		"description": "Push notification service API for topic-based and user-focused notifications",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "topicID",
+			"value": "psby:announcements",
+			"type": "string"
+		},
+		{
+			"key": "externalID",
+			"value": "550e8400-e29b-41d4-a716-446655440000",
+			"type": "string"
+		},
+		{
+			"key": "jobID",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Health",
+			"item": [
+				{
+					"name": "Ping",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/ping",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "ping"]
+						},
+						"description": "Health check endpoint"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Topics",
+			"item": [
+				{
+					"name": "Create Topic",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"announcements\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics"]
+						},
+						"description": "Create a new topic for subscriptions"
+					},
+					"response": []
+				},
+				{
+					"name": "List Topics",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics"]
+						},
+						"description": "List all available topics"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Topic by ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}"]
+						},
+						"description": "Get a specific topic by its ID"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Topic",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}"]
+						},
+						"description": "Delete a topic and all its subscriptions"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Subscriptions",
+			"item": [
+				{
+					"name": "Subscribe to Topic",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"device_token_abc123\",\n    \"external_id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/subscribe",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "subscribe"]
+						},
+						"description": "Subscribe a device token to a topic. The external_id is optional - if not provided, a UUID will be generated."
+					},
+					"response": []
+				},
+				{
+					"name": "Subscribe to Topic (without external_id)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"platform\": \"fcm\",\n    \"token\": \"fcm_device_token_xyz789\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/subscribe",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "subscribe"]
+						},
+						"description": "Subscribe without external_id - a UUID will be auto-generated"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Publishing",
+			"item": [
+				{
+					"name": "Publish to Topic",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"New Announcement\",\n    \"body\": \"This is a broadcast message to all subscribers of this topic.\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/publish",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "publish"]
+						},
+						"description": "Publish a notification to all subscribers of a topic"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Job Status",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/publish/{{jobID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "publish", "{{jobID}}"]
+						},
+						"description": "Get the status of a publish job"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Users",
+			"item": [
+				{
+					"name": "Register User Token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"user_device_token_123\",\n    \"external_id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "tokens"]
+						},
+						"description": "Register a device token for a user without subscribing to any topic. The external_id is optional - if not provided, a UUID will be generated."
+					},
+					"response": []
+				},
+				{
+					"name": "Register User Token (auto-generate external_id)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"user_device_token_456\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "tokens"]
+						},
+						"description": "Register a device token without providing external_id - a UUID will be auto-generated and returned in the response."
+					},
+					"response": []
+				},
+				{
+					"name": "Send to User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Personal Message\",\n    \"body\": \"This notification is sent directly to all your devices.\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{externalID}}/send",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{externalID}}", "send"]
+						},
+						"description": "Send a notification to all devices registered under a user's external_id"
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
+
