@@ -34,6 +34,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("Cannot create store: %v", err)
 		}
+	case "postgres":
+		store, err = storage.NewPostgresStore(cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("Cannot create store: %v", err)
+		}
 	default:
 		log.Fatalf("Unsupported database driver: %s", cfg.DatabaseDriver)
 		return

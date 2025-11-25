@@ -9,32 +9,32 @@ import (
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/sqlite"
+	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
-type SQLStore struct {
+type PostgresStore struct {
 	db *sql.DB
 }
 
-func NewSQLStore(dataSourceName string) (*SQLStore, error) {
-	db, err := sql.Open("sqlite3", "./db.sqlite")
+func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
+	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("could not open database: %w", err)
 	}
 	if err := db.Ping(); err != nil {
-		return nil, fmt.Errorf("could not open database: %w", err)
+		return nil, fmt.Errorf("could not connect to database: %w", err)
 	}
 
-	driver, err := sqlite.WithInstance(db, &sqlite.Config{})
+	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("could not create migration driver: %w", err)
 	}
 
 	m, err := migrate.NewWithDatabaseInstance(
-		"file://db/migrations/sqlite",
-		"sqlite",
+		"file://db/migrations/postgres",
+		"postgres",
 		driver,
 	)
 
@@ -48,28 +48,30 @@ func NewSQLStore(dataSourceName string) (*SQLStore, error) {
 
 	log.Println("Migration success!")
 
-	store := &SQLStore{db: db}
+	store := &PostgresStore{db: db}
 
 	log.Println("Database connection and migration successful")
 	return store, nil
 }
 
-func (s *SQLStore) CreateTopic(ctx context.Context, topic *Topic) error {
+func (s *PostgresStore) CreateTopic(ctx context.Context, topic *Topic) error {
 	topic.ID = fmt.Sprintf("psby:%s", strings.ToLower(topic.Name))
 
-	query := "INSERT INTO topics(id, name) VALUES(?, ?)"
+	query := "INSERT INTO topics(id, name) VALUES($1, $2)"
 
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)
 
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return Errors.AlreadyExists
+		}
 		return err
 	}
 
 	return nil
-
 }
 
-func (s *SQLStore) ListTopics(ctx context.Context) ([]Topic, error) {
+func (s *PostgresStore) ListTopics(ctx context.Context) ([]Topic, error) {
 	var topics []Topic
 	query := "SELECT id, name FROM topics"
 
@@ -97,12 +99,11 @@ func (s *SQLStore) ListTopics(ctx context.Context) ([]Topic, error) {
 	}
 
 	return topics, nil
-
 }
 
-func (s *SQLStore) GetTopicByID(ctx context.Context, topicID string) (*Topic, error) {
+func (s *PostgresStore) GetTopicByID(ctx context.Context, topicID string) (*Topic, error) {
 	var topic Topic
-	query := "SELECT id, name FROM topics WHERE id = ? "
+	query := "SELECT id, name FROM topics WHERE id = $1"
 
 	row := s.db.QueryRowContext(ctx, query, topicID)
 
@@ -113,14 +114,14 @@ func (s *SQLStore) GetTopicByID(ctx context.Context, topicID string) (*Topic, er
 	}
 
 	if topic.ID == "" {
-		return nil, fmt.Errorf("Topic not found")
+		return nil, fmt.Errorf("topic not found")
 	}
 
 	return &topic, nil
 }
 
-func (s *SQLStore) DeleteTopic(ctx context.Context, topicID string) error {
-	query := "DELETE FROM topics WHERE id = ?"
+func (s *PostgresStore) DeleteTopic(ctx context.Context, topicID string) error {
+	query := "DELETE FROM topics WHERE id = $1"
 
 	result, err := s.db.ExecContext(ctx, query, topicID)
 
@@ -131,40 +132,39 @@ func (s *SQLStore) DeleteTopic(ctx context.Context, topicID string) error {
 	rowsAffected, _ := result.RowsAffected()
 
 	if rowsAffected == 0 {
-		return fmt.Errorf("Topic not found")
+		return fmt.Errorf("topic not found")
 	}
 
 	return nil
 }
 
-func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error) {
+func (s *PostgresStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error) {
 	sub.ID = fmt.Sprintf("sub:%s:%s", sub.TopicID, sub.Token)
 	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	subSql := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES(?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES($1, $2, $3, $4, $5, $6)`
 
-	_, err := s.db.ExecContext(ctx, subSql, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.ExternalID, sub.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, sub.ID, sub.TopicID, sub.Platform, sub.Token, sub.ExternalID, sub.CreatedAt)
 
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, Errors.AlreadyExists
 		}
-		return nil, fmt.Errorf("error Subscribing to topic creation: %w", err)
+		return nil, fmt.Errorf("error subscribing to topic: %w", err)
 	}
 
 	return sub, nil
 }
 
-func (s *SQLStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-
+func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
 	var totalCount int
-	countQuery := "SELECT COUNT(*) FROM subscriptions WHERE topic_id = ?"
+	countQuery := "SELECT COUNT(*) FROM subscriptions WHERE topic_id = $1"
 	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
 	if err := row.Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("Subscription unavailable: %w", err)
+		return nil, fmt.Errorf("subscription unavailable: %w", err)
 	}
 	job.TotalCount = totalCount
-	query := `INSERT INTO publish_jobs(id, topic_id, title, body, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO publish_jobs(id, topic_id, title, body, status, total_count, success_count, failure_count, created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 	_, err := s.db.ExecContext(ctx, query, job.ID, job.TopicID, job.Title, job.Body, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
@@ -172,8 +172,8 @@ func (s *SQLStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*Publ
 	return job, nil
 }
 
-func (s *SQLStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE status = 'PENDING' LIMIT ?"
+func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
+	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE status = 'PENDING' LIMIT $1"
 
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -193,17 +193,16 @@ func (s *SQLStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJo
 	}
 
 	return jobs, rows.Err()
-
 }
 
-func (s *SQLStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
-	query := "UPDATE publish_jobs SET status = ? WHERE id = ?"
+func (s *PostgresStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+	query := "UPDATE publish_jobs SET status = $1 WHERE id = $2"
 	_, err := s.db.ExecContext(ctx, query, status, jobID)
 	return err
 }
 
-func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error) {
-	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE topic_id=?"
+func (s *PostgresStore) ListSubscriptionsByTopic(ctx context.Context, topicID string) ([]Subscription, error) {
+	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE topic_id=$1"
 	rows, err := s.db.QueryContext(ctx, query, topicID)
 	if err != nil {
 		return nil, err
@@ -221,8 +220,8 @@ func (s *SQLStore) ListSubscriptionsByTopic(ctx context.Context, topicID string)
 	return subs, rows.Err()
 }
 
-func (s *SQLStore) GetSubscriptionsByExternalID(ctx context.Context, externalID string) ([]Subscription, error) {
-	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE external_id=?"
+func (s *PostgresStore) GetSubscriptionsByExternalID(ctx context.Context, externalID string) ([]Subscription, error) {
+	query := "SELECT id, COALESCE(topic_id, ''), platform, token, COALESCE(external_id, ''), created_at FROM subscriptions WHERE external_id=$1"
 	rows, err := s.db.QueryContext(ctx, query, externalID)
 	if err != nil {
 		return nil, err
@@ -240,16 +239,16 @@ func (s *SQLStore) GetSubscriptionsByExternalID(ctx context.Context, externalID 
 	return subs, rows.Err()
 }
 
-func (s *SQLStore) RegisterUserToken(ctx context.Context, sub *Subscription) (*Subscription, error) {
+func (s *PostgresStore) RegisterUserToken(ctx context.Context, sub *Subscription) (*Subscription, error) {
 	sub.ID = fmt.Sprintf("usr:%s:%s", sub.ExternalID, sub.Token)
 	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 
-	query := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES(?, NULL, ?, ?, ?, ?)`
+	query := `INSERT INTO subscriptions(id, topic_id, platform, token, external_id, created_at) VALUES($1, NULL, $2, $3, $4, $5)`
 
 	_, err := s.db.ExecContext(ctx, query, sub.ID, sub.Platform, sub.Token, sub.ExternalID, sub.CreatedAt)
 
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, Errors.AlreadyExists
 		}
 		return nil, fmt.Errorf("error registering user token: %w", err)
@@ -258,19 +257,19 @@ func (s *SQLStore) RegisterUserToken(ctx context.Context, sub *Subscription) (*S
 	return sub, nil
 }
 
-func (s *SQLStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
-	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
+func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.SubscriptionID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 
-func (s *SQLStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
-	query := "UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?"
+func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
+	query := "UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3"
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
 }
 
-func (s *SQLStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}
@@ -282,7 +281,7 @@ func (s *SQLStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryRe
 
 	defer tx.Rollback()
 
-	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO delivery_receipts(id, job_id, subscription_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
 		return err
@@ -299,8 +298,8 @@ func (s *SQLStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryRe
 	return tx.Commit()
 }
 
-func (s *SQLStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
-	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE id = ?"
+func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
+	query := "SELECT id, topic_id, status, total_count, success_count, failure_count, created_at FROM publish_jobs WHERE id = $1"
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
 	var job PublishJob
