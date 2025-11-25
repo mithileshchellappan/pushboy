@@ -156,7 +156,7 @@ func (s *SQLStore) SubscribeToTopic(ctx context.Context, sub *Subscription) (*Su
 	return sub, nil
 }
 
-func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string) (*PublishJob, error) {
+func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*PublishJob, error) {
 
 	var totalCount int
 	countQuery := "SELECT COUNT(*) FROM subscriptions WHERE topic_id = ?"
@@ -168,6 +168,8 @@ func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string) (*Publi
 	job := &PublishJob{
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
+		Title:        title,
+		Body:         body,
 		Status:       "PENDING",
 		TotalCount:   totalCount,
 		SuccessCount: 0,
@@ -175,8 +177,8 @@ func (s *SQLStore) CreatePublishJob(ctx context.Context, topicID string) (*Publi
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 
-	query := `INSERT INTO publish_jobs(id, topic_id, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`
-	_, err := s.db.ExecContext(ctx, query, job.ID, job.TopicID, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	query := `INSERT INTO publish_jobs(id, topic_id, title, body, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err := s.db.ExecContext(ctx, query, job.ID, job.TopicID, job.Title, job.Body, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -280,7 +282,7 @@ func (s *SQLStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob,
 	var job PublishJob
 	err := row.Scan(&job.ID, &job.TopicID, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt)
 	if err == sql.ErrNoRows {
-		return nil, nil
+		return nil, fmt.Errorf("job not found")
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error scanning publish job: %w", err)

@@ -17,7 +17,7 @@ type Store interface {
 	DeleteTopic(ctx context.Context, topicID string) error
 	SubscribeToTopic(ctx context.Context, sub *Subscription) (*Subscription, error)
 
-	CreatePublishJob(ctx context.Context, topicID string) (*PublishJob, error)
+	CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
@@ -39,6 +39,8 @@ type Subscription struct {
 type PublishJob struct {
 	ID           string
 	TopicID      string
+	Title        string
+	Body         string
 	Status       string
 	TotalCount   int
 	SuccessCount int

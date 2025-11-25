@@ -186,11 +186,21 @@ func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	topicID := chi.URLParam(r, "topicID")
+
+	var req struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
 	if topicID == "" {
 		http.Error(w, "topicID is required", http.StatusBadRequest)
 		return
 	}
-	job, err := s.service.CreatePublishJob(r.Context(), topicID)
+	job, err := s.service.CreatePublishJob(r.Context(), topicID, req.Title, req.Body)
 	if err != nil {
 		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
 		log.Printf("Error creating publish job %v", err)

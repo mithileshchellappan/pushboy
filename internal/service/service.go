@@ -77,27 +77,27 @@ func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, p
 	return sub, nil
 }
 
-func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string) (*storage.PublishJob, error) {
-	job, err := s.store.CreatePublishJob(ctx, topicID)
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*storage.PublishJob, error) {
+	job, err := s.store.CreatePublishJob(ctx, topicID, title, body)
 	if err != nil {
 		return nil, err
 	}
 	return job, nil
 }
 
-func (s *PushboyService) ProcessPendingJobs(ctx context.Context) error {
-	jobs, err := s.store.FetchPendingJobs(ctx, 10)
-	if err != nil {
-		return err
-	}
+// func (s *PushboyService) ProcessPendingJobs(ctx context.Context) error {
+// 	jobs, err := s.store.FetchPendingJobs(ctx, 10)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	for _, job := range jobs {
-		if err := s.ProcessJobs(ctx, &job); err != nil {
-			log.Printf("Error processing job %s: %v", job.ID, err)
-		}
-	}
-	return nil
-}
+// 	for _, job := range jobs {
+// 		if err := s.ProcessJobs(ctx, &job); err != nil {
+// 			log.Printf("Error processing job %s: %v", job.ID, err)
+// 		}
+// 	}
+// 	return nil
+// }
 
 func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJob) error {
 	log.Printf("WORKER: Processing job... %s", job.ID)
@@ -126,8 +126,8 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 			statusReason = "UNSUPPORTED_PLATFORM"
 		} else {
 			payload := &dispatch.NotificationPayload{
-				Title: "Test Title",
-				Body:  "Test Body",
+				Title: job.Title,
+				Body:  job.Body,
 			}
 			start := time.Now()
 			sendErr = dispatcher.Send(ctx, &sub, payload)
