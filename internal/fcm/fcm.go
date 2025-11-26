@@ -59,10 +59,10 @@ func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) 
 	return &Client{httpClient: httpClient, projectID: projectID}, nil
 }
 
-func (c *Client) Send(ctx context.Context, sub *storage.Subscription, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
 	request := FcmRequest{
 		Message: FcmMessage{
-			Token: sub.Token,
+			Token: token.Token,
 			Notification: Notification{
 				Title: payload.Title,
 				Body:  payload.Body,

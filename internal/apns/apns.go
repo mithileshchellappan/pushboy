@@ -82,7 +82,7 @@ func (c *Client) generateJWT() (string, error) {
 	return tokenString, nil
 }
 
-func (c *Client) Send(ctx context.Context, sub *storage.Subscription, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
 	jwt, err := c.generateJWT()
 	if err != nil {
 		return err
@@ -102,7 +102,7 @@ func (c *Client) Send(ctx context.Context, sub *storage.Subscription, payload *d
 		return err
 	}
 
-	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, sub.Token)
+	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token.Token)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
 

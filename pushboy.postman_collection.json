@@ -12,13 +12,18 @@
 			"type": "string"
 		},
 		{
-			"key": "topicID",
-			"value": "psby:announcements",
+			"key": "userID",
+			"value": "550e8400-e29b-41d4-a716-446655440000",
 			"type": "string"
 		},
 		{
-			"key": "externalID",
-			"value": "550e8400-e29b-41d4-a716-446655440000",
+			"key": "topicID",
+			"value": "topic:announcements",
+			"type": "string"
+		},
+		{
+			"key": "tokenID",
+			"value": "",
 			"type": "string"
 		},
 		{
@@ -48,6 +53,187 @@
 			]
 		},
 		{
+			"name": "Users",
+			"item": [
+				{
+					"name": "Create User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users"]
+						},
+						"description": "Create a new user with an optional ID. If no ID is provided, a UUID will be auto-generated."
+					},
+					"response": []
+				},
+				{
+					"name": "Create User (auto-generate ID)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users"]
+						},
+						"description": "Create a new user with an auto-generated UUID."
+					},
+					"response": []
+				},
+				{
+					"name": "Get User",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}"]
+						},
+						"description": "Get a user by ID"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete User",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}"]
+						},
+						"description": "Delete a user (cascades to tokens and subscriptions)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Tokens",
+			"item": [
+				{
+					"name": "Register Token (with user ID)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"platform\": \"apns\",\n    \"token\": \"device_token_ios_123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "tokens"]
+						},
+						"description": "Register a device token. Creates the user if they don't exist. If user exists, adds the token as a new device."
+					},
+					"response": []
+				},
+				{
+					"name": "Register Token (auto-generate user ID)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"platform\": \"fcm\",\n    \"token\": \"device_token_android_456\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "tokens"]
+						},
+						"description": "Register a device token with auto-generated user ID. Returns the new user and token."
+					},
+					"response": []
+				},
+				{
+					"name": "Register Additional Device",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"platform\": \"fcm\",\n    \"token\": \"second_device_token_789\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "tokens"]
+						},
+						"description": "Register another device for an existing user (same user ID, different token)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Tokens",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/tokens",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "tokens"]
+						},
+						"description": "Get all tokens registered for a user"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Token",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/tokens/{{tokenID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "tokens", "{{tokenID}}"]
+						},
+						"description": "Delete a specific token"
+					},
+					"response": []
+				}
+			]
+		},
+		{
 			"name": "Topics",
 			"item": [
 				{
@@ -69,7 +255,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics"]
 						},
-						"description": "Create a new topic for subscriptions"
+						"description": "Create a new topic"
 					},
 					"response": []
 				},
@@ -83,7 +269,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics"]
 						},
-						"description": "List all available topics"
+						"description": "List all topics"
 					},
 					"response": []
 				},
@@ -97,7 +283,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}"]
 						},
-						"description": "Get a specific topic by its ID"
+						"description": "Get a topic by ID"
 					},
 					"response": []
 				},
@@ -111,7 +297,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}"]
 						},
-						"description": "Delete a topic and all its subscriptions"
+						"description": "Delete a topic"
 					},
 					"response": []
 				}
@@ -121,56 +307,75 @@
 			"name": "Subscriptions",
 			"item": [
 				{
-					"name": "Subscribe to Topic",
+					"name": "Subscribe User to Topic",
 					"request": {
 						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"device_token_abc123\",\n    \"external_id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
-						},
+						"header": [],
 						"url": {
-							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/subscribe",
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/subscriptions/{{topicID}}",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "topics", "{{topicID}}", "subscribe"]
+							"path": ["v1", "users", "{{userID}}", "subscriptions", "{{topicID}}"]
 						},
-						"description": "Subscribe a device token to a topic. The external_id is optional - if not provided, a UUID will be generated."
+						"description": "Subscribe a user to a topic"
 					},
 					"response": []
 				},
 				{
-					"name": "Subscribe to Topic (without external_id)",
+					"name": "Unsubscribe User from Topic",
 					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"platform\": \"fcm\",\n    \"token\": \"fcm_device_token_xyz789\"\n}"
-						},
+						"method": "DELETE",
+						"header": [],
 						"url": {
-							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/subscribe",
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/subscriptions/{{topicID}}",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "topics", "{{topicID}}", "subscribe"]
+							"path": ["v1", "users", "{{userID}}", "subscriptions", "{{topicID}}"]
 						},
-						"description": "Subscribe without external_id - a UUID will be auto-generated"
+						"description": "Unsubscribe a user from a topic"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Subscriptions",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/subscriptions",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "subscriptions"]
+						},
+						"description": "Get all topic subscriptions for a user"
 					},
 					"response": []
 				}
 			]
 		},
 		{
-			"name": "Publishing",
+			"name": "Notifications",
 			"item": [
+				{
+					"name": "Send to User",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Direct Message\",\n    \"body\": \"This notification is sent directly to all your devices.\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "send"]
+						},
+						"description": "Send a notification directly to all of a user's devices"
+					},
+					"response": []
+				},
 				{
 					"name": "Publish to Topic",
 					"request": {
@@ -190,7 +395,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}", "publish"]
 						},
-						"description": "Publish a notification to all subscribers of a topic"
+						"description": "Publish a notification to all users subscribed to a topic"
 					},
 					"response": []
 				},
@@ -209,81 +414,8 @@
 					"response": []
 				}
 			]
-		},
-		{
-			"name": "Users",
-			"item": [
-				{
-					"name": "Register User Token",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"user_device_token_123\",\n    \"external_id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/v1/users/tokens",
-							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "tokens"]
-						},
-						"description": "Register a device token for a user without subscribing to any topic. The external_id is optional - if not provided, a UUID will be generated."
-					},
-					"response": []
-				},
-				{
-					"name": "Register User Token (auto-generate external_id)",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"platform\": \"apns\",\n    \"token\": \"user_device_token_456\"\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/v1/users/tokens",
-							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "tokens"]
-						},
-						"description": "Register a device token without providing external_id - a UUID will be auto-generated and returned in the response."
-					},
-					"response": []
-				},
-				{
-					"name": "Send to User",
-					"request": {
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"title\": \"Personal Message\",\n    \"body\": \"This notification is sent directly to all your devices.\"\n}"
-						},
-						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{externalID}}/send",
-							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{externalID}}", "send"]
-						},
-						"description": "Send a notification to all devices registered under a user's external_id"
-					},
-					"response": []
-				}
-			]
 		}
 	]
 }
+
 

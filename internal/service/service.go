@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -21,6 +22,83 @@ func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatch
 	return &PushboyService{store: s, dispatchers: dispatchers, resultsChan: make(chan storage.DeliveryReceipt, 2000)}
 }
 
+// User operations
+
+func (s *PushboyService) CreateUser(ctx context.Context, userID string) (*storage.User, error) {
+	if userID == "" {
+		userID = uuid.New().String()
+	}
+
+	user := &storage.User{ID: userID}
+	user, err := s.store.CreateUser(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func (s *PushboyService) GetUser(ctx context.Context, userID string) (*storage.User, error) {
+	return s.store.GetUser(ctx, userID)
+}
+
+func (s *PushboyService) DeleteUser(ctx context.Context, userID string) error {
+	return s.store.DeleteUser(ctx, userID)
+}
+
+// Token operations
+
+func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platform string, tokenValue string) (*storage.Token, *storage.User, error) {
+	if platform != "apns" && platform != "fcm" {
+		return nil, nil, fmt.Errorf("invalid platform: must be 'apns' or 'fcm'")
+	}
+
+	// Generate user ID if not provided
+	if userID == "" {
+		userID = uuid.New().String()
+	}
+
+	// Try to get existing user, create if not exists
+	user, err := s.store.GetUser(ctx, userID)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			// User doesn't exist, create them
+			user = &storage.User{ID: userID}
+			user, err = s.store.CreateUser(ctx, user)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to create user: %w", err)
+			}
+		} else {
+			return nil, nil, fmt.Errorf("failed to get user: %w", err)
+		}
+	}
+
+	// Register the token
+	token := &storage.Token{
+		ID:       uuid.New().String(),
+		UserID:   userID,
+		Platform: platform,
+		Token:    tokenValue,
+	}
+
+	token, err = s.store.CreateToken(ctx, token)
+	if err != nil {
+		return nil, user, err
+	}
+
+	return token, user, nil
+}
+
+func (s *PushboyService) GetUserTokens(ctx context.Context, userID string) ([]storage.Token, error) {
+	return s.store.GetTokensByUserID(ctx, userID)
+}
+
+func (s *PushboyService) DeleteToken(ctx context.Context, tokenID string) error {
+	return s.store.DeleteToken(ctx, tokenID)
+}
+
+// Topic operations
+
 func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage.Topic, error) {
 	topic := &storage.Topic{Name: name}
 
@@ -33,57 +111,91 @@ func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage
 }
 
 func (s *PushboyService) ListTopics(ctx context.Context) ([]storage.Topic, error) {
-	topics, err := s.store.ListTopics(ctx)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return topics, nil
+	return s.store.ListTopics(ctx)
 }
 
 func (s *PushboyService) GetTopicByID(ctx context.Context, topicID string) (*storage.Topic, error) {
-	topic, err := s.store.GetTopicByID(ctx, topicID)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return topic, nil
+	return s.store.GetTopicByID(ctx, topicID)
 }
 
 func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error {
-	err := s.store.DeleteTopic(ctx, topicID)
+	return s.store.DeleteTopic(ctx, topicID)
+}
+
+// User-Topic subscription operations
+
+func (s *PushboyService) SubscribeUserToTopic(ctx context.Context, userID string, topicID string) (*storage.UserTopicSubscription, error) {
+	// Verify user exists
+	_, err := s.store.GetUser(ctx, userID)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	// Verify topic exists
+	_, err = s.store.GetTopicByID(ctx, topicID)
+	if err != nil {
+		return nil, fmt.Errorf("topic not found: %w", err)
+	}
+
+	sub := &storage.UserTopicSubscription{
+		UserID:  userID,
+		TopicID: topicID,
+	}
+
+	return s.store.SubscribeUserToTopic(ctx, sub)
+}
+
+func (s *PushboyService) UnsubscribeUserFromTopic(ctx context.Context, userID string, topicID string) error {
+	return s.store.UnsubscribeUserFromTopic(ctx, userID, topicID)
+}
+
+func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string) ([]storage.UserTopicSubscription, error) {
+	return s.store.GetUserSubscriptions(ctx, userID)
+}
+
+// Send to user operations
+
+func (s *PushboyService) SendToUser(ctx context.Context, userID string, title string, body string) error {
+	tokens, err := s.store.GetTokensByUserID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("failed to get tokens for user: %w", err)
+	}
+
+	if len(tokens) == 0 {
+		return fmt.Errorf("no tokens found for user: %s", userID)
+	}
+
+	for _, token := range tokens {
+		log.Printf("SERVICE: Dispatching user notification platform=%s token=%s", token.Platform, token.Token)
+
+		dispatcher, ok := s.dispatchers[token.Platform]
+		if !ok {
+			log.Printf("SERVICE: -> Dispatcher not found for platform %s", token.Platform)
+			continue
+		}
+
+		payload := &dispatch.NotificationPayload{
+			Title: title,
+			Body:  body,
+		}
+
+		start := time.Now()
+		sendErr := dispatcher.Send(ctx, &token, payload)
+		duration := time.Since(start)
+
+		if sendErr != nil {
+			log.Printf("SERVICE: -> Error sending notification to platform %s: %v", token.Platform, sendErr)
+		} else {
+			log.Printf("SERVICE: -> Notification sent to platform %s in %s", token.Platform, duration)
+		}
 	}
 
 	return nil
 }
 
-func (s *PushboyService) SubscribeToTopic(ctx context.Context, topicId string, platform string, token string, externalID string) (*storage.Subscription, error) {
-	if platform != "apns" && platform != "fcm" {
-		return nil, fmt.Errorf("invalid platform for platform")
-	}
-
-	if externalID == "" {
-		externalID = uuid.New().String()
-	}
-
-	sub, err := s.store.SubscribeToTopic(ctx, &storage.Subscription{
-		TopicID:    topicId,
-		Platform:   platform,
-		Token:      token,
-		ExternalID: externalID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
+// Publish job operations
 
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*storage.PublishJob, error) {
-
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
@@ -103,20 +215,6 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, t
 	return job, nil
 }
 
-// func (s *PushboyService) ProcessPendingJobs(ctx context.Context) error {
-// 	jobs, err := s.store.FetchPendingJobs(ctx, 10)
-// 	if err != nil {
-// 		return err
-// 	}
-
-// 	for _, job := range jobs {
-// 		if err := s.ProcessJobs(ctx, &job); err != nil {
-// 			log.Printf("Error processing job %s: %v", job.ID, err)
-// 		}
-// 	}
-// 	return nil
-// }
-
 func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJob) error {
 	log.Printf("WORKER: Processing job... %s", job.ID)
 
@@ -125,57 +223,67 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 		return fmt.Errorf("marking in_progress failed: %w", err)
 	}
 
-	subscriptions, err := s.store.ListSubscriptionsByTopic(ctx, job.TopicID)
+	// Get all subscribers for this topic
+	subscribers, err := s.store.GetTopicSubscribers(ctx, job.TopicID)
 	if err != nil {
 		s.store.UpdateJobStatus(ctx, job.ID, "FAILED")
-		return fmt.Errorf("listing subscriptions failed: %w", err)
+		return fmt.Errorf("getting topic subscribers failed: %w", err)
 	}
 
-	for _, sub := range subscriptions {
+	// For each subscriber, get their tokens and send notifications
+	for _, user := range subscribers {
+		tokens, err := s.store.GetTokensByUserID(ctx, user.ID)
+		if err != nil {
+			log.Printf("WORKER: -> Error getting tokens for user %s: %v", user.ID, err)
+			continue
+		}
 
-		log.Printf("WORKER: Dispatching message to subscription platform=%s token=%s", sub.Platform, sub.Token)
+		for _, token := range tokens {
+			log.Printf("WORKER: Dispatching message to user=%s platform=%s", user.ID, token.Platform)
 
-		dispatcher, ok := s.dispatchers[sub.Platform]
-		var sendErr error
-		var statusReason string
+			dispatcher, ok := s.dispatchers[token.Platform]
+			var sendErr error
+			var statusReason string
 
-		if !ok {
-			sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
-			statusReason = "UNSUPPORTED_PLATFORM"
-		} else {
-			payload := &dispatch.NotificationPayload{
-				Title: job.Title,
-				Body:  job.Body,
+			if !ok {
+				sendErr = fmt.Errorf("dispatcher not found for platform %s", token.Platform)
+				statusReason = "UNSUPPORTED_PLATFORM"
+			} else {
+				payload := &dispatch.NotificationPayload{
+					Title: job.Title,
+					Body:  job.Body,
+				}
+				start := time.Now()
+				sendErr = dispatcher.Send(ctx, &token, payload)
+				duration := time.Since(start)
+
+				if sendErr != nil {
+					statusReason = sendErr.Error()
+					log.Printf("WORKER: -> Error sending notification to platform %s: %v", token.Platform, sendErr)
+				} else {
+					statusReason = "OK"
+					log.Printf("WORKER: -> Notification sent to platform %s in %s", token.Platform, duration)
+				}
 			}
-			start := time.Now()
-			sendErr = dispatcher.Send(ctx, &sub, payload)
-			duration := time.Since(start)
+
+			receipt := storage.DeliveryReceipt{
+				ID:           uuid.New().String(),
+				JobID:        job.ID,
+				TokenID:      token.ID,
+				DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+			}
 
 			if sendErr != nil {
-				statusReason = sendErr.Error()
-				log.Printf("WORKER: -> Error sending notification to platform %s: %v", sub.Platform, sendErr)
+				receipt.Status = "FAILED"
+				receipt.StatusReason = sendErr.Error()
+				s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
 			} else {
-				statusReason = "OK"
-				log.Printf("WORKER: -> Notification sent to platform %s in %s", sub.Platform, duration)
+				receipt.Status = "SENT"
+				receipt.StatusReason = statusReason
+				s.store.IncrementJobCounters(ctx, job.ID, 1, 0)
 			}
-		}
 
-		receipt := &storage.DeliveryReceipt{
-			ID:             uuid.New().String(),
-			JobID:          job.ID,
-			SubscriptionID: sub.ID,
-			DispatchedAt:   time.Now().UTC().Format(time.RFC3339),
-		}
-		s.resultsChan <- *receipt
-
-		if sendErr != nil {
-			receipt.Status = "FAILED"
-			receipt.StatusReason = sendErr.Error()
-			s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
-		} else {
-			receipt.Status = "SENT"
-			receipt.StatusReason = statusReason
-			s.store.IncrementJobCounters(ctx, job.ID, 0, 1)
+			s.resultsChan <- receipt
 		}
 	}
 
@@ -188,75 +296,7 @@ func (s *PushboyService) ProcessJobs(ctx context.Context, job *storage.PublishJo
 }
 
 func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {
-	job, err := s.store.GetJobStatus(ctx, jobID)
-	if err != nil {
-		return nil, err
-	}
-	return job, nil
-}
-
-func (s *PushboyService) RegisterUserToken(ctx context.Context, externalID string, platform string, token string) (*storage.Subscription, error) {
-	if platform != "apns" && platform != "fcm" {
-		return nil, fmt.Errorf("invalid platform")
-	}
-
-	if externalID == "" {
-		externalID = uuid.New().String()
-	}
-
-	sub, err := s.store.RegisterUserToken(ctx, &storage.Subscription{
-		Platform:   platform,
-		Token:      token,
-		ExternalID: externalID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
-
-func (s *PushboyService) SendToUser(ctx context.Context, externalID string, title string, body string) error {
-	subscriptions, err := s.store.GetSubscriptionsByExternalID(ctx, externalID)
-	if err != nil {
-		return fmt.Errorf("failed to get subscriptions for external ID: %w", err)
-	}
-
-	if len(subscriptions) == 0 {
-		return fmt.Errorf("no subscriptions found for external ID: %s", externalID)
-	}
-
-	for _, sub := range subscriptions {
-		log.Printf("WORKER: Dispatching user notification to subscription platform=%s token=%s", sub.Platform, sub.Token)
-
-		dispatcher, ok := s.dispatchers[sub.Platform]
-		var sendErr error
-
-		if !ok {
-			sendErr = fmt.Errorf("dispatcher not found for platform %s", sub.Platform)
-		} else {
-			payload := &dispatch.NotificationPayload{
-				Title: title,
-				Body:  body,
-			}
-			start := time.Now()
-			sendErr = dispatcher.Send(ctx, &sub, payload)
-			duration := time.Since(start)
-
-			if sendErr != nil {
-				log.Printf("WORKER: -> Error sending user notification to platform %s: %v", sub.Platform, sendErr)
-			} else {
-				log.Printf("WORKER: -> User notification sent to platform %s in %s", sub.Platform, duration)
-			}
-		}
-
-		// For user notifications, we don't create delivery receipts since there's no job
-		// But we could log the delivery attempt for debugging/monitoring purposes
-		if sendErr != nil {
-			log.Printf("WORKER: -> User notification failed for platform %s: %v", sub.Platform, sendErr)
-		}
-	}
-
-	return nil
+	return s.store.GetJobStatus(ctx, jobID)
 }
 
 func (s *PushboyService) StartAggregator(ctx context.Context) {
@@ -290,6 +330,5 @@ func (s *PushboyService) StartAggregator(ctx context.Context) {
 			flush()
 			return
 		}
-
 	}
 }

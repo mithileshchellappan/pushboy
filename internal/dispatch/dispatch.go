@@ -12,5 +12,5 @@ type NotificationPayload struct {
 }
 
 type Dispatcher interface {
-	Send(ctx context.Context, sub *storage.Subscription, payload *NotificationPayload) error
+	Send(ctx context.Context, token *storage.Token, payload *NotificationPayload) error
 }
