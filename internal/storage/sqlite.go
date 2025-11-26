@@ -261,6 +261,10 @@ func (s *SQLiteStore) UnsubscribeUserFromTopic(ctx context.Context, userID, topi
 	return nil
 }
 
+func (s *SQLiteStore) GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
 func (s *SQLiteStore) GetUserSubscriptions(ctx context.Context, userID string) ([]UserTopicSubscription, error) {
 	query := `SELECT id, user_id, topic_id, created_at FROM user_topic_subscriptions WHERE user_id = ?`
 	rows, err := s.db.QueryContext(ctx, query, userID)

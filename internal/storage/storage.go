@@ -57,6 +57,12 @@ type DeliveryReceipt struct {
 	DispatchedAt string
 }
 
+type TokenBatch struct {
+	Tokens     []Token
+	NextCursor string
+	HasMore    bool
+}
+
 // Store defines the interface for data persistence
 type Store interface {
 	// User operations
@@ -87,6 +93,7 @@ type Store interface {
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
+	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)
 
 	// Delivery receipt operations
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
