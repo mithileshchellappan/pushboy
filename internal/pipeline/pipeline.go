@@ -1,0 +1,172 @@
+package pipeline
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/storage"
+)
+
+type NotificationPipeline struct {
+	store       storage.Store
+	dispatchers map[string]dispatch.Dispatcher
+	tokensChan  chan storage.Token
+	resultsChan chan storage.DeliveryReceipt
+	numSenders  int
+	batchSize   int
+}
+
+func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numSenders int, batchSize int) *NotificationPipeline {
+	return &NotificationPipeline{
+		store:       store,
+		dispatchers: dispatchers,
+		tokensChan:  make(chan storage.Token, batchSize),
+		resultsChan: make(chan storage.DeliveryReceipt, batchSize),
+		numSenders:  numSenders,
+		batchSize:   batchSize,
+	}
+}
+
+func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.PublishJob) error {
+	log.Printf("WORKER: -> Starting job: %s", job.ID)
+	var wg sync.WaitGroup
+
+	p.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		p.collectResults(context.Background(), job)
+	}()
+	go p.fetchTokens(context.Background(), job.TopicID)
+
+	p.startSenders(ctx, job)
+	wg.Wait()
+	p.store.UpdateJobStatus(ctx, job.ID, "COMPLETED")
+
+	return nil
+}
+
+func (p *NotificationPipeline) fetchTokens(ctx context.Context, topicID string) {
+	defer close(p.tokensChan)
+	cursor := ""
+
+	for {
+		batch, err := p.store.GetTokenBatchForTopic(ctx, topicID, cursor, p.batchSize)
+
+		if err != nil {
+			log.Printf("Error fetching tokens: %v", err)
+			return
+		}
+
+		for _, token := range batch.Tokens {
+			select {
+			case p.tokensChan <- token:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		if !batch.HasMore {
+			break
+		}
+
+		cursor = batch.NextCursor
+	}
+}
+
+func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.PublishJob) {
+	var wg sync.WaitGroup
+	for i := 1; i <= p.numSenders; i++ {
+		wg.Add(1)
+		go p.sender(context.Background(), job, &wg)
+	}
+	wg.Wait()
+	close(p.resultsChan)
+}
+
+func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJob, wg *sync.WaitGroup) {
+	defer wg.Done()
+	payload := dispatch.NotificationPayload{
+		Title: job.Title,
+		Body:  job.Body,
+	}
+	for token := range p.tokensChan {
+		dispatcher, ok := p.dispatchers[token.Platform]
+
+		if !ok {
+			deliveryReceipt := storage.DeliveryReceipt{
+				ID:           uuid.New().String(),
+				JobID:        job.ID,
+				TokenID:      token.ID,
+				Status:       "FAILED",
+				StatusReason: fmt.Sprintf("Unknown dispatcher platform: %s", token.Platform),
+				DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+			p.resultsChan <- deliveryReceipt
+			continue
+		}
+
+		err := dispatcher.Send(ctx, &token, &payload)
+
+		deliveryReceipt := storage.DeliveryReceipt{
+			ID:           uuid.New().String(),
+			JobID:        job.ID,
+			TokenID:      token.ID,
+			Status:       "SUCCESS",
+			StatusReason: "",
+			DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+		}
+
+		if err != nil {
+			deliveryReceipt.Status = "FAILED"
+			deliveryReceipt.StatusReason = err.Error()
+		}
+		p.resultsChan <- deliveryReceipt
+
+	}
+}
+
+func (p *NotificationPipeline) collectResults(ctx context.Context, job *storage.PublishJob) {
+	var batch []storage.DeliveryReceipt
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	flush := func() {
+		if len(batch) == 0 {
+			return
+		}
+
+		if err := p.store.BulkInsertReceipts(ctx, batch); err != nil {
+			log.Printf("WORKER: -> CRITICAL: failed to bulk insert delivery receipts: %v", err)
+		}
+
+		batch = batch[:0]
+	}
+
+	for {
+		select {
+		case receipt, ok := <-p.resultsChan:
+
+			if !ok {
+				flush()
+				return
+			}
+
+			batch = append(batch, receipt)
+			if len(batch) >= 1000 {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		case <-ctx.Done():
+			flush()
+			return
+		}
+	}
+}
