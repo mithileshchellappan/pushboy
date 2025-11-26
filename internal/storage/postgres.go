@@ -385,6 +385,15 @@ func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (
 	return job, nil
 }
 
+func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
+	query := `INSERT INTO publish_jobs(id, user_id, title, body, status, total_count, success_count, failure_count,  created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err := s.db.ExecContext(ctx, query, job.ID, job.UserID, job.Title, job.Body, job.Status, 1, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("error creating user publish job: %w", err)
+	}
+	return job, nil
+}
+
 func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
 	query := `SELECT id, topic_id, COALESCE(title, ''), COALESCE(body, ''), status, total_count, success_count, failure_count, created_at 
 		FROM publish_jobs WHERE status = 'PENDING' LIMIT $1`

@@ -166,7 +166,7 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, title st
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 	}
 
-	return s.store.CreatePublishJob(ctx, job)
+	return s.store.CreateUserPublishJob(ctx, job)
 
 }
 

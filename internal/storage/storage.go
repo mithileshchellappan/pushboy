@@ -90,6 +90,7 @@ type Store interface {
 
 	// Publish job operations
 	CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
+	CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
