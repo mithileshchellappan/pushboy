@@ -1,20 +1,33 @@
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tokens_user_id ON tokens(user_id);
+
 CREATE TABLE IF NOT EXISTS topics (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE IF NOT EXISTS subscriptions (
+CREATE TABLE IF NOT EXISTS user_topic_subscriptions (
     id TEXT PRIMARY KEY,
-    topic_id TEXT REFERENCES topics(id) ON DELETE CASCADE,
-    platform TEXT NOT NULL,
-    token TEXT NOT NULL,
-    external_id TEXT,
-    created_at TEXT NOT NULL
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    topic_id TEXT NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, topic_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_subscriptions_topic_id ON subscriptions(topic_id);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_external_id ON subscriptions(external_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_topic_token ON subscriptions(topic_id, token) WHERE topic_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_user_topic_subscriptions_user_id ON user_topic_subscriptions(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_topic_subscriptions_topic_id ON user_topic_subscriptions(topic_id);
 
 CREATE TABLE IF NOT EXISTS publish_jobs (
     id TEXT PRIMARY KEY,
@@ -31,7 +44,7 @@ CREATE TABLE IF NOT EXISTS publish_jobs (
 CREATE TABLE IF NOT EXISTS delivery_receipts (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
-    subscription_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
     status TEXT NOT NULL,
     status_reason TEXT,
     dispatched_at TEXT NOT NULL

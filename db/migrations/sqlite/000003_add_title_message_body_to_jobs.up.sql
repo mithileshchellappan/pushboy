@@ -1,2 +1,0 @@
-ALTER TABLE publish_jobs ADD COLUMN title TEXT NOT NULL;
-ALTER TABLE publish_jobs ADD COLUMN body TEXT NOT NULL;
