@@ -338,14 +338,16 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.service.SendToUser(r.Context(), userID, req.Title, req.Body)
+	job, err := s.service.SendToUser(r.Context(), userID, req.Title, req.Body)
 	if err != nil {
 		http.Error(w, "Error sending notification", http.StatusInternalServerError)
 		log.Printf("Error sending notification to user: %v", err)
 		return
 	}
 
-	s.respond(w, r, map[string]string{"status": "sent"}, http.StatusOK)
+	s.workerPool.Submit(job)
+
+	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusOK)
 }
 
 // Topic handlers

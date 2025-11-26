@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "pushboy-api-collection",
 		"name": "Pushboy API",
-		"description": "Push notification service API for topic-based and user-focused notifications",
+		"description": "Push notification service API for topic-based and user-focused notifications. Features a scalable async pipeline with parallel senders for high-throughput notification delivery.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -354,7 +354,7 @@
 			"name": "Notifications",
 			"item": [
 				{
-					"name": "Send to User",
+					"name": "Send to User (async)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -372,12 +372,12 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "{{userID}}", "send"]
 						},
-						"description": "Send a notification directly to all of a user's devices"
+						"description": "Queue a notification to be sent to all of a user's devices. This is processed asynchronously through the notification pipeline. Returns {\"status\": \"queued\"} immediately."
 					},
 					"response": []
 				},
 				{
-					"name": "Publish to Topic",
+					"name": "Publish to Topic (async)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -395,12 +395,12 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}", "publish"]
 						},
-						"description": "Publish a notification to all users subscribed to a topic"
+						"description": "Queue a notification to be published to all users subscribed to a topic. This is processed asynchronously through the notification pipeline with parallel senders."
 					},
 					"response": []
 				},
 				{
-					"name": "Get Job Status",
+					"name": "Get Publish Job Status",
 					"request": {
 						"method": "GET",
 						"header": [],
@@ -409,7 +409,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}", "publish", "{{jobID}}"]
 						},
-						"description": "Get the status of a publish job"
+						"description": "Get the status of a topic publish job. Status can be: PENDING, IN_PROGRESS, or COMPLETED."
 					},
 					"response": []
 				}

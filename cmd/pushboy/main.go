@@ -29,11 +29,11 @@ func main() {
 
 	//Initializing Store with Database Driver
 	switch cfg.DatabaseDriver {
-	case "sqlite":
-		store, err = storage.NewSQLStore(cfg.DatabaseURL)
-		if err != nil {
-			log.Fatalf("Cannot create store: %v", err)
-		}
+	// case "sqlite":
+	// 	store, err = storage.NewSQLStore(cfg.DatabaseURL)
+	// 	if err != nil {
+	// 		log.Fatalf("Cannot create store: %v", err)
+	// 	}
 	case "postgres":
 		store, err = storage.NewPostgresStore(cfg.DatabaseURL)
 		if err != nil {

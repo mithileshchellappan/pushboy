@@ -40,9 +40,9 @@ func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.Publ
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		p.collectResults(context.Background(), job)
+		p.collectResults(context.Background())
 	}()
-	go p.fetchTokens(context.Background(), job.TopicID)
+	go p.fetchTokens(context.Background(), job)
 
 	p.startSenders(ctx, job)
 	wg.Wait()
@@ -51,23 +51,32 @@ func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.Publ
 	return nil
 }
 
-func (p *NotificationPipeline) fetchTokens(ctx context.Context, topicID string) {
+func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *storage.PublishJob) error {
 	defer close(p.tokensChan)
 	cursor := ""
 
 	for {
-		batch, err := p.store.GetTokenBatchForTopic(ctx, topicID, cursor, p.batchSize)
+		var batch *storage.TokenBatch
+		var err error
+		if job.TopicID != "" {
+			batch, err = p.store.GetTokenBatchForTopic(ctx, job.TopicID, cursor, p.batchSize)
+
+		} else if job.UserID != "" {
+			batch, err = p.store.GetTokenBatchForUser(ctx, job.UserID, cursor, p.batchSize)
+		} else {
+			return fmt.Errorf("can only fetch tokens for either user or topic. Require topicID or userID")
+		}
 
 		if err != nil {
 			log.Printf("Error fetching tokens: %v", err)
-			return
+			return fmt.Errorf("error fetching tokens: %v", err)
 		}
 
 		for _, token := range batch.Tokens {
 			select {
 			case p.tokensChan <- token:
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
 
@@ -77,13 +86,14 @@ func (p *NotificationPipeline) fetchTokens(ctx context.Context, topicID string) 
 
 		cursor = batch.NextCursor
 	}
+	return nil
 }
 
 func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.PublishJob) {
 	var wg sync.WaitGroup
 	for i := 1; i <= p.numSenders; i++ {
 		wg.Add(1)
-		go p.sender(context.Background(), job, &wg)
+		go p.sender(ctx, job, &wg)
 	}
 	wg.Wait()
 	close(p.resultsChan)
@@ -97,22 +107,6 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 	}
 	for token := range p.tokensChan {
 		dispatcher, ok := p.dispatchers[token.Platform]
-
-		if !ok {
-			deliveryReceipt := storage.DeliveryReceipt{
-				ID:           uuid.New().String(),
-				JobID:        job.ID,
-				TokenID:      token.ID,
-				Status:       "FAILED",
-				StatusReason: fmt.Sprintf("Unknown dispatcher platform: %s", token.Platform),
-				DispatchedAt: time.Now().UTC().Format(time.RFC3339),
-			}
-			p.resultsChan <- deliveryReceipt
-			continue
-		}
-
-		err := dispatcher.Send(ctx, &token, &payload)
-
 		deliveryReceipt := storage.DeliveryReceipt{
 			ID:           uuid.New().String(),
 			JobID:        job.ID,
@@ -121,6 +115,15 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 			StatusReason: "",
 			DispatchedAt: time.Now().UTC().Format(time.RFC3339),
 		}
+
+		if !ok {
+			deliveryReceipt.Status = "FAILED"
+			deliveryReceipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", token.Platform)
+			p.resultsChan <- deliveryReceipt
+			continue
+		}
+
+		err := dispatcher.Send(ctx, &token, &payload)
 
 		if err != nil {
 			deliveryReceipt.Status = "FAILED"
@@ -131,7 +134,7 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 	}
 }
 
-func (p *NotificationPipeline) collectResults(ctx context.Context, job *storage.PublishJob) {
+func (p *NotificationPipeline) collectResults(ctx context.Context) {
 	var batch []storage.DeliveryReceipt
 
 	ticker := time.NewTicker(1 * time.Second)

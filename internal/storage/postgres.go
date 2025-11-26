@@ -172,6 +172,39 @@ func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID strin
 	return batch, nil
 }
 
+func (s *PostgresStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
+	query := `SELECT id, token, platform FROM tokens WHERE tokens.user_id = $1 AND tokens.id > $2 ORDER BY tokens.id LIMIT $3 `
+	rows, err := s.db.QueryContext(ctx, query, userID, cursor, batchSize+1)
+	if err != nil {
+		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
+	}
+	defer rows.Close()
+
+	var tokens []Token
+	for rows.Next() {
+		var token Token
+		if err := rows.Scan(&token.ID, &token.Token, &token.Platform); err != nil {
+			return nil, fmt.Errorf("error scanning token: %w", err)
+		}
+		tokens = append(tokens, token)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
+	}
+
+	batch := &TokenBatch{
+		Tokens:  tokens,
+		HasMore: false,
+	}
+
+	if len(tokens) > batchSize {
+		batch.HasMore = true
+		batch.Tokens = tokens[:batchSize]
+		batch.NextCursor = tokens[batchSize-1].ID
+	}
+	return batch, nil
+}
+
 func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 	query := `DELETE FROM tokens WHERE id = $1`
 	result, err := s.db.ExecContext(ctx, query, tokenID)
