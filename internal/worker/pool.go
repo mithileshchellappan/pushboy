@@ -5,23 +5,28 @@ import (
 	"log"
 	"sync"
 
-	"github.com/mithileshchellappan/pushboy/internal/service"
+	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type Pool struct {
-	service    *service.PushboyService
-	jobChan    chan *storage.PublishJob
-	numWorkers int
-	wg         sync.WaitGroup
+	store       storage.Store
+	dispatchers map[string]dispatch.Dispatcher
+	jobChan     chan *storage.PublishJob
+	numWorkers  int
+	numSenders  int
+	wg          sync.WaitGroup
 }
 
-func NewPool(svc *service.PushboyService, numWorkers int, queueSize int) *Pool {
+func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numWorkers int, numSenders, queueSize int) *Pool {
 	return &Pool{
-		service:    svc,
-		jobChan:    make(chan *storage.PublishJob, queueSize),
-		numWorkers: numWorkers,
-		wg:         sync.WaitGroup{},
+		store:       store,
+		dispatchers: dispatchers,
+		jobChan:     make(chan *storage.PublishJob, queueSize),
+		numWorkers:  numWorkers,
+		numSenders:  numSenders,
+		wg:          sync.WaitGroup{},
 	}
 }
 
@@ -34,15 +39,18 @@ func (p *Pool) Start() {
 
 func (p *Pool) worker(id int) {
 	defer p.wg.Done()
+
+	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, 1000)
+	log.Printf("Worker %d: Pipeline created with %d sender", id, p.numSenders)
+
 	for job := range p.jobChan {
 		log.Printf("Worker %d: Processing job %s", id, job.ID)
 
-		ctx := context.Background()
-
-		if err := p.service.ProcessJobs(ctx, job); err != nil {
+		if err := pipe.ProcessJob(context.Background(), job); err != nil {
 			log.Printf("Worker %d: Error processing job %s: %v", id, job.ID, err)
 		}
 	}
+
 	log.Printf("Worker %d: Exiting", id)
 }
 
