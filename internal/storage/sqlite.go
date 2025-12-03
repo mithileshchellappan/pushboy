@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -319,9 +320,15 @@ func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*P
 	}
 	job.TotalCount = totalCount
 
-	query := `INSERT INTO publish_jobs(id, topic_id, title, body, status, total_count, success_count, failure_count, created_at) 
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err := s.db.ExecContext(ctx, query, job.ID, job.TopicID, job.Title, job.Body, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	// Serialize payload to JSON
+	payloadJSON, err := json.Marshal(job.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing payload: %w", err)
+	}
+
+	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at) 
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -329,8 +336,41 @@ func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*P
 	return job, nil
 }
 
+func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
+	// Verify user exists
+	var userExists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE id = ?)`, job.UserID).Scan(&userExists)
+	if err != nil {
+		return nil, fmt.Errorf("error checking user existence: %w", err)
+	}
+	if !userExists {
+		return nil, Errors.NotFound
+	}
+
+	// Count user's tokens for total_count
+	var totalCount int
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = ?`, job.UserID).Scan(&totalCount)
+	if err != nil {
+		return nil, fmt.Errorf("error counting user tokens: %w", err)
+	}
+	job.TotalCount = totalCount
+
+	// Serialize payload to JSON
+	payloadJSON, err := json.Marshal(job.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing payload: %w", err)
+	}
+
+	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("error creating user publish job: %w", err)
+	}
+	return job, nil
+}
+
 func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := `SELECT id, topic_id, COALESCE(title, ''), COALESCE(body, ''), status, total_count, success_count, failure_count, created_at 
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at 
 		FROM publish_jobs WHERE status = 'PENDING' LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -341,8 +381,17 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	var jobs []PublishJob
 	for rows.Next() {
 		var job PublishJob
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.Title, &job.Body, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt); err != nil {
+		var payloadJSON []byte
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		// Deserialize payload from JSON
+		if len(payloadJSON) > 0 {
+			var payload NotificationPayload
+			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+				return nil, fmt.Errorf("error deserializing payload: %w", err)
+			}
+			job.Payload = &payload
 		}
 		jobs = append(jobs, job)
 	}
@@ -357,17 +406,27 @@ func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 }
 
 func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
-	query := `SELECT id, topic_id, COALESCE(title, ''), COALESCE(body, ''), status, total_count, success_count, failure_count, created_at 
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at 
 		FROM publish_jobs WHERE id = ?`
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
 	var job PublishJob
-	err := row.Scan(&job.ID, &job.TopicID, &job.Title, &job.Body, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt)
+	var payloadJSON []byte
+	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting job status: %w", err)
+	}
+
+	// Deserialize payload from JSON
+	if len(payloadJSON) > 0 {
+		var payload NotificationPayload
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			return nil, fmt.Errorf("error deserializing payload: %w", err)
+		}
+		job.Payload = &payload
 	}
 
 	return &job, nil

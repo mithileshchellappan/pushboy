@@ -8,7 +8,10 @@ import (
 type Config struct {
 	ServerPort string
 
-	WorkerCount int
+	// Worker pool configuration
+	WorkerCount   int // Number of worker goroutines
+	SenderCount   int // Number of sender goroutines per worker
+	JobQueueSize  int // Size of the job queue buffer
 
 	DatabaseDriver string
 	DatabaseURL    string
@@ -24,7 +27,9 @@ type Config struct {
 func Load() *Config {
 	return &Config{
 		ServerPort:        getEnv("SERVER_PORT", ":8080"),
-		WorkerCount:       getIntEnv("WORKER_COUNT", 5),
+		WorkerCount:       getIntEnv("WORKER_COUNT", 10),
+		SenderCount:       getIntEnv("SENDER_COUNT", 200),
+		JobQueueSize:      getIntEnv("JOB_QUEUE_SIZE", 1000),
 		DatabaseDriver:    getEnv("DATABASE_DRIVER", "sqlite"),
 		DatabaseURL:       getEnv("DATABASE_URL", "./pushboy.db"),
 		APNSKeyID:         getEnv("APNS_KEY_ID", ""),

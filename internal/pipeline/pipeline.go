@@ -40,9 +40,9 @@ func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.Publ
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		p.collectResults(context.Background())
+		p.collectResults(ctx)
 	}()
-	go p.fetchTokens(context.Background(), job)
+	go p.fetchTokens(ctx, job)
 
 	p.startSenders(ctx, job)
 	wg.Wait()
@@ -101,10 +101,29 @@ func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.Pu
 
 func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJob, wg *sync.WaitGroup) {
 	defer wg.Done()
-	payload := dispatch.NotificationPayload{
-		Title: job.Title,
-		Body:  job.Body,
+
+	// Convert storage.NotificationPayload to dispatch.NotificationPayload
+	var payload *dispatch.NotificationPayload
+	if job.Payload != nil {
+		payload = &dispatch.NotificationPayload{
+			Title:      job.Payload.Title,
+			Body:       job.Payload.Body,
+			ImageURL:   job.Payload.ImageURL,
+			Sound:      job.Payload.Sound,
+			Badge:      job.Payload.Badge,
+			Data:       job.Payload.Data,
+			Silent:     job.Payload.Silent,
+			CollapseID: job.Payload.CollapseID,
+			Priority:   job.Payload.Priority,
+			TTL:        job.Payload.TTL,
+			ThreadID:   job.Payload.ThreadID,
+			Category:   job.Payload.Category,
+		}
+	} else {
+		// Fallback for jobs without payload (shouldn't happen but safe)
+		payload = &dispatch.NotificationPayload{}
 	}
+
 	for token := range p.tokensChan {
 		dispatcher, ok := p.dispatchers[token.Platform]
 		deliveryReceipt := storage.DeliveryReceipt{
@@ -123,14 +142,13 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 			continue
 		}
 
-		err := dispatcher.Send(ctx, &token, &payload)
+		err := dispatcher.Send(ctx, &token, payload)
 
 		if err != nil {
 			deliveryReceipt.Status = "FAILED"
 			deliveryReceipt.StatusReason = err.Error()
 		}
 		p.resultsChan <- deliveryReceipt
-
 	}
 }
 

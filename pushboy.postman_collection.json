@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "pushboy-api-collection",
 		"name": "Pushboy API",
-		"description": "Push notification service API for topic-based and user-focused notifications. Features a scalable async pipeline with parallel senders for high-throughput notification delivery.",
+		"description": "Push notification service API for topic-based and user-focused notifications.\n\nFeatures:\n- Unified notification payload that works across APNs (iOS) and FCM (Android)\n- Rich notifications: images, sounds, badges, custom data\n- Silent/background notifications for app-side data sync\n- Scalable async pipeline with parallel senders\n- Notification grouping, collapsing, and priority controls",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -354,7 +354,7 @@
 			"name": "Notifications",
 			"item": [
 				{
-					"name": "Send to User (async)",
+					"name": "Send to User (basic)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -372,12 +372,58 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "{{userID}}", "send"]
 						},
-						"description": "Queue a notification to be sent to all of a user's devices. This is processed asynchronously through the notification pipeline. Returns {\"status\": \"queued\"} immediately."
+						"description": "Queue a basic notification to be sent to all of a user's devices. Returns {\"status\": \"queued\", \"job_id\": \"...\"} immediately."
 					},
 					"response": []
 				},
 				{
-					"name": "Publish to Topic (async)",
+					"name": "Send to User (rich notification)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Order Shipped! 📦\",\n    \"body\": \"Your order #12345 is on the way\",\n    \"image_url\": \"https://example.com/shipped.png\",\n    \"sound\": \"default\",\n    \"badge\": 1,\n    \"data\": {\n        \"order_id\": \"12345\",\n        \"deep_link\": \"/orders/12345\"\n    },\n    \"collapse_id\": \"order-12345-status\",\n    \"thread_id\": \"order-12345\",\n    \"priority\": \"high\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "send"]
+						},
+						"description": "Send a rich notification with image, sound, badge, custom data, and grouping options.\n\nAvailable fields:\n- title, body: Required (unless silent)\n- image_url: URL to image (FCM native, APNs via mutable-content)\n- sound: \"default\" or custom sound filename\n- badge: App icon badge number (null = don't change, 0 = clear)\n- data: Custom key-value data passed to app\n- silent: true for background/silent notification\n- collapse_id: Replace previous notification with same ID\n- priority: \"high\" (default) or \"normal\"\n- ttl: Seconds until notification expires\n- thread_id: Group related notifications\n- category: Actionable notification category"
+					},
+					"response": []
+				},
+				{
+					"name": "Send to User (silent/background)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"\",\n    \"body\": \"\",\n    \"silent\": true,\n    \"data\": {\n        \"action\": \"sync_messages\",\n        \"conversation_id\": \"abc123\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "send"]
+						},
+						"description": "Send a silent/background notification to trigger app-side data sync without showing a visible notification."
+					},
+					"response": []
+				},
+				{
+					"name": "Publish to Topic (basic)",
 					"request": {
 						"method": "POST",
 						"header": [
@@ -395,7 +441,30 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}", "publish"]
 						},
-						"description": "Queue a notification to be published to all users subscribed to a topic. This is processed asynchronously through the notification pipeline with parallel senders."
+						"description": "Queue a basic notification to be published to all users subscribed to a topic. Returns {\"status\": \"queued\", \"job_id\": \"...\"} immediately."
+					},
+					"response": []
+				},
+				{
+					"name": "Publish to Topic (rich notification)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"🎉 Flash Sale!\",\n    \"body\": \"50% off all items for the next 2 hours\",\n    \"image_url\": \"https://example.com/sale-banner.jpg\",\n    \"sound\": \"default\",\n    \"data\": {\n        \"sale_id\": \"flash-2024\",\n        \"deep_link\": \"/sales/flash-2024\"\n    },\n    \"collapse_id\": \"sale-notification\",\n    \"priority\": \"high\",\n    \"ttl\": 7200\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/publish",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "publish"]
+						},
+						"description": "Publish a rich notification with image, custom data, and time-to-live to all topic subscribers."
 					},
 					"response": []
 				},
@@ -409,7 +478,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "topics", "{{topicID}}", "publish", "{{jobID}}"]
 						},
-						"description": "Get the status of a topic publish job. Status can be: PENDING, IN_PROGRESS, or COMPLETED."
+						"description": "Get the status of a publish job.\n\nStatus values:\n- QUEUED: Job is waiting to be processed\n- IN_PROGRESS: Job is currently being processed\n- COMPLETED: Job finished processing\n\nAlso returns total_count, success_count, failure_count for delivery stats."
 					},
 					"response": []
 				}

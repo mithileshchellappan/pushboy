@@ -329,17 +329,24 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var payload storage.NotificationPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	job, err := s.service.SendToUser(r.Context(), userID, req.Title, req.Body)
+	// Validate required fields
+	if payload.Title == "" && payload.Body == "" && !payload.Silent {
+		http.Error(w, "title or body is required (unless silent notification)", http.StatusBadRequest)
+		return
+	}
+
+	job, err := s.service.SendToUser(r.Context(), userID, &payload)
 	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "Error sending notification", http.StatusInternalServerError)
 		log.Printf("Error sending notification to user: %v", err)
 		return
@@ -347,7 +354,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 
 	s.workerPool.Submit(job)
 
-	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusOK)
+	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
 
 // Topic handlers
@@ -438,16 +445,19 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req struct {
-		Title string `json:"title"`
-		Body  string `json:"body"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var payload storage.NotificationPayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	job, err := s.service.CreatePublishJob(r.Context(), topicID, req.Title, req.Body)
+	// Validate required fields
+	if payload.Title == "" && payload.Body == "" && !payload.Silent {
+		http.Error(w, "title or body is required (unless silent notification)", http.StatusBadRequest)
+		return
+	}
+
+	job, err := s.service.CreatePublishJob(r.Context(), topicID, &payload)
 	if err != nil {
 		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
 		log.Printf("Error creating publish job: %v", err)
@@ -455,7 +465,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.workerPool.Submit(job)
-	s.respond(w, r, job, http.StatusCreated)
+	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
 
 func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
@@ -491,3 +501,7 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{
 		}
 	}
 }
+
+
+
+

@@ -153,12 +153,11 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 
 // Send to user operations
 
-func (s *PushboyService) SendToUser(ctx context.Context, userID string, title string, body string) (*storage.PublishJob, error) {
+func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload) (*storage.PublishJob, error) {
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		UserID:       userID,
-		Title:        title,
-		Body:         body,
+		Payload:      payload,
 		Status:       "QUEUED",
 		TotalCount:   0,
 		SuccessCount: 0,
@@ -167,17 +166,15 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, title st
 	}
 
 	return s.store.CreateUserPublishJob(ctx, job)
-
 }
 
 // Publish job operations
 
-func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, title string, body string) (*storage.PublishJob, error) {
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload) (*storage.PublishJob, error) {
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
-		Title:        title,
-		Body:         body,
+		Payload:      payload,
 		Status:       "QUEUED",
 		TotalCount:   0,
 		SuccessCount: 0,
@@ -186,7 +183,6 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, t
 	}
 
 	return s.store.CreatePublishJob(ctx, job)
-
 }
 
 func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {

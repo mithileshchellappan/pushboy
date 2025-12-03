@@ -34,13 +34,29 @@ type UserTopicSubscription struct {
 	CreatedAt string
 }
 
-// PublishJob represents a job to publish notifications to a topic
+// NotificationPayload stores the full notification content as JSON
+// This is separate from dispatch.NotificationPayload to avoid circular imports
+type NotificationPayload struct {
+	Title      string            `json:"title"`
+	Body       string            `json:"body"`
+	ImageURL   string            `json:"image_url,omitempty"`
+	Sound      string            `json:"sound,omitempty"`
+	Badge      *int              `json:"badge,omitempty"`
+	Data       map[string]string `json:"data,omitempty"`
+	Silent     bool              `json:"silent,omitempty"`
+	CollapseID string            `json:"collapse_id,omitempty"`
+	Priority   string            `json:"priority,omitempty"`
+	TTL        int               `json:"ttl,omitempty"`
+	ThreadID   string            `json:"thread_id,omitempty"`
+	Category   string            `json:"category,omitempty"`
+}
+
+// PublishJob represents a job to publish notifications to a topic or user
 type PublishJob struct {
 	ID           string
 	TopicID      string
 	UserID       string
-	Title        string
-	Body         string
+	Payload      *NotificationPayload // Full notification content
 	Status       string
 	TotalCount   int
 	SuccessCount int
