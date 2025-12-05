@@ -331,6 +331,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 
 	var payload storage.NotificationPayload
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		log.Printf("Error decoding JSON payload for user %s: %v", userID, err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
@@ -501,7 +502,3 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{
 		}
 	}
 }
-
-
-
-
