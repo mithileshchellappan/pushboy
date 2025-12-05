@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log"
 	"os"
 	"strconv"
 )
@@ -9,9 +10,9 @@ type Config struct {
 	ServerPort string
 
 	// Worker pool configuration
-	WorkerCount   int // Number of worker goroutines
-	SenderCount   int // Number of sender goroutines per worker
-	JobQueueSize  int // Size of the job queue buffer
+	WorkerCount  int // Number of worker goroutines
+	SenderCount  int // Number of sender goroutines per worker
+	JobQueueSize int // Size of the job queue buffer
 
 	DatabaseDriver string
 	DatabaseURL    string
@@ -49,6 +50,7 @@ func getEnv(key, defaultVal string) string {
 
 func getIntEnv(key string, defaultVal int) int {
 	valueStr := getEnv(key, "")
+	log.Printf("%v", valueStr)
 	if value, err := strconv.Atoi(valueStr); err == nil {
 		return value
 	}
