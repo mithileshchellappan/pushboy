@@ -71,7 +71,6 @@ func main() {
 	pushboyService := service.NewPushBoyService(store, dispatchers)
 	//Initializing Worker Pool
 	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize)
-	log.Printf("Starting worker pool with %d workers, %d senders per worker, queue size %d", cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize)
 	workerPool.Start()
 
 	//Initializing HTTP Server

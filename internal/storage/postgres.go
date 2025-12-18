@@ -24,6 +24,12 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("could not open database: %w", err)
 	}
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(10)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
+
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("could not connect to database: %w", err)
 	}

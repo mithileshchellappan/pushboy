@@ -1,7 +1,6 @@
 package config
 
 import (
-	"log"
 	"os"
 	"strconv"
 )
@@ -50,7 +49,6 @@ func getEnv(key, defaultVal string) string {
 
 func getIntEnv(key string, defaultVal int) int {
 	valueStr := getEnv(key, "")
-	log.Printf("%v", valueStr)
 	if value, err := strconv.Atoi(valueStr); err == nil {
 		return value
 	}

@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -18,6 +20,13 @@ import (
 const (
 	DevelopmentEndpoint = "https://api.sandbox.push.apple.com"
 	ProductionEndpoint  = "https://api.push.apple.com"
+
+	jwtRefreshBuffer  = 5 * time.Minute
+	jwtValidityPeriod = 1 * time.Hour
+
+	maxRetries     = 3
+	initialBackoff = 100 * time.Millisecond
+	maxBackoff     = 2 * time.Second
 )
 
 type Client struct {
@@ -27,6 +36,10 @@ type Client struct {
 	topicID    string
 	signingKey []byte
 	endpoint   string
+
+	jwtMutex  sync.RWMutex
+	cachedJWT string
+	jwtExpiry time.Time
 }
 
 // Alert represents the visible notification content
@@ -58,9 +71,19 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, u
 		endpoint = ProductionEndpoint
 	}
 
+	transport := &http.Transport{
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
+
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout:   30 * time.Second,
+			Transport: transport,
 		},
 		keyID:      keyID,
 		teamID:     teamID,
@@ -70,13 +93,40 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, u
 	}
 }
 
+func (c *Client) getJWT() (string, error) {
+	c.jwtMutex.RLock()
+	if c.cachedJWT != "" && time.Now().Add(jwtRefreshBuffer).Before(c.jwtExpiry) {
+		jwt := c.cachedJWT
+		c.jwtMutex.RUnlock()
+		return jwt, nil
+	}
+	c.jwtMutex.RUnlock()
+
+	c.jwtMutex.Lock()
+	defer c.jwtMutex.Unlock()
+
+	if c.cachedJWT != "" && time.Now().Add(jwtRefreshBuffer).Before(c.jwtExpiry) {
+		return c.cachedJWT, nil
+	}
+
+	jwt, err := c.generateJWT()
+	if err != nil {
+		return "", err
+	}
+
+	c.cachedJWT = jwt
+	c.jwtExpiry = time.Now().Add(jwtValidityPeriod)
+	return jwt, nil
+}
+
 func (c *Client) generateJWT() (string, error) {
 	token := jwt.New(jwt.SigningMethodES256)
 
+	now := time.Now()
 	claims := token.Claims.(jwt.MapClaims)
 	claims["iss"] = c.teamID
-	claims["iat"] = time.Now().Unix()
-	claims["exp"] = time.Now().Add(time.Hour * 24).Unix()
+	claims["iat"] = now.Unix()
+	claims["exp"] = now.Add(jwtValidityPeriod).Unix()
 
 	token.Header["kid"] = c.keyID
 	key, err := jwt.ParseECPrivateKeyFromPEM(c.signingKey)
@@ -92,9 +142,9 @@ func (c *Client) generateJWT() (string, error) {
 }
 
 func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
-	jwt, err := c.generateJWT()
+	jwtToken, err := c.getJWT()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get JWT: %w", err)
 	}
 
 	// Build the APS payload
@@ -161,50 +211,82 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 
 	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token.Token)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return err
-	}
+	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, payload)
+}
 
-	// Required headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwt))
-	req.Header.Set("apns-topic", c.topicID)
+func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, payload *dispatch.NotificationPayload) error {
+	backoff := initialBackoff
 
-	// Push type: background for silent, alert for regular
-	if payload.Silent {
-		req.Header.Set("apns-push-type", "background")
-	} else {
-		req.Header.Set("apns-push-type", "alert")
-	}
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
+		if err != nil {
+			return err
+		}
 
-	// Priority: 10 = high (immediate), 5 = normal (power-considerate)
-	if payload.Priority == "normal" {
-		req.Header.Set("apns-priority", "5")
-	} else {
-		req.Header.Set("apns-priority", "10")
-	}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwtToken))
+		req.Header.Set("apns-topic", c.topicID)
 
-	// Collapse ID for coalescing notifications
-	if payload.CollapseID != "" {
-		req.Header.Set("apns-collapse-id", payload.CollapseID)
-	}
+		if payload.Silent {
+			req.Header.Set("apns-push-type", "background")
+		} else {
+			req.Header.Set("apns-push-type", "alert")
+		}
 
-	// TTL / Expiration
-	if payload.TTL > 0 {
-		expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
-		req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
-	}
+		if payload.Silent {
+			req.Header.Set("apns-priority", "5")
+		} else if payload.Priority == "normal" {
+			req.Header.Set("apns-priority", "5")
+		} else {
+			req.Header.Set("apns-priority", "10")
+		}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+		if payload.CollapseID != "" {
+			req.Header.Set("apns-collapse-id", payload.CollapseID)
+		}
 
-	if resp.StatusCode != http.StatusOK {
+		if payload.TTL > 0 {
+			expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
+			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			if attempt < maxRetries {
+				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
+					if seconds, err := strconv.Atoi(retryAfter); err == nil {
+						backoff = time.Duration(seconds) * time.Second
+					}
+				}
+
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
+			return fmt.Errorf("rate limited after %d retries: %s", maxRetries, resp.Status)
+		}
+
 		return fmt.Errorf("failed to send notification: %s", resp.Status)
 	}
 
-	return nil
+	return fmt.Errorf("max retries exceeded")
 }

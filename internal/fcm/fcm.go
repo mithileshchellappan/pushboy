@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"time"
@@ -179,7 +180,11 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		log.Printf("Error sending request: %v", err)
 		return err
 	}
-	defer resp.Body.Close()
+
+	defer func() {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to send notification: %s", resp.Status)
