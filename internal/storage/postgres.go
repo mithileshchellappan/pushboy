@@ -468,8 +468,22 @@ func (s *PostgresStore) UpdateJobStatus(ctx context.Context, jobID string, statu
 }
 
 func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
-	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at 
-		FROM publish_jobs WHERE id = $1`
+	query := `
+		SELECT 
+			pj.id, 
+			COALESCE(pj.topic_id, ''), 
+			COALESCE(pj.user_id, ''), 
+			pj.payload, 
+			pj.status, 
+			pj.total_count, 
+			COALESCE(SUM(CASE WHEN dr.status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success_count,
+			COALESCE(SUM(CASE WHEN dr.status = 'FAILED' THEN 1 ELSE 0 END), 0) as failure_count,
+			pj.created_at 
+		FROM publish_jobs pj
+		LEFT JOIN delivery_receipts dr ON pj.id = dr.job_id
+		WHERE pj.id = $1
+		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at`
+
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
 	var job PublishJob
