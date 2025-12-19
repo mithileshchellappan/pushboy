@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_delivery_receipts_job_id;

@@ -40,7 +40,7 @@ func (p *Pool) Start() {
 func (p *Pool) worker(id int) {
 	defer p.wg.Done()
 
-	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, 1000)
+	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, 5000)
 	log.Printf("Worker %d: Pipeline created with %d sender", id, p.numSenders)
 
 	for job := range p.jobChan {

@@ -25,8 +25,8 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("could not open database: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(10)
+	db.SetMaxOpenConns(100)
+	db.SetMaxIdleConns(50)
 	db.SetConnMaxLifetime(5 * time.Minute)
 	db.SetConnMaxIdleTime(2 * time.Minute)
 

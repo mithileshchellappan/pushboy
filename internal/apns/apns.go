@@ -82,7 +82,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, u
 
 	return &Client{
 		httpClient: &http.Client{
-			Timeout:   30 * time.Second,
+			Timeout:   10 * time.Second,
 			Transport: transport,
 		},
 		keyID:      keyID,

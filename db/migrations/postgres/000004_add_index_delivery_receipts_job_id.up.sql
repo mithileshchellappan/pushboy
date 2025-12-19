@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS idx_delivery_receipts_job_id ON delivery_receipts(job_id);
