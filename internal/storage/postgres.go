@@ -12,7 +12,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/lib/pq"
+	pq "github.com/lib/pq"
 )
 
 type PostgresStore struct {
@@ -533,18 +533,21 @@ func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []Deliv
 	}
 	defer tx.Rollback()
 
-	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
-	stmt, err := tx.PrepareContext(ctx, query)
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("delivery_receipts", "id", "job_id", "token_id", "status", "status_reason", "dispatched_at"))
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
 
 	for _, r := range receipts {
 		_, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt)
 		if err != nil {
+			stmt.Close()
 			return err
 		}
+	}
+
+	if err := stmt.Close(); err != nil {
+		return err
 	}
 
 	return tx.Commit()
