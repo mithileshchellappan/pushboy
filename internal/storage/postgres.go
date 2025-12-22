@@ -147,7 +147,15 @@ func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([
 }
 
 func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error) {
-	query := `SELECT tokens.id, tokens.token, tokens.platform FROM tokens INNER JOIN user_topic_subscriptions ON tokens.user_id = user_topic_subscriptions.user_id WHERE user_topic_subscriptions.topic_id = $1 AND tokens.id > $2 ORDER BY tokens.id LIMIT $3`
+	query := `
+		SELECT t.id, t.token, t.platform 
+		FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
+		) 
+		AND t.id > $2 
+		ORDER BY t.id 
+		LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, topicID, cursor, batchSize+1)
 	if err != nil {
 		return nil, fmt.Errorf("error getting token batch for topic: %w", err)

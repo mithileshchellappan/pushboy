@@ -22,11 +22,12 @@ type NotificationPipeline struct {
 }
 
 func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numSenders int, batchSize int) *NotificationPipeline {
+	channelBufferSize := batchSize * 4
 	return &NotificationPipeline{
 		store:       store,
 		dispatchers: dispatchers,
-		tokensChan:  make(chan storage.Token, batchSize),
-		resultsChan: make(chan storage.DeliveryReceipt, batchSize),
+		tokensChan:  make(chan storage.Token, channelBufferSize),
+		resultsChan: make(chan storage.DeliveryReceipt, channelBufferSize),
 		numSenders:  numSenders,
 		batchSize:   batchSize,
 	}

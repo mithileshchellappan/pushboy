@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -252,6 +253,19 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
+			// Retry on connection errors (GOAWAY, connection reset, etc.)
+			if attempt < maxRetries && isRetryableError(err) {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+				continue
+			}
 			return err
 		}
 
@@ -289,4 +303,17 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	}
 
 	return fmt.Errorf("max retries exceeded")
+}
+
+// isRetryableError checks if an error is a transient connection issue worth retrying
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "GOAWAY") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "EOF") ||
+		strings.Contains(errStr, "timeout")
 }
