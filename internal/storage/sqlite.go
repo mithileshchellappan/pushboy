@@ -370,7 +370,7 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 }
 
 func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at 
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, COALESCE(completed_at, '') 
 		FROM publish_jobs WHERE status = 'PENDING' LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -382,8 +382,12 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt); err != nil {
+		var completedAt sql.NullString
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		if completedAt.Valid {
+			job.CompletedAt = completedAt.String
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
@@ -400,7 +404,12 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 }
 
 func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
-	query := `UPDATE publish_jobs SET status = ? WHERE id = ?`
+	var query string
+	if status == "COMPLETED" {
+		query = `UPDATE publish_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`
+	} else {
+		query = `UPDATE publish_jobs SET status = ? WHERE id = ?`
+	}
 	_, err := s.db.ExecContext(ctx, query, status, jobID)
 	return err
 }
@@ -416,17 +425,18 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 			pj.total_count, 
 			COALESCE(SUM(CASE WHEN dr.status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success_count,
 			COALESCE(SUM(CASE WHEN dr.status = 'FAILED' THEN 1 ELSE 0 END), 0) as failure_count,
-			pj.created_at 
+			pj.created_at,
+			COALESCE(pj.completed_at, '')
 		FROM publish_jobs pj
 		LEFT JOIN delivery_receipts dr ON pj.id = dr.job_id
 		WHERE pj.id = ?
-		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at`
-	
+		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at, pj.completed_at`
+
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
 	var job PublishJob
 	var payloadJSON []byte
-	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt)
+	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &job.CompletedAt)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}

@@ -62,6 +62,7 @@ type PublishJob struct {
 	SuccessCount int
 	FailureCount int
 	CreatedAt    string
+	CompletedAt  string
 }
 
 // DeliveryReceipt tracks the delivery status of a notification
