@@ -22,12 +22,9 @@ type NotificationPipeline struct {
 }
 
 func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numSenders int, batchSize int) *NotificationPipeline {
-	channelBufferSize := batchSize * 4
 	return &NotificationPipeline{
 		store:       store,
 		dispatchers: dispatchers,
-		tokensChan:  make(chan storage.Token, channelBufferSize),
-		resultsChan: make(chan storage.DeliveryReceipt, channelBufferSize),
 		numSenders:  numSenders,
 		batchSize:   batchSize,
 	}
@@ -35,20 +32,44 @@ func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatc
 
 func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.PublishJob) error {
 	log.Printf("WORKER: -> Starting job: %s", job.ID)
+
+	// Create fresh channels for this job (channels are closed after each job completes)
+	channelBufferSize := p.batchSize * 4
+	p.tokensChan = make(chan storage.Token, channelBufferSize)
+	p.resultsChan = make(chan storage.DeliveryReceipt, channelBufferSize)
+
 	var wg sync.WaitGroup
+	var fetchErr error
+	var fetchErrMu sync.Mutex
 
 	p.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		p.collectResults(ctx)
 	}()
-	go p.fetchTokens(ctx, job)
+
+	go func() {
+		if err := p.fetchTokens(ctx, job); err != nil {
+			fetchErrMu.Lock()
+			fetchErr = err
+			fetchErrMu.Unlock()
+		}
+	}()
 
 	p.startSenders(ctx, job)
 	wg.Wait()
-	p.store.UpdateJobStatus(ctx, job.ID, "COMPLETED")
 
+	// Check if token fetching failed
+	fetchErrMu.Lock()
+	defer fetchErrMu.Unlock()
+	if fetchErr != nil {
+		p.store.UpdateJobStatus(ctx, job.ID, "FAILED")
+		return fmt.Errorf("job %s failed: %w", job.ID, fetchErr)
+	}
+
+	p.store.UpdateJobStatus(ctx, job.ID, "COMPLETED")
 	return nil
 }
 
