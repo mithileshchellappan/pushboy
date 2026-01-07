@@ -575,3 +575,7 @@ func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []Deliv
 
 	return tx.Commit()
 }
+
+func (s *PostgresStore) Close() error {
+	return s.db.Close()
+}

@@ -118,6 +118,9 @@ type Store interface {
 	// Delivery receipt operations
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
 	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
+
+	// Lifecycle
+	Close() error
 }
 
 type errorCollection struct {

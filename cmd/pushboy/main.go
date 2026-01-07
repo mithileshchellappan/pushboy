@@ -44,27 +44,39 @@ func main() {
 		return
 	}
 
-	//Initializing APNS Client
-	p8Bytes, err := os.ReadFile("keys/AuthKey_" + cfg.APNSKeyID + ".p8")
-	if err != nil {
-		//TODO: Change to Fatalf
-		log.Printf("Cannot read APNS key: %v", err)
-	}
-	apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
+	// Initialize dispatchers - only add successfully created clients
+	dispatchers := make(map[string]dispatch.Dispatcher)
 
-	//Initializing FCM Client
+	// Initialize APNS Client
+	if cfg.APNSKeyID != "" {
+		p8Bytes, err := os.ReadFile("keys/AuthKey_" + cfg.APNSKeyID + ".p8")
+		if err != nil {
+			log.Printf("APNS disabled: cannot read key file: %v", err)
+		} else {
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
+			dispatchers["apns"] = apnsClient
+			log.Println("APNS dispatcher initialized")
+		}
+	} else {
+		log.Println("APNS disabled: APNS_KEY_ID not configured")
+	}
+
+	// Initialize FCM Client
 	serviceAccountBytes, err := os.ReadFile("keys/service-account.json")
 	if err != nil {
-		log.Printf("Cannot read service account: %v", err)
-	}
-	fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
-	if err != nil {
-		log.Printf("Cannot create FCM client: %v", err)
+		log.Printf("FCM disabled: cannot read service account: %v", err)
+	} else {
+		fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
+		if err != nil {
+			log.Printf("FCM disabled: cannot create client: %v", err)
+		} else {
+			dispatchers["fcm"] = fcmClient
+			log.Println("FCM dispatcher initialized")
+		}
 	}
 
-	dispatchers := map[string]dispatch.Dispatcher{
-		"apns": apnsClient,
-		"fcm":  fcmClient,
+	if len(dispatchers) == 0 {
+		log.Println("WARNING: No push notification dispatchers configured")
 	}
 
 	//Initializing Pushboy Service
@@ -93,10 +105,14 @@ func main() {
 	defer cancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutting down")
+		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
 	workerPool.Stop()
+
+	if err := store.Close(); err != nil {
+		log.Printf("Error closing database: %v", err)
+	}
 
 	log.Println("Server exiting")
 }

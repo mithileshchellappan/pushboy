@@ -497,3 +497,11 @@ func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []Deliver
 
 	return tx.Commit()
 }
+
+func (s *SQLiteStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *SQLiteStore) Close() error {
+	return s.db.Close()
+}
