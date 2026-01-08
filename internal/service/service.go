@@ -153,16 +153,23 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 
 // Send to user operations
 
-func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload) (*storage.PublishJob, error) {
+func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	var status string
+	if scheduledAt == "" {
+		status = "QUEUED"
+	} else {
+		status = "SCHEDULED"
+	}
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		UserID:       userID,
 		Payload:      payload,
-		Status:       "QUEUED",
+		Status:       status,
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		ScheduledAt:  scheduledAt,
 	}
 
 	return s.store.CreateUserPublishJob(ctx, job)
@@ -170,16 +177,24 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 
 // Publish job operations
 
-func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload) (*storage.PublishJob, error) {
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	var status string
+	if scheduledAt == "" {
+		status = "QUEUED"
+	} else {
+		status = "SCHEDULED"
+	}
+
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
 		Payload:      payload,
-		Status:       "QUEUED",
+		Status:       status,
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		ScheduledAt:  scheduledAt,
 	}
 
 	return s.store.CreatePublishJob(ctx, job)

@@ -15,6 +15,7 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/config"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/fcm"
+	"github.com/mithileshchellappan/pushboy/internal/scheduler"
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
@@ -85,6 +86,10 @@ func main() {
 	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize)
 	workerPool.Start()
 
+	//Initializing Schedule Service
+	scheduler := scheduler.New(store, workerPool, 10)
+	scheduler.Start()
+
 	//Initializing HTTP Server
 	httpServer := server.New(pushboyService, workerPool)
 
@@ -109,6 +114,7 @@ func main() {
 	}
 
 	workerPool.Stop()
+	scheduler.Stop()
 
 	if err := store.Close(); err != nil {
 		log.Printf("Error closing database: %v", err)

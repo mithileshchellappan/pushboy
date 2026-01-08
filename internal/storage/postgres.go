@@ -396,9 +396,16 @@ func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (
 		return nil, fmt.Errorf("error serializing payload: %w", err)
 	}
 
-	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at) 
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	var scheduledAt any
+	if job.ScheduledAt == "" {
+		scheduledAt = nil
+	} else {
+		scheduledAt = job.ScheduledAt
+	}
+
+	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at) 
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt, scheduledAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -431,8 +438,15 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 		return nil, fmt.Errorf("error serializing payload: %w", err)
 	}
 
-	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	var scheduledAt any
+	if job.ScheduledAt == "" {
+		scheduledAt = nil
+	} else {
+		scheduledAt = job.ScheduledAt
+	}
+
+	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt, scheduledAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating user publish job: %w", err)
 	}
@@ -574,6 +588,39 @@ func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []Deliv
 	}
 
 	return tx.Commit()
+}
+
+func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
+	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, COALESCE(completed_at::text, ''), COALESCE(scheduled_at::text, '')`
+
+	rows, err := s.db.QueryContext(ctx, query)
+
+	if err != nil {
+		return nil, fmt.Errorf("error fetching pending jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []PublishJob
+	for rows.Next() {
+		var job PublishJob
+		var payloadJSON []byte
+		var completedAt sql.NullString
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &job.ScheduledAt); err != nil {
+			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		// Deserialize payload from JSON
+		if len(payloadJSON) > 0 {
+			var payload NotificationPayload
+			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+				return nil, fmt.Errorf("error deserializing payload: %w", err)
+			}
+			job.Payload = &payload
+		}
+		jobs = append(jobs, job)
+	}
+
+	return jobs, rows.Err()
+
 }
 
 func (s *PostgresStore) Close() error {

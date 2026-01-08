@@ -63,6 +63,7 @@ type PublishJob struct {
 	FailureCount int
 	CreatedAt    string
 	CompletedAt  string
+	ScheduledAt  string
 }
 
 // DeliveryReceipt tracks the delivery status of a notification
@@ -118,6 +119,9 @@ type Store interface {
 	// Delivery receipt operations
 	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
 	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
+
+	//Schedule operations
+	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
 
 	// Lifecycle
 	Close() error

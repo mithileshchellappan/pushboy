@@ -322,6 +322,11 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 
 // Send to user handler
 
+type SendNotificationRequest struct {
+	storage.NotificationPayload
+	ScheduledAt string `json:"scheduled_at,omitempty"`
+}
+
 func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "userID")
 	if userID == "" {
@@ -329,20 +334,35 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload storage.NotificationPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var req SendNotificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("Error decoding JSON payload for user %s: %v", userID, err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
 	// Validate required fields
-	if payload.Title == "" && payload.Body == "" && !payload.Silent {
+	if req.Title == "" && req.Body == "" && !req.Silent {
 		http.Error(w, "title or body is required (unless silent notification)", http.StatusBadRequest)
 		return
 	}
 
-	job, err := s.service.SendToUser(r.Context(), userID, &payload)
+	payload := &storage.NotificationPayload{
+		Title:      req.Title,
+		Body:       req.Body,
+		ImageURL:   req.ImageURL,
+		Sound:      req.Sound,
+		Badge:      req.Badge,
+		Data:       req.Data,
+		Silent:     req.Silent,
+		CollapseID: req.CollapseID,
+		Priority:   req.Priority,
+		TTL:        req.TTL,
+		ThreadID:   req.ThreadID,
+		Category:   req.Category,
+	}
+
+	job, err := s.service.SendToUser(r.Context(), userID, payload, req.ScheduledAt)
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			http.Error(w, "User not found", http.StatusNotFound)
@@ -352,8 +372,9 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error sending notification to user: %v", err)
 		return
 	}
-
-	s.workerPool.Submit(job)
+	if job.ScheduledAt == "" {
+		s.workerPool.Submit(job)
+	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
@@ -446,26 +467,42 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var payload storage.NotificationPayload
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var req SendNotificationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
 	// Validate required fields
-	if payload.Title == "" && payload.Body == "" && !payload.Silent {
+	if req.Title == "" && req.Body == "" && !req.Silent {
 		http.Error(w, "title or body is required (unless silent notification)", http.StatusBadRequest)
 		return
 	}
 
-	job, err := s.service.CreatePublishJob(r.Context(), topicID, &payload)
+	payload := &storage.NotificationPayload{
+		Title:      req.Title,
+		Body:       req.Body,
+		ImageURL:   req.ImageURL,
+		Sound:      req.Sound,
+		Badge:      req.Badge,
+		Data:       req.Data,
+		Silent:     req.Silent,
+		CollapseID: req.CollapseID,
+		Priority:   req.Priority,
+		TTL:        req.TTL,
+		ThreadID:   req.ThreadID,
+		Category:   req.Category,
+	}
+
+	job, err := s.service.CreatePublishJob(r.Context(), topicID, payload, req.ScheduledAt)
 	if err != nil {
 		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
 		log.Printf("Error creating publish job: %v", err)
 		return
 	}
-
-	s.workerPool.Submit(job)
+	if job.ScheduledAt == "" {
+		s.workerPool.Submit(job)
+	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
 
