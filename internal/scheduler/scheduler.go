@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/storage"
@@ -14,6 +15,7 @@ type Scheduler struct {
 	workerPool *worker.Pool
 	stopChan   chan struct{}
 	interval   int
+	stopOnce   sync.Once
 }
 
 func New(store storage.Store, workerPool *worker.Pool, interval int) *Scheduler {
@@ -42,7 +44,9 @@ func (s *Scheduler) Start() {
 }
 
 func (s *Scheduler) Stop() {
-	s.stopChan <- struct{}{}
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+	})
 }
 
 func (s *Scheduler) processScheduledJobs() {
@@ -53,8 +57,9 @@ func (s *Scheduler) processScheduledJobs() {
 	}
 
 	for _, job := range jobs {
-		s.workerPool.Submit(&job)
+		if !s.workerPool.Submit(&job) {
+			log.Printf("Worker pool closed, stopping job submission")
+			return
+		}
 	}
-
-	return
 }

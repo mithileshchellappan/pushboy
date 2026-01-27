@@ -31,11 +31,13 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 	db.SetConnMaxIdleTime(2 * time.Minute)
 
 	if err := db.Ping(); err != nil {
+		db.Close()
 		return nil, fmt.Errorf("could not connect to database: %w", err)
 	}
 
 	driver, err := postgres.WithInstance(db, &postgres.Config{})
 	if err != nil {
+		db.Close()
 		return nil, fmt.Errorf("could not create migration driver: %w", err)
 	}
 
@@ -46,10 +48,12 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 	)
 
 	if err != nil {
+		db.Close()
 		return nil, fmt.Errorf("could not create migrate instance: %w", err)
 	}
 
 	if err := m.Up(); err != nil && err != migrate.ErrNoChange {
+		db.Close()
 		return nil, fmt.Errorf("could not run database migrations: %w", err)
 	}
 
@@ -238,7 +242,8 @@ func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 // Topic operations
 
 func (s *PostgresStore) CreateTopic(ctx context.Context, topic *Topic) error {
-	topic.ID = fmt.Sprintf("topic:%s", strings.ToLower(topic.Name))
+	// Use the topic name directly as the ID (lowercase, no prefix)
+	topic.ID = strings.ToLower(topic.Name)
 
 	query := `INSERT INTO topics(id, name) VALUES($1, $2)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)
@@ -454,7 +459,7 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 }
 
 func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, COALESCE(completed_at, '') 
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at 
 		FROM publish_jobs WHERE status = 'PENDING' LIMIT $1`
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -466,12 +471,12 @@ func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publ
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
-		var completedAt sql.NullString
+		var completedAt sql.NullTime
 		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
 		}
 		if completedAt.Valid {
-			job.CompletedAt = completedAt.String
+			job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {

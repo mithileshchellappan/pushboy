@@ -17,6 +17,8 @@ type Pool struct {
 	numWorkers  int
 	numSenders  int
 	wg          sync.WaitGroup
+	closed      bool
+	mu          sync.RWMutex
 }
 
 func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numWorkers int, numSenders, queueSize int) *Pool {
@@ -54,11 +56,21 @@ func (p *Pool) worker(id int) {
 	log.Printf("Worker %d: Exiting", id)
 }
 
-func (p *Pool) Submit(job *storage.PublishJob) {
-	p.jobChan <- job //adding into channel
+func (p *Pool) Submit(job *storage.PublishJob) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.closed {
+		log.Printf("Worker pool is closed, rejecting job %s", job.ID)
+		return false
+	}
+	p.jobChan <- job
+	return true
 }
 
 func (p *Pool) Stop() {
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
 	close(p.jobChan)
 	p.wg.Wait()
 	log.Println("Worker pool stopped")

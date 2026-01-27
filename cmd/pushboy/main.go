@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,7 +30,6 @@ func main() {
 	var store storage.Store
 	var err error
 
-	//Initializing Store with Database Driver
 	switch cfg.DatabaseDriver {
 	// case "sqlite":
 	// 	store, err = storage.NewSQLStore(cfg.DatabaseURL)
@@ -50,7 +51,11 @@ func main() {
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
-		p8Bytes, err := os.ReadFile("keys/AuthKey_" + cfg.APNSKeyID + ".p8")
+		apnsKeyPath := cfg.APNSKeyPath
+		if apnsKeyPath == "" {
+			apnsKeyPath = "keys/AuthKey_" + cfg.APNSKeyID + ".p8"
+		}
+		p8Bytes, err := os.ReadFile(apnsKeyPath)
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
@@ -63,7 +68,7 @@ func main() {
 	}
 
 	// Initialize FCM Client
-	serviceAccountBytes, err := os.ReadFile("keys/service-account.json")
+	serviceAccountBytes, err := os.ReadFile(cfg.FCMKeyPath)
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
@@ -80,24 +85,36 @@ func main() {
 		log.Println("WARNING: No push notification dispatchers configured")
 	}
 
-	//Initializing Pushboy Service
-	pushboyService := service.NewPushBoyService(store, dispatchers)
-	//Initializing Worker Pool
+	// Ensure broadcast topic exists
+	var broadcastTopicID string
+	if cfg.BroadcastTopicName != "" {
+		broadcastTopicID = strings.ToLower(cfg.BroadcastTopicName)
+		topic := &storage.Topic{Name: cfg.BroadcastTopicName}
+		if err := store.CreateTopic(context.Background(), topic); err != nil {
+			if errors.Is(err, storage.Errors.AlreadyExists) {
+				log.Printf("Broadcast topic '%s' already exists (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
+			} else {
+				log.Fatalf("Failed to create broadcast topic: %v", err)
+			}
+		} else {
+			log.Printf("Created broadcast topic '%s' (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
+		}
+	}
+
+	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
+
 	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize)
 	workerPool.Start()
 
-	//Initializing Schedule Service
 	scheduler := scheduler.New(store, workerPool, 10)
 	scheduler.Start()
 
-	//Initializing HTTP Server
 	httpServer := server.New(pushboyService, workerPool)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go func() {
-		//Running HTTP server as go routine to avoid blocking the main thread
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Could not start server: %v", err)
 		}
@@ -113,8 +130,8 @@ func main() {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
-	workerPool.Stop()
 	scheduler.Stop()
+	workerPool.Stop()
 
 	if err := store.Close(); err != nil {
 		log.Printf("Error closing database: %v", err)

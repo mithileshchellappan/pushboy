@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,12 +13,42 @@ import (
 )
 
 type PushboyService struct {
-	store       storage.Store
-	dispatchers map[string]dispatch.Dispatcher
+	store            storage.Store
+	dispatchers      map[string]dispatch.Dispatcher
+	broadcastTopicID string // ID of the broadcast topic (all users auto-subscribe)
 }
 
-func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher) *PushboyService {
-	return &PushboyService{store: s, dispatchers: dispatchers}
+func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher, broadcastTopicID string) *PushboyService {
+	return &PushboyService{store: s, dispatchers: dispatchers, broadcastTopicID: broadcastTopicID}
+}
+
+// validateScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future
+func validateScheduledAt(scheduledAt string) error {
+	if scheduledAt == "" {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, scheduledAt)
+	if err != nil {
+		return fmt.Errorf("invalid scheduledAt format, must be RFC3339 (e.g., 2025-01-15T10:00:00Z): %w", err)
+	}
+	if t.Before(time.Now()) {
+		return fmt.Errorf("scheduledAt must be in the future")
+	}
+	return nil
+}
+
+// subscribeToBroadcast subscribes a user to the broadcast topic if configured
+func (s *PushboyService) subscribeToBroadcast(ctx context.Context, userID string) {
+	if s.broadcastTopicID == "" {
+		return
+	}
+	sub := &storage.UserTopicSubscription{
+		UserID:  userID,
+		TopicID: s.broadcastTopicID,
+	}
+	if _, err := s.store.SubscribeUserToTopic(ctx, sub); err != nil && !errors.Is(err, storage.Errors.AlreadyExists) {
+		log.Printf("Warning: failed to subscribe user %s to broadcast topic: %v", userID, err)
+	}
 }
 
 // User operations
@@ -32,6 +63,9 @@ func (s *PushboyService) CreateUser(ctx context.Context, userID string) (*storag
 	if err != nil {
 		return nil, err
 	}
+
+	// Auto-subscribe to broadcast topic
+	s.subscribeToBroadcast(ctx, userID)
 
 	return user, nil
 }
@@ -58,6 +92,7 @@ func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platf
 
 	// Try to get existing user, create if not exists
 	user, err := s.store.GetUser(ctx, userID)
+	isNewUser := false
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			// User doesn't exist, create them
@@ -66,9 +101,15 @@ func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platf
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to create user: %w", err)
 			}
+			isNewUser = true
 		} else {
 			return nil, nil, fmt.Errorf("failed to get user: %w", err)
 		}
+	}
+
+	// Auto-subscribe new users to broadcast topic
+	if isNewUser {
+		s.subscribeToBroadcast(ctx, userID)
 	}
 
 	// Register the token
@@ -154,6 +195,11 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 // Send to user operations
 
 func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	// Validate scheduledAt format
+	if err := validateScheduledAt(scheduledAt); err != nil {
+		return nil, err
+	}
+
 	var status string
 	if scheduledAt == "" {
 		status = "QUEUED"
@@ -178,6 +224,11 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 // Publish job operations
 
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	// Validate scheduledAt format
+	if err := validateScheduledAt(scheduledAt); err != nil {
+		return nil, err
+	}
+
 	var status string
 	if scheduledAt == "" {
 		status = "QUEUED"
