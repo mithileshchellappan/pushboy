@@ -16,18 +16,20 @@ type Pool struct {
 	jobChan     chan *storage.PublishJob
 	numWorkers  int
 	numSenders  int
+	batchSize   int
 	wg          sync.WaitGroup
 	closed      bool
 	mu          sync.RWMutex
 }
 
-func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numWorkers int, numSenders, queueSize int) *Pool {
+func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numWorkers, numSenders, queueSize, batchSize int) *Pool {
 	return &Pool{
 		store:       store,
 		dispatchers: dispatchers,
 		jobChan:     make(chan *storage.PublishJob, queueSize),
 		numWorkers:  numWorkers,
 		numSenders:  numSenders,
+		batchSize:   batchSize,
 		wg:          sync.WaitGroup{},
 	}
 }
@@ -42,8 +44,8 @@ func (p *Pool) Start() {
 func (p *Pool) worker(id int) {
 	defer p.wg.Done()
 
-	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, 5000)
-	log.Printf("Worker %d: Pipeline created with %d sender", id, p.numSenders)
+	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, p.batchSize)
+	log.Printf("Worker %d: Pipeline created with %d senders, batch size %d", id, p.numSenders, p.batchSize)
 
 	for job := range p.jobChan {
 		log.Printf("Worker %d: Processing job %s", id, job.ID)

@@ -104,6 +104,10 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		message.Data = payload.Data
 	}
 
+	if payload.Silent && len(payload.Data) == 0 {
+		log.Printf("Warning: Silent notification sent without data payload")
+	}
+
 	// Android-specific configuration
 	android := &AndroidConfig{}
 	hasAndroidConfig := false
@@ -114,11 +118,16 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		hasAndroidConfig = true
 	}
 
-	// Priority: HIGH for immediate, NORMAL for power-considerate
-	if payload.Priority == "normal" {
+	if payload.Silent {
+		if payload.Priority == "high" {
+			log.Printf("Warning: Silent notification requested with high priority - forcing NORMAL per FCM requirements")
+		}
 		android.Priority = "NORMAL"
 		hasAndroidConfig = true
-	} else if payload.Priority == "high" || payload.Priority == "" {
+	} else if payload.Priority == "normal" {
+		android.Priority = "NORMAL"
+		hasAndroidConfig = true
+	} else {
 		android.Priority = "HIGH"
 		hasAndroidConfig = true
 	}
@@ -129,30 +138,31 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		hasAndroidConfig = true
 	}
 
-	// Android notification options
-	androidNotif := &AndroidNotification{}
-	hasAndroidNotif := false
+	if !payload.Silent {
+		androidNotif := &AndroidNotification{}
+		hasAndroidNotif := false
 
-	if payload.Sound != "" {
-		androidNotif.Sound = payload.Sound
-		hasAndroidNotif = true
-	}
+		if payload.Sound != "" {
+			androidNotif.Sound = payload.Sound
+			hasAndroidNotif = true
+		}
 
-	// Thread ID -> Android tag (groups notifications)
-	if payload.ThreadID != "" {
-		androidNotif.Tag = payload.ThreadID
-		hasAndroidNotif = true
-	}
+		// Thread ID -> Android tag (groups notifications)
+		if payload.ThreadID != "" {
+			androidNotif.Tag = payload.ThreadID
+			hasAndroidNotif = true
+		}
 
-	// Category -> click_action
-	if payload.Category != "" {
-		androidNotif.ClickAction = payload.Category
-		hasAndroidNotif = true
-	}
+		// Category -> click_action
+		if payload.Category != "" {
+			androidNotif.ClickAction = payload.Category
+			hasAndroidNotif = true
+		}
 
-	if hasAndroidNotif {
-		android.Notification = androidNotif
-		hasAndroidConfig = true
+		if hasAndroidNotif {
+			android.Notification = androidNotif
+			hasAndroidConfig = true
+		}
 	}
 
 	if hasAndroidConfig {
@@ -181,12 +191,21 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		return err
 	}
 
-	defer func() {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-	}()
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		// Parse FCM error response for better debugging
+		var fcmError struct {
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+				Status  string `json:"status"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(body, &fcmError); err == nil && fcmError.Error.Message != "" {
+			return fmt.Errorf("FCM error: %s (status: %s, code: %d)", fcmError.Error.Message, fcmError.Error.Status, fcmError.Error.Code)
+		}
 		return fmt.Errorf("failed to send notification: %s", resp.Status)
 	}
 

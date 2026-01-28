@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -159,13 +160,11 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		}
 	}
 
-	// Sound
-	if payload.Sound != "" {
+	if payload.Sound != "" && !payload.Silent {
 		aps.Sound = payload.Sound
 	}
 
-	// Badge (nil means don't change, explicit value sets it)
-	if payload.Badge != nil {
+	if payload.Badge != nil && !payload.Silent {
 		aps.Badge = payload.Badge
 	}
 
@@ -235,6 +234,9 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 		}
 
 		if payload.Silent {
+			if payload.Priority == "high" {
+				log.Printf("Warning: Silent notification requested with high priority - forcing priority 5 per APNs requirements")
+			}
 			req.Header.Set("apns-priority", "5")
 		} else if payload.Priority == "normal" {
 			req.Header.Set("apns-priority", "5")
@@ -248,6 +250,9 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		if payload.TTL > 0 {
 			expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
+			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
+		} else if payload.Silent {
+			expiration := time.Now().Add(1 * time.Hour).Unix()
 			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
 		}
 
@@ -269,11 +274,21 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return err
 		}
 
-		io.Copy(io.Discard, resp.Body)
+		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
 		if resp.StatusCode == http.StatusOK {
 			return nil
+		}
+
+		// Parse APNs error response for better debugging
+		var apnsError struct {
+			Reason    string `json:"reason"`
+			Timestamp int64  `json:"timestamp,omitempty"`
+		}
+		if err := json.Unmarshal(body, &apnsError); err == nil && apnsError.Reason != "" {
+			// Log specific error for debugging
+			log.Printf("APNs error for device: %s (reason: %s)", resp.Status, apnsError.Reason)
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -299,6 +314,13 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return fmt.Errorf("rate limited after %d retries: %s", maxRetries, resp.Status)
 		}
 
+		// Include APNs reason in error if available
+		var apnsReason struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal(body, &apnsReason); err == nil && apnsReason.Reason != "" {
+			return fmt.Errorf("APNs error: %s (reason: %s)", resp.Status, apnsReason.Reason)
+		}
 		return fmt.Errorf("failed to send notification: %s", resp.Status)
 	}
 

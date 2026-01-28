@@ -103,7 +103,7 @@ func main() {
 
 	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
 
-	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize)
+	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize, cfg.BatchSize)
 	workerPool.Start()
 
 	scheduler := scheduler.New(store, workerPool, 10)

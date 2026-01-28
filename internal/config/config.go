@@ -12,6 +12,7 @@ type Config struct {
 	WorkerCount  int // Number of worker goroutines
 	SenderCount  int // Number of sender goroutines per worker
 	JobQueueSize int // Size of the job queue buffer
+	BatchSize    int // Number of tokens to fetch per batch from DB
 
 	DatabaseDriver string
 	DatabaseURL    string
@@ -35,6 +36,7 @@ func Load() *Config {
 		WorkerCount:        getIntEnv("WORKER_COUNT", 10),
 		SenderCount:        getIntEnv("SENDER_COUNT", 200),
 		JobQueueSize:       getIntEnv("JOB_QUEUE_SIZE", 1000),
+		BatchSize:          getIntEnv("BATCH_SIZE", 5000),
 		DatabaseDriver:     getEnv("DATABASE_DRIVER", "postgres"),
 		DatabaseURL:        getEnv("DATABASE_URL", "./pushboy.db"),
 		APNSKeyID:          getEnv("APNS_KEY_ID", ""),
