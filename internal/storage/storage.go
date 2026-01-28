@@ -105,6 +105,7 @@ type Store interface {
 	UnsubscribeUserFromTopic(ctx context.Context, userID, topicID string) error
 	GetUserSubscriptions(ctx context.Context, userID string) ([]UserTopicSubscription, error)
 	GetTopicSubscribers(ctx context.Context, topicID string) ([]User, error)
+	GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error)
 
 	// Publish job operations
 	CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)

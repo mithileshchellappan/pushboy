@@ -161,6 +161,10 @@ func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error 
 	return s.store.DeleteTopic(ctx, topicID)
 }
 
+func (s *PushboyService) GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error) {
+	return s.store.GetTopicSubscriberCount(ctx, topicID)
+}
+
 // User-Topic subscription operations
 
 func (s *PushboyService) SubscribeUserToTopic(ctx context.Context, userID string, topicID string) (*storage.UserTopicSubscription, error) {

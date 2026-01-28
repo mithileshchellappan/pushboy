@@ -287,8 +287,8 @@ func (s *SQLiteStore) GetUserSubscriptions(ctx context.Context, userID string) (
 }
 
 func (s *SQLiteStore) GetTopicSubscribers(ctx context.Context, topicID string) ([]User, error) {
-	query := `SELECT u.id, u.created_at FROM users u 
-		INNER JOIN user_topic_subscriptions s ON u.id = s.user_id 
+	query := `SELECT u.id, u.created_at FROM users u
+		INNER JOIN user_topic_subscriptions s ON u.id = s.user_id
 		WHERE s.topic_id = ?`
 	rows, err := s.db.QueryContext(ctx, query, topicID)
 	if err != nil {
@@ -306,6 +306,16 @@ func (s *SQLiteStore) GetTopicSubscribers(ctx context.Context, topicID string) (
 	}
 
 	return users, rows.Err()
+}
+
+func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM user_topic_subscriptions WHERE topic_id = ?`
+	err := s.db.QueryRowContext(ctx, query, topicID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("error counting topic subscribers: %w", err)
+	}
+	return count, nil
 }
 
 // Publish job operations

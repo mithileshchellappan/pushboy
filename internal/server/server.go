@@ -74,6 +74,7 @@ func (s *Server) setupRouter() chi.Router {
 			r.Get("/", s.handleListTopics)
 			r.Get("/{topicID}", s.handleGetTopicByID)
 			r.Delete("/{topicID}", s.handleDeleteTopic)
+			r.Get("/{topicID}/count", s.handleGetTopicSubscriberCount)
 
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
@@ -468,6 +469,23 @@ func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, r, nil, http.StatusNoContent)
+}
+
+func (s *Server) handleGetTopicSubscriberCount(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	count, err := s.service.GetTopicSubscriberCount(r.Context(), topicID)
+	if err != nil {
+		http.Error(w, "Error getting subscriber count", http.StatusInternalServerError)
+		log.Printf("Error getting subscriber count: %v", err)
+		return
+	}
+
+	s.respond(w, r, map[string]int{"count": count}, http.StatusOK)
 }
 
 // Publish handlers
