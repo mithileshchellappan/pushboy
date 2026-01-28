@@ -1,7 +1,9 @@
 #!/bin/bash
 set -e
 
-INSTALL_DIR="${PUSHBOY_DIR:-/opt/pushboy}"
+# Use current directory if PUSHBOY_DIR not set
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INSTALL_DIR="${PUSHBOY_DIR:-$(dirname "$SCRIPT_DIR")}"
 
 echo "==> Building pushboy binary..."
 cd "$INSTALL_DIR"
