@@ -1,0 +1,15 @@
+[Unit]
+Description=Pushboy Notification Service
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pushboy
+ExecStart=/opt/pushboy/pushboy
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
