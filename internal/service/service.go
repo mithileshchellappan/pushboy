@@ -138,8 +138,8 @@ func (s *PushboyService) DeleteToken(ctx context.Context, tokenID string) error 
 
 // Topic operations
 
-func (s *PushboyService) CreateTopic(ctx context.Context, name string) (*storage.Topic, error) {
-	topic := &storage.Topic{Name: name}
+func (s *PushboyService) CreateTopic(ctx context.Context, ID string, name string) (*storage.Topic, error) {
+	topic := &storage.Topic{ID: ID, Name: name}
 
 	err := s.store.CreateTopic(ctx, topic)
 	if err != nil {

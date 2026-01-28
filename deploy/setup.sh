@@ -21,8 +21,8 @@ sudo systemctl daemon-reload
 echo "==> Enabling pushboy service..."
 sudo systemctl enable pushboy
 
-echo "==> Starting pushboy..."
-sudo systemctl start pushboy
+echo "==> (Re)starting pushboy..."
+sudo systemctl restart pushboy
 
 echo "==> Checking status..."
 sudo systemctl status pushboy --no-pager

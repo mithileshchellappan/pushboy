@@ -242,8 +242,6 @@ func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 // Topic operations
 
 func (s *PostgresStore) CreateTopic(ctx context.Context, topic *Topic) error {
-	// Use the topic name directly as the ID (lowercase, no prefix)
-	topic.ID = strings.ToLower(topic.Name)
 
 	query := `INSERT INTO topics(id, name) VALUES($1, $2)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)

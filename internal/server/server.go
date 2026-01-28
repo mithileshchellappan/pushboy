@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -383,6 +384,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
 
@@ -391,7 +393,17 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	topic, err := s.service.CreateTopic(r.Context(), req.Name)
+	if req.ID == "" || req.Name == "" {
+		http.Error(w, "topic id and name are required", http.StatusBadRequest)
+		return
+	}
+
+	if strings.Contains(req.ID, " ") {
+		http.Error(w, "topic id cannot contain spaces", http.StatusBadRequest)
+		return
+	}
+
+	topic, err := s.service.CreateTopic(r.Context(), req.ID, req.Name)
 	if err != nil {
 		if errors.Is(err, storage.Errors.AlreadyExists) {
 			http.Error(w, "Topic already exists", http.StatusConflict)
