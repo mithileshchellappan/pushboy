@@ -394,12 +394,16 @@ func (s *PostgresStore) GetTopicSubscriberCount(ctx context.Context, topicID str
 // Publish job operations
 
 func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	// Count subscribers for this topic
+	// Count tokens for this topic (not subscribers, since one user can have multiple tokens)
 	var totalCount int
-	countQuery := `SELECT COUNT(*) FROM user_topic_subscriptions WHERE topic_id = $1`
+	countQuery := `
+		SELECT COUNT(*) FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
+		)`
 	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
 	if err := row.Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("error counting subscribers: %w", err)
+		return nil, fmt.Errorf("error counting tokens: %w", err)
 	}
 	job.TotalCount = totalCount
 
