@@ -52,12 +52,16 @@ type NotificationPayload struct {
 	Category   string            `json:"category,omitempty"`
 }
 
+type NotificationSnapshot struct {
+	ID      string
+	TopicID string
+	UserID  string
+	Payload *NotificationPayload
+}
+
 // PublishJob represents a job to publish notifications to a topic or user
 type PublishJob struct {
-	ID           string
-	TopicID      string
-	UserID       string
-	Payload      *NotificationPayload // Full notification content
+	NotificationSnapshot
 	Status       string
 	TotalCount   int
 	SuccessCount int

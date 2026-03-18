@@ -10,7 +10,18 @@ const (
 )
 
 type WorkItem struct {
-	Kind    WorkKind
-	JobData *storage.PublishJob
-	LAData  *storage.LAActivity
+	ID           string
+	Kind         WorkKind
+	Notification *NotificationWork
+	LA           *LAWork
+}
+
+type LAWork struct {
+	storage.LASnapshot
+	ClaimedVersion int64
+	ClaimToken     string
+}
+
+type NotificationWork struct {
+	storage.NotificationSnapshot
 }

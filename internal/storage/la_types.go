@@ -70,39 +70,32 @@ type LAAlert struct {
 	Sound string `json:"sound,omitempty"`
 }
 
-type LAPayload struct {
-	Kind            string         `json:"kind"`
-	ExternalRef     string         `json:"external_ref,omitempty"`
-	Event           LAEvent        `json:"event"`
-	StartAttributes map[string]any `json:"start_attributes,omitempty"`
-	State           map[string]any `json:"state,omitempty"`
-	Alert           *LAAlert       `json:"alert,omitempty"`
-	StaleAt         string         `json:"stale_at,omitempty"`
-	DismissAt       string         `json:"dismiss_at,omitempty"`
-}
-
-type LAActivity struct {
+type LASnapshot struct {
 	ID              string
 	Kind            string
 	AudienceKind    LAAudienceKind
 	UserID          string
 	TopicID         string
 	ExternalRef     string
-	Status          LAActivityStatus
 	PendingEvent    LAEvent
 	StartAttributes map[string]any
 	CurrentState    map[string]any
 	Alert           *LAAlert
-	StateVersion    int64
-	ClaimedVersion  int64
-	ClaimToken      string
-	ClaimUntil      string
-	DispatchNeeded  bool
-	DispatchAfter   string
-	LastDispatchAt  string
-	LastError       string
-	CreatedAt       string
-	UpdatedAt       string
+}
+
+type LAActivity struct {
+	LASnapshot
+	Status         LAActivityStatus
+	StateVersion   int64
+	ClaimedVersion int64
+	ClaimToken     string
+	ClaimUntil     string
+	DispatchNeeded bool
+	DispatchAfter  string
+	LastDispatchAt string
+	LastError      string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 type LAInstance struct {

@@ -49,16 +49,18 @@ func (p *Pool) worker(id int) {
 
 	for job := range p.jobChan {
 		log.Printf("Worker %d: Processing job %s", id, job.ID)
-
-		if err := pipe.ProcessJob(context.Background(), job); err != nil {
-			log.Printf("Worker %d: Error processing job %s: %v", id, job.ID, err)
+		if job.Kind == WorkKindNotification {
+			if err := pipe.ProcessJob(context.Background(), &job.Notification.NotificationSnapshot); err != nil {
+				log.Printf("Worker %d: Error processing notification job %s: %v", id, job.ID, err)
+			}
 		}
+
 	}
 
 	log.Printf("Worker %d: Exiting", id)
 }
 
-func (p *Pool) Submit(job *storage.PublishJob) bool {
+func (p *Pool) Submit(job *WorkItem) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	if p.closed {

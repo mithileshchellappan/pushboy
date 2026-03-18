@@ -30,7 +30,7 @@ func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatc
 	}
 }
 
-func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.PublishJob) error {
+func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.NotificationSnapshot) error {
 	log.Printf("WORKER: -> Starting job: %s", job.ID)
 
 	// Create fresh channels for this job (channels are closed after each job completes)
@@ -73,7 +73,7 @@ func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.Publ
 	return nil
 }
 
-func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *storage.PublishJob) error {
+func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *storage.NotificationSnapshot) error {
 	defer close(p.tokensChan)
 	cursor := ""
 
@@ -111,7 +111,7 @@ func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *storage.Pub
 	return nil
 }
 
-func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.PublishJob) {
+func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.NotificationSnapshot) {
 	var wg sync.WaitGroup
 	for i := 1; i <= p.numSenders; i++ {
 		wg.Add(1)
@@ -121,7 +121,7 @@ func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.Pu
 	close(p.resultsChan)
 }
 
-func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJob, wg *sync.WaitGroup) {
+func (p *NotificationPipeline) sender(ctx context.Context, job *storage.NotificationSnapshot, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	// Convert storage.NotificationPayload to dispatch.NotificationPayload

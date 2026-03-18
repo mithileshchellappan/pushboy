@@ -211,9 +211,11 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 		status = "SCHEDULED"
 	}
 	job := &storage.PublishJob{
-		ID:           uuid.New().String(),
-		UserID:       userID,
-		Payload:      payload,
+		NotificationSnapshot: storage.NotificationSnapshot{
+			ID:      uuid.New().String(),
+			UserID:  userID,
+			Payload: payload,
+		},
 		Status:       status,
 		TotalCount:   0,
 		SuccessCount: 0,
@@ -241,9 +243,11 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 	}
 
 	job := &storage.PublishJob{
-		ID:           uuid.New().String(),
-		TopicID:      topicID,
-		Payload:      payload,
+		NotificationSnapshot: storage.NotificationSnapshot{
+			ID:      uuid.New().String(),
+			TopicID: topicID,
+			Payload: payload,
+		},
 		Status:       status,
 		TotalCount:   0,
 		SuccessCount: 0,

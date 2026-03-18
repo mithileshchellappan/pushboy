@@ -168,18 +168,20 @@ func (s *PushboyService) StartLAForUser(ctx context.Context, userID, kind, exter
 	}
 
 	activity := &storage.LAActivity{
-		ID:              uuid.New().String(),
-		Kind:            kind,
-		AudienceKind:    storage.LAAudienceKindUser,
-		UserID:          userID,
-		ExternalRef:     externalRef,
-		Status:          storage.LAActivityStatusStarting,
-		PendingEvent:    storage.LAEventStart,
-		StartAttributes: startAttributes,
-		CurrentState:    state,
-		Alert:           alert,
-		StateVersion:    1,
-		DispatchNeeded:  true,
+		LASnapshot: storage.LASnapshot{
+			ID:              uuid.New().String(),
+			Kind:            kind,
+			AudienceKind:    storage.LAAudienceKindUser,
+			UserID:          userID,
+			ExternalRef:     externalRef,
+			PendingEvent:    storage.LAEventStart,
+			StartAttributes: startAttributes,
+			CurrentState:    state,
+			Alert:           alert,
+		},
+		Status:         storage.LAActivityStatusStarting,
+		StateVersion:   1,
+		DispatchNeeded: true,
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {
@@ -218,18 +220,20 @@ func (s *PushboyService) StartLAForTopic(ctx context.Context, topicID, kind, ext
 	}
 
 	activity := &storage.LAActivity{
-		ID:              uuid.New().String(),
-		Kind:            kind,
-		AudienceKind:    storage.LAAudienceKindTopic,
-		TopicID:         topicID,
-		ExternalRef:     externalRef,
-		Status:          storage.LAActivityStatusStarting,
-		PendingEvent:    storage.LAEventStart,
-		StartAttributes: startAttributes,
-		CurrentState:    state,
-		Alert:           alert,
-		StateVersion:    1,
-		DispatchNeeded:  true,
+		LASnapshot: storage.LASnapshot{
+			ID:              uuid.New().String(),
+			Kind:            kind,
+			AudienceKind:    storage.LAAudienceKindTopic,
+			TopicID:         topicID,
+			ExternalRef:     externalRef,
+			PendingEvent:    storage.LAEventStart,
+			StartAttributes: startAttributes,
+			CurrentState:    state,
+			Alert:           alert,
+		},
+		Status:         storage.LAActivityStatusStarting,
+		StateVersion:   1,
+		DispatchNeeded: true,
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {
