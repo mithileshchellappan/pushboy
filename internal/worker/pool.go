@@ -13,7 +13,7 @@ import (
 type Pool struct {
 	store       storage.Store
 	dispatchers map[string]dispatch.Dispatcher
-	jobChan     chan *storage.PublishJob
+	jobChan     chan *WorkItem
 	numWorkers  int
 	numSenders  int
 	batchSize   int
@@ -26,7 +26,7 @@ func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, nu
 	return &Pool{
 		store:       store,
 		dispatchers: dispatchers,
-		jobChan:     make(chan *storage.PublishJob, queueSize),
+		jobChan:     make(chan *WorkItem, queueSize),
 		numWorkers:  numWorkers,
 		numSenders:  numSenders,
 		batchSize:   batchSize,

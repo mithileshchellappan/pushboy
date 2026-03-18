@@ -74,7 +74,6 @@ func (s *PushboyService) UpdateLARegistration(ctx context.Context, userID, laReg
 		AutoStartEnabled: autoStartEnabled,
 		Enabled:          enabled,
 		CreatedAt:        existing.CreatedAt,
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 
 	return s.store.UpdateLARegistration(ctx, registration)
@@ -181,7 +180,6 @@ func (s *PushboyService) StartLAForUser(ctx context.Context, userID, kind, exter
 		Alert:           alert,
 		StateVersion:    1,
 		DispatchNeeded:  true,
-		DispatchAfter:   time.Now().UTC().Format(time.RFC3339),
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {
@@ -232,7 +230,6 @@ func (s *PushboyService) StartLAForTopic(ctx context.Context, topicID, kind, ext
 		Alert:           alert,
 		StateVersion:    1,
 		DispatchNeeded:  true,
-		DispatchAfter:   time.Now().UTC().Format(time.RFC3339),
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {

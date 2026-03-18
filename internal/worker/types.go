@@ -1,5 +1,7 @@
 package worker
 
+import "github.com/mithileshchellappan/pushboy/internal/storage"
+
 type WorkKind string
 
 const (
@@ -8,9 +10,7 @@ const (
 )
 
 type WorkItem struct {
-	Kind           WorkKind
-	JobID          string
-	LAID           string
-	ClaimedVersion int64
-	ClaimToken     string
+	Kind    WorkKind
+	JobData *storage.PublishJob
+	LAData  *storage.LAActivity
 }
