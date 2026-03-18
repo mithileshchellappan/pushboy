@@ -57,7 +57,7 @@ func (s *Scheduler) processScheduledJobs() {
 	}
 
 	for _, job := range jobs {
-		if !s.workerPool.Submit(&job) {
+		if !s.workerPool.Submit(worker.ConvertNotificationToWorkItem(&job)) {
 			log.Printf("Worker pool closed, stopping job submission")
 			return
 		}

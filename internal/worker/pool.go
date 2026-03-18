@@ -49,12 +49,11 @@ func (p *Pool) worker(id int) {
 
 	for job := range p.jobChan {
 		log.Printf("Worker %d: Processing job %s", id, job.ID)
-		if job.Kind == WorkKindNotification {
+		if job.Kind == WorkKindNotification && job.Notification != nil {
 			if err := pipe.ProcessJob(context.Background(), &job.Notification.NotificationSnapshot); err != nil {
 				log.Printf("Worker %d: Error processing notification job %s: %v", id, job.ID, err)
 			}
 		}
-
 	}
 
 	log.Printf("Worker %d: Exiting", id)

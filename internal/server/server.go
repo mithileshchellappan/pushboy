@@ -373,7 +373,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		s.workerPool.Submit(worker.ConvertNotificationToWorkItem(job))
 	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
@@ -527,7 +527,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		s.workerPool.Submit(worker.ConvertNotificationToWorkItem(job))
 	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
