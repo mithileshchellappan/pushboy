@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -47,7 +48,7 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/ping", s.handlePing)
-
+		s.mountLARoutes(r)
 		// User routes
 		r.Route("/users", func(r chi.Router) {
 			r.Post("/", s.handleCreateUser)
@@ -170,8 +171,7 @@ func (s *Server) handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 		Token    string `json:"token"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if !s.decodeJSON(w, r.Body, &req) {
 		return
 	}
 
@@ -337,9 +337,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SendNotificationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Error decoding JSON payload for user %s: %v", userID, err)
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if !s.decodeJSON(w, r.Body, &req) {
 		return
 	}
 
@@ -389,8 +387,7 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if !s.decodeJSON(w, r.Body, &req) {
 		return
 	}
 
@@ -498,8 +495,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SendNotificationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+	if !s.decodeJSON(w, r.Body, &req) {
 		return
 	}
 
@@ -568,4 +564,12 @@ func (s *Server) respond(w http.ResponseWriter, r *http.Request, data interface{
 			log.Printf("Error encoding response for request %s: %v", middleware.GetReqID(r.Context()), err)
 		}
 	}
+}
+
+func (s *Server) decodeJSON(w http.ResponseWriter, r io.Reader, dst any) bool {
+	if err := json.NewDecoder(r).Decode(dst); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return false
+	}
+	return true
 }

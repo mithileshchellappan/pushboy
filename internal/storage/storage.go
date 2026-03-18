@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // User represents a user in the system
@@ -124,16 +125,54 @@ type Store interface {
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
 
+	// Live Activity registration operations
+	CreateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
+	UpdateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
+	GetLARegistration(ctx context.Context, laRegistrationID string) (*LARegistration, error)
+	GetLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
+	GetEnabledLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
+	DeleteLARegistration(ctx context.Context, laRegistrationID string) error
+
+	// Live Activity user-topic preference operations
+	UpsertLAUserTopicPreference(ctx context.Context, preference *LAUserTopicPreference) (*LAUserTopicPreference, error)
+	DeleteLAUserTopicPreference(ctx context.Context, userID, topicID string) error
+	GetLAUserTopicPreferences(ctx context.Context, userID string) ([]LAUserTopicPreference, error)
+
+	// Live Activity topic subscription operations
+	UpsertLATopicSubscription(ctx context.Context, subscription *LATopicSubscription) (*LATopicSubscription, error)
+	DeleteLATopicSubscription(ctx context.Context, laRegistrationID, topicID string) error
+	GetLATopicSubscriptionsByRegistrationID(ctx context.Context, laRegistrationID string) ([]LATopicSubscription, error)
+	GetLARegistrationsByTopicID(ctx context.Context, topicID string) ([]LARegistration, error)
+
+	// Live Activity operations
+	CreateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error)
+	GetLAActivity(ctx context.Context, laID string) (*LAActivity, error)
+	GetActiveLAActivitiesByTopicID(ctx context.Context, topicID string) ([]LAActivity, error)
+	UpdateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error)
+	ClaimReadyLAActivities(ctx context.Context, claimToken string, claimUntil time.Time, limit int) ([]LAActivity, error)
+
+	// Live Activity instance operations
+	CreateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error)
+	CreateMissingLAInstances(ctx context.Context, instances []LAInstance) error
+	GetLAInstance(ctx context.Context, instanceID string) (*LAInstance, error)
+	GetLAInstancesByActivityID(ctx context.Context, laID string) ([]LAInstance, error)
+	GetRetryableLAInstancesByActivityID(ctx context.Context, laID string, asOf time.Time) ([]LAInstance, error)
+	ActivateLAInstance(ctx context.Context, instanceID string, deliveryToken string) error
+	UpdateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error)
+	UpdateActiveLAInstancesDeliveryTokenByRegistrationID(ctx context.Context, laRegistrationID, deliveryToken string) error
+
 	// Lifecycle
 	Close() error
 }
 
 type errorCollection struct {
-	AlreadyExists error
-	NotFound      error
+	AlreadyExists  error
+	NotFound       error
+	NotImplemented error
 }
 
 var Errors = errorCollection{
-	AlreadyExists: errors.New("resource already exists"),
-	NotFound:      errors.New("resource not found"),
+	AlreadyExists:  errors.New("resource already exists"),
+	NotFound:       errors.New("resource not found"),
+	NotImplemented: errors.New("resource not implemented"),
 }
