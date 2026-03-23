@@ -32,6 +32,20 @@ type NotificationPayload struct {
 	Category string `json:"category,omitempty"`  // Actionable notification category ID
 }
 
+// LAPayload is the unified live activity / live update payload that platform
+// dispatchers translate into APNs ActivityKit or Android live-update messages.
+// It carries only sendable state, not DB coordination fields.
+type LAPayload struct {
+	LAID            string            `json:"la_id"`
+	Kind            string            `json:"kind"`
+	ExternalRef     string            `json:"external_ref,omitempty"`
+	Event           storage.LAEvent   `json:"event"`
+	StartAttributes map[string]any    `json:"start_attributes,omitempty"`
+	CurrentState    map[string]any    `json:"current_state,omitempty"`
+	Alert           *storage.LAAlert  `json:"alert,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+}
+
 type Dispatcher interface {
 	Send(ctx context.Context, token *storage.Token, payload *NotificationPayload) error
 }
