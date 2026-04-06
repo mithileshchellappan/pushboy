@@ -114,3 +114,15 @@ type LAInstance struct {
 	CreatedAt          string
 	UpdatedAt          string
 }
+
+type LARegistrationBatch struct {
+	Registrations []LARegistration
+	NextCursor    string
+	HasMore       bool
+}
+
+type LAInstanceBatch struct {
+	Tokens     []LAInstance
+	NextCursor string
+	hasMore    bool
+}

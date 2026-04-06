@@ -122,7 +122,7 @@ func (s *PushboyService) SubscribeUserToLATopic(ctx context.Context, userID, top
 	if err != nil {
 		return nil, err
 	}
-	for _, registration := range registrations {
+	for _, registration := range registrations.Registrations {
 		if _, err := s.store.UpsertLATopicSubscription(ctx, &storage.LATopicSubscription{
 			LARegistrationID: registration.ID,
 			TopicID:          topicID,
@@ -150,7 +150,7 @@ func (s *PushboyService) UnsubscribeUserFromLATopic(ctx context.Context, userID,
 	if err != nil {
 		return err
 	}
-	for _, registration := range registrations {
+	for _, registration := range registrations.Registrations {
 		if err := s.store.DeleteLATopicSubscription(ctx, registration.ID, topicID); err != nil && err != storage.Errors.NotFound {
 			return err
 		}
@@ -237,26 +237,6 @@ func (s *PushboyService) StartLAForTopic(ctx context.Context, topicID, kind, ext
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {
-		return nil, err
-	}
-
-	registrations, err := s.store.GetLARegistrationsByTopicID(ctx, topicID)
-	if err != nil {
-		return nil, err
-	}
-
-	instances := make([]storage.LAInstance, 0, len(registrations))
-	for _, registration := range registrations {
-		instances = append(instances, storage.LAInstance{
-			ID:               uuid.New().String(),
-			LAID:             activity.ID,
-			LARegistrationID: registration.ID,
-			Platform:         registration.Platform,
-			Status:           storage.LAInstanceStatusPendingStart,
-		})
-	}
-
-	if err := s.store.CreateMissingLAInstances(ctx, instances); err != nil {
 		return nil, err
 	}
 

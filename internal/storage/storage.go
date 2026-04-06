@@ -133,7 +133,7 @@ type Store interface {
 	CreateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
 	UpdateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
 	GetLARegistration(ctx context.Context, laRegistrationID string) (*LARegistration, error)
-	GetLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
+	GetLARegistrationsByUserID(ctx context.Context, userID string) (*LARegistrationBatch, error)
 	GetEnabledLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
 	DeleteLARegistration(ctx context.Context, laRegistrationID string) error
 
@@ -146,7 +146,7 @@ type Store interface {
 	UpsertLATopicSubscription(ctx context.Context, subscription *LATopicSubscription) (*LATopicSubscription, error)
 	DeleteLATopicSubscription(ctx context.Context, laRegistrationID, topicID string) error
 	GetLATopicSubscriptionsByRegistrationID(ctx context.Context, laRegistrationID string) ([]LATopicSubscription, error)
-	GetLARegistrationsByTopicID(ctx context.Context, topicID string) ([]LARegistration, error)
+	GetLARegistrationsByTopicID(ctx context.Context, topicID string, cursor string, batchSize int) (*LARegistrationBatch, error)
 
 	// Live Activity operations
 	CreateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error)

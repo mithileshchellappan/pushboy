@@ -94,12 +94,12 @@ func (s *PostgresStore) GetLARegistration(ctx context.Context, laRegistrationID 
 	return &registration, nil
 }
 
-func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error) {
+func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID string) (*LARegistrationBatch, error) {
 	query := `
 		SELECT id, user_id, platform, start_token, auto_start_enabled, enabled, created_at, updated_at
 		FROM la_registrations
 		WHERE user_id = $1
-		ORDER BY created_at ASC`
+		ORDER BY id`
 	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error listing LA registrations: %w", err)
@@ -128,7 +128,12 @@ func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID s
 		registrations = append(registrations, registration)
 	}
 
-	return registrations, rows.Err()
+	batch := &LARegistrationBatch{
+		Registrations: registrations,
+		HasMore:       false,
+	}
+
+	return batch, rows.Err()
 }
 
 func (s *PostgresStore) GetEnabledLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error) {
@@ -321,14 +326,17 @@ func (s *PostgresStore) GetLATopicSubscriptionsByRegistrationID(ctx context.Cont
 	return subscriptions, rows.Err()
 }
 
-func (s *PostgresStore) GetLARegistrationsByTopicID(ctx context.Context, topicID string) ([]LARegistration, error) {
+func (s *PostgresStore) GetLARegistrationsByTopicID(ctx context.Context, topicID string, cursor string, batchSize int) (*LARegistrationBatch, error) {
 	query := `
 		SELECT r.id, r.user_id, r.platform, r.start_token, r.auto_start_enabled, r.enabled, r.created_at, r.updated_at
 		FROM la_registrations r
 		INNER JOIN la_topic_subscriptions s ON s.la_registration_id = r.id
 		WHERE s.topic_id = $1 AND r.enabled = TRUE
-		ORDER BY r.created_at ASC`
-	rows, err := s.db.QueryContext(ctx, query, topicID)
+		AND r.id > $2
+		ORDER BY r.id
+		LIMIT $3
+		`
+	rows, err := s.db.QueryContext(ctx, query, topicID, cursor, batchSize+1)
 	if err != nil {
 		return nil, fmt.Errorf("error listing LA registrations for topic: %w", err)
 	}
@@ -356,7 +364,21 @@ func (s *PostgresStore) GetLARegistrationsByTopicID(ctx context.Context, topicID
 		registrations = append(registrations, registration)
 	}
 
-	return registrations, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
+	}
+
+	batch := &LARegistrationBatch{
+		Registrations: registrations,
+		HasMore:       false,
+	}
+
+	if len(registrations) > batchSize {
+		batch.HasMore = true
+		batch.Registrations = registrations[:batchSize]
+		batch.NextCursor = registrations[batchSize-1].ID
+	}
+	return batch, nil
 }
 
 func (s *PostgresStore) CreateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error) {
