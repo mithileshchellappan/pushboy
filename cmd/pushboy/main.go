@@ -47,7 +47,8 @@ func main() {
 	}
 
 	// Initialize dispatchers - only add successfully created clients
-	dispatchers := make(map[string]dispatch.Dispatcher)
+	notificationDispatchers := make(map[string]dispatch.Dispatcher)
+	laDispatchers := make(map[string]dispatch.LADispatcher)
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -60,7 +61,7 @@ func main() {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
 			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, cfg.APNSUseSandbox)
-			dispatchers["apns"] = apnsClient
+			notificationDispatchers["apns"] = apnsClient
 			if cfg.APNSUseSandbox {
 				log.Println("APNS dispatcher initialized (SANDBOX mode)")
 			} else {
@@ -80,13 +81,16 @@ func main() {
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
-			dispatchers["fcm"] = fcmClient
+			notificationDispatchers["fcm"] = fcmClient
 			log.Println("FCM dispatcher initialized")
 		}
 	}
 
-	if len(dispatchers) == 0 {
+	if len(notificationDispatchers) == 0 {
 		log.Println("WARNING: No push notification dispatchers configured")
+	}
+	if len(laDispatchers) == 0 {
+		log.Println("WARNING: No live activity dispatchers configured")
 	}
 
 	// Ensure broadcast topic exists
@@ -105,9 +109,9 @@ func main() {
 		}
 	}
 
-	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
+	pushboyService := service.NewPushBoyService(store, notificationDispatchers, broadcastTopicID)
 
-	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize, cfg.BatchSize)
+	workerPool := worker.NewPool(store, notificationDispatchers, laDispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize, cfg.BatchSize)
 	workerPool.Start()
 
 	scheduler := scheduler.New(store, workerPool, 10)

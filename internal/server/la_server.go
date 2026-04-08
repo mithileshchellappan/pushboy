@@ -24,13 +24,16 @@ type laActivityRequest struct {
 	Alert           *storage.LAAlert `json:"alert,omitempty"`
 }
 
-type laActivateInstanceRequest struct {
-	DeliveryToken string `json:"delivery_token"`
+type laUpdateTokenRequest struct {
+	Platform   string `json:"platform"`
+	Token      string `json:"token"`
+	TTLSeconds int    `json:"ttl_seconds,omitempty"`
 }
 
 func (s *Server) mountLARoutes(r chi.Router) {
 	r.Route("/users/{userID}/la", func(r chi.Router) {
 		r.Post("/start", s.handleLAStartForUser)
+		r.Post("/tokens", s.handleLAUpsertUserUpdateToken)
 		r.Post("/registrations", s.handleLACreateRegistration)
 		r.Put("/registrations/{laRegistrationID}", s.handleLAUpdateRegistration)
 		r.Delete("/registrations/{laRegistrationID}", s.handleLADeleteRegistration)
@@ -40,9 +43,9 @@ func (s *Server) mountLARoutes(r chi.Router) {
 
 	r.Route("/la", func(r chi.Router) {
 		r.Post("/topics/{topicID}/start", s.handleLAStartForTopic)
+		r.Post("/topics/{topicID}/tokens", s.handleLAUpsertTopicUpdateToken)
 		r.Post("/{laID}/update", s.handleLAUpdate)
 		r.Post("/{laID}/end", s.handleLAEnd)
-		r.Post("/instances/{laInstanceID}/activate", s.handleLAActivateInstance)
 	})
 }
 
@@ -213,6 +216,35 @@ func (s *Server) handleLAStartForUser(w http.ResponseWriter, r *http.Request) {
 	s.respond(w, r, activity, http.StatusCreated)
 }
 
+func (s *Server) handleLAUpsertUserUpdateToken(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userID")
+	if userID == "" {
+		http.Error(w, "userID is required", http.StatusBadRequest)
+		return
+	}
+
+	var req laUpdateTokenRequest
+	if !s.decodeJSON(w, r.Body, &req) {
+		return
+	}
+
+	updateToken, err := s.service.UpsertLAUpdateTokenForUser(r.Context(), userID, req.Platform, req.Token, req.TTLSeconds)
+	if err != nil {
+		switch {
+		case errors.Is(err, storage.Errors.NotFound):
+			http.Error(w, "User not found", http.StatusNotFound)
+		case errors.Is(err, storage.Errors.NotImplemented):
+			http.Error(w, "LA update token upsert not implemented", http.StatusNotImplemented)
+		default:
+			http.Error(w, "Error upserting LA update token", http.StatusInternalServerError)
+			log.Printf("Error upserting LA user update token: %v", err)
+		}
+		return
+	}
+
+	s.respond(w, r, updateToken, http.StatusCreated)
+}
+
 func (s *Server) handleLAStartForTopic(w http.ResponseWriter, r *http.Request) {
 	topicID := chi.URLParam(r, "topicID")
 	if topicID == "" {
@@ -242,6 +274,35 @@ func (s *Server) handleLAStartForTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, r, activity, http.StatusCreated)
+}
+
+func (s *Server) handleLAUpsertTopicUpdateToken(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	var req laUpdateTokenRequest
+	if !s.decodeJSON(w, r.Body, &req) {
+		return
+	}
+
+	updateToken, err := s.service.UpsertLAUpdateTokenForTopic(r.Context(), topicID, req.Platform, req.Token, req.TTLSeconds)
+	if err != nil {
+		switch {
+		case errors.Is(err, storage.Errors.NotFound):
+			http.Error(w, "Topic not found", http.StatusNotFound)
+		case errors.Is(err, storage.Errors.NotImplemented):
+			http.Error(w, "LA update token upsert not implemented", http.StatusNotImplemented)
+		default:
+			http.Error(w, "Error upserting LA update token", http.StatusInternalServerError)
+			log.Printf("Error upserting LA topic update token: %v", err)
+		}
+		return
+	}
+
+	s.respond(w, r, updateToken, http.StatusCreated)
 }
 
 func (s *Server) handleLAUpdate(w http.ResponseWriter, r *http.Request) {
@@ -300,33 +361,4 @@ func (s *Server) handleLAEnd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, r, activity, http.StatusOK)
-}
-
-func (s *Server) handleLAActivateInstance(w http.ResponseWriter, r *http.Request) {
-	laInstanceID := chi.URLParam(r, "laInstanceID")
-	if laInstanceID == "" {
-		http.Error(w, "laInstanceID is required", http.StatusBadRequest)
-		return
-	}
-
-	var req laActivateInstanceRequest
-	if !s.decodeJSON(w, r.Body, &req) {
-		return
-	}
-
-	instance, err := s.service.ActivateLAInstance(r.Context(), laInstanceID, req.DeliveryToken)
-	if err != nil {
-		switch {
-		case errors.Is(err, storage.Errors.NotFound):
-			http.Error(w, "LA instance not found", http.StatusNotFound)
-		case errors.Is(err, storage.Errors.NotImplemented):
-			http.Error(w, "LA activate instance not implemented", http.StatusNotImplemented)
-		default:
-			http.Error(w, "Error activating LA instance", http.StatusInternalServerError)
-			log.Printf("Error activating LA instance: %v", err)
-		}
-		return
-	}
-
-	s.respond(w, r, instance, http.StatusOK)
 }

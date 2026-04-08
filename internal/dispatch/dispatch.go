@@ -49,3 +49,8 @@ type LAPayload struct {
 type Dispatcher interface {
 	Send(ctx context.Context, token *storage.Token, payload *NotificationPayload) error
 }
+
+type LADispatcher interface {
+	SendStart(ctx context.Context, registration *storage.LARegistration, payload *LAPayload) error
+	SendUpdate(ctx context.Context, updateToken *storage.LAUpdateToken, payload *LAPayload) error
+}

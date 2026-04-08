@@ -133,8 +133,9 @@ type Store interface {
 	CreateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
 	UpdateLARegistration(ctx context.Context, registration *LARegistration) (*LARegistration, error)
 	GetLARegistration(ctx context.Context, laRegistrationID string) (*LARegistration, error)
-	GetLARegistrationsByUserID(ctx context.Context, userID string) (*LARegistrationBatch, error)
+	GetLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
 	GetEnabledLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error)
+	GetEnabledLARegistrationsByTopicID(ctx context.Context, topicID string) ([]LARegistration, error)
 	DeleteLARegistration(ctx context.Context, laRegistrationID string) error
 
 	// Live Activity user-topic preference operations
@@ -142,28 +143,20 @@ type Store interface {
 	DeleteLAUserTopicPreference(ctx context.Context, userID, topicID string) error
 	GetLAUserTopicPreferences(ctx context.Context, userID string) ([]LAUserTopicPreference, error)
 
-	// Live Activity topic subscription operations
-	UpsertLATopicSubscription(ctx context.Context, subscription *LATopicSubscription) (*LATopicSubscription, error)
-	DeleteLATopicSubscription(ctx context.Context, laRegistrationID, topicID string) error
-	GetLATopicSubscriptionsByRegistrationID(ctx context.Context, laRegistrationID string) ([]LATopicSubscription, error)
-	GetLARegistrationsByTopicID(ctx context.Context, topicID string, cursor string, batchSize int) (*LARegistrationBatch, error)
-
 	// Live Activity operations
 	CreateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error)
 	GetLAActivity(ctx context.Context, laID string) (*LAActivity, error)
 	GetActiveLAActivitiesByTopicID(ctx context.Context, topicID string) ([]LAActivity, error)
 	UpdateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error)
 	ClaimReadyLAActivities(ctx context.Context, claimToken string, claimUntil time.Time, limit int) ([]LAActivity, error)
+	CompleteLAActivityDispatch(ctx context.Context, laID, claimToken string, claimedVersion int64, status LAActivityStatus, lastError string) (*LAActivity, error)
 
-	// Live Activity instance operations
-	CreateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error)
-	CreateMissingLAInstances(ctx context.Context, instances []LAInstance) error
-	GetLAInstance(ctx context.Context, instanceID string) (*LAInstance, error)
-	GetLAInstancesByActivityID(ctx context.Context, laID string) ([]LAInstance, error)
-	GetRetryableLAInstancesByActivityID(ctx context.Context, laID string, asOf time.Time) ([]LAInstance, error)
-	ActivateLAInstance(ctx context.Context, instanceID string, deliveryToken string) error
-	UpdateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error)
-	UpdateActiveLAInstancesDeliveryTokenByRegistrationID(ctx context.Context, laRegistrationID, deliveryToken string) error
+	// Live Activity update token operations
+	UpsertLAUpdateTokenByUser(ctx context.Context, updateToken *LAUpdateToken) (*LAUpdateToken, error)
+	UpsertLAUpdateTokenByTopic(ctx context.Context, updateToken *LAUpdateToken) (*LAUpdateToken, error)
+	GetLAUpdateTokensByUser(ctx context.Context, userID string) ([]LAUpdateToken, error)
+	GetLAUpdateTokensByTopic(ctx context.Context, topicID string) ([]LAUpdateToken, error)
+	DeleteLAUpdateToken(ctx context.Context, tokenID string) error
 
 	// Lifecycle
 	Close() error

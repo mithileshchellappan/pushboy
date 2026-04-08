@@ -69,32 +69,18 @@ func (s *PostgresStore) GetLARegistration(ctx context.Context, laRegistrationID 
 		WHERE id = $1`
 	row := s.db.QueryRowContext(ctx, query, laRegistrationID)
 
-	var registration LARegistration
-	var createdAt time.Time
-	var updatedAt time.Time
-	err := row.Scan(
-		&registration.ID,
-		&registration.UserID,
-		&registration.Platform,
-		&registration.StartToken,
-		&registration.AutoStartEnabled,
-		&registration.Enabled,
-		&createdAt,
-		&updatedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, Errors.NotFound
-	}
+	registration, err := scanLARegistration(row)
 	if err != nil {
+		if err == Errors.NotFound {
+			return nil, err
+		}
 		return nil, fmt.Errorf("error getting LA registration: %w", err)
 	}
 
-	registration.CreatedAt = formatTime(createdAt)
-	registration.UpdatedAt = formatTime(updatedAt)
-	return &registration, nil
+	return registration, nil
 }
 
-func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID string) (*LARegistrationBatch, error) {
+func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error) {
 	query := `
 		SELECT id, user_id, platform, start_token, auto_start_enabled, enabled, created_at, updated_at
 		FROM la_registrations
@@ -108,32 +94,14 @@ func (s *PostgresStore) GetLARegistrationsByUserID(ctx context.Context, userID s
 
 	var registrations []LARegistration
 	for rows.Next() {
-		var registration LARegistration
-		var createdAt time.Time
-		var updatedAt time.Time
-		if err := rows.Scan(
-			&registration.ID,
-			&registration.UserID,
-			&registration.Platform,
-			&registration.StartToken,
-			&registration.AutoStartEnabled,
-			&registration.Enabled,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		registration, err := scanLARegistration(rows)
+		if err != nil {
 			return nil, fmt.Errorf("error scanning LA registration: %w", err)
 		}
-		registration.CreatedAt = formatTime(createdAt)
-		registration.UpdatedAt = formatTime(updatedAt)
-		registrations = append(registrations, registration)
+		registrations = append(registrations, *registration)
 	}
 
-	batch := &LARegistrationBatch{
-		Registrations: registrations,
-		HasMore:       false,
-	}
-
-	return batch, rows.Err()
+	return registrations, rows.Err()
 }
 
 func (s *PostgresStore) GetEnabledLARegistrationsByUserID(ctx context.Context, userID string) ([]LARegistration, error) {
@@ -150,24 +118,36 @@ func (s *PostgresStore) GetEnabledLARegistrationsByUserID(ctx context.Context, u
 
 	var registrations []LARegistration
 	for rows.Next() {
-		var registration LARegistration
-		var createdAt time.Time
-		var updatedAt time.Time
-		if err := rows.Scan(
-			&registration.ID,
-			&registration.UserID,
-			&registration.Platform,
-			&registration.StartToken,
-			&registration.AutoStartEnabled,
-			&registration.Enabled,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
+		registration, err := scanLARegistration(rows)
+		if err != nil {
 			return nil, fmt.Errorf("error scanning enabled LA registration: %w", err)
 		}
-		registration.CreatedAt = formatTime(createdAt)
-		registration.UpdatedAt = formatTime(updatedAt)
-		registrations = append(registrations, registration)
+		registrations = append(registrations, *registration)
+	}
+
+	return registrations, rows.Err()
+}
+
+func (s *PostgresStore) GetEnabledLARegistrationsByTopicID(ctx context.Context, topicID string) ([]LARegistration, error) {
+	query := `
+		SELECT DISTINCT r.id, r.user_id, r.platform, r.start_token, r.auto_start_enabled, r.enabled, r.created_at, r.updated_at
+		FROM la_registrations r
+		INNER JOIN la_user_topic_preferences p ON p.user_id = r.user_id
+		WHERE p.topic_id = $1 AND r.enabled = TRUE
+		ORDER BY r.created_at ASC`
+	rows, err := s.db.QueryContext(ctx, query, topicID)
+	if err != nil {
+		return nil, fmt.Errorf("error listing enabled LA registrations for topic: %w", err)
+	}
+	defer rows.Close()
+
+	var registrations []LARegistration
+	for rows.Next() {
+		registration, err := scanLARegistration(rows)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning LA registration for topic: %w", err)
+		}
+		registrations = append(registrations, *registration)
 	}
 
 	return registrations, rows.Err()
@@ -212,6 +192,7 @@ func (s *PostgresStore) UpsertLAUserTopicPreference(ctx context.Context, prefere
 		}
 		return nil, fmt.Errorf("error reading LA user topic preference: %w", err)
 	}
+
 	preference.CreatedAt = formatTime(createdAt)
 	return preference, nil
 }
@@ -255,130 +236,6 @@ func (s *PostgresStore) GetLAUserTopicPreferences(ctx context.Context, userID st
 	}
 
 	return preferences, rows.Err()
-}
-
-func (s *PostgresStore) UpsertLATopicSubscription(ctx context.Context, subscription *LATopicSubscription) (*LATopicSubscription, error) {
-	query := `
-		INSERT INTO la_topic_subscriptions(la_registration_id, topic_id)
-		VALUES($1, $2)
-		ON CONFLICT (la_registration_id, topic_id)
-		DO UPDATE SET topic_id = EXCLUDED.topic_id`
-	_, err := s.db.ExecContext(ctx, query, subscription.LARegistrationID, subscription.TopicID)
-	if err != nil {
-		return nil, fmt.Errorf("error upserting LA topic subscription: %w", err)
-	}
-
-	query = `
-		SELECT la_registration_id, topic_id, created_at
-		FROM la_topic_subscriptions
-		WHERE la_registration_id = $1 AND topic_id = $2`
-	row := s.db.QueryRowContext(ctx, query, subscription.LARegistrationID, subscription.TopicID)
-
-	var createdAt time.Time
-	if err := row.Scan(&subscription.LARegistrationID, &subscription.TopicID, &createdAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, Errors.NotFound
-		}
-		return nil, fmt.Errorf("error reading LA topic subscription: %w", err)
-	}
-	subscription.CreatedAt = formatTime(createdAt)
-	return subscription, nil
-}
-
-func (s *PostgresStore) DeleteLATopicSubscription(ctx context.Context, laRegistrationID, topicID string) error {
-	query := `DELETE FROM la_topic_subscriptions WHERE la_registration_id = $1 AND topic_id = $2`
-	result, err := s.db.ExecContext(ctx, query, laRegistrationID, topicID)
-	if err != nil {
-		return fmt.Errorf("error deleting LA topic subscription: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return Errors.NotFound
-	}
-
-	return nil
-}
-
-func (s *PostgresStore) GetLATopicSubscriptionsByRegistrationID(ctx context.Context, laRegistrationID string) ([]LATopicSubscription, error) {
-	query := `
-		SELECT la_registration_id, topic_id, created_at
-		FROM la_topic_subscriptions
-		WHERE la_registration_id = $1
-		ORDER BY created_at ASC`
-	rows, err := s.db.QueryContext(ctx, query, laRegistrationID)
-	if err != nil {
-		return nil, fmt.Errorf("error listing LA topic subscriptions: %w", err)
-	}
-	defer rows.Close()
-
-	var subscriptions []LATopicSubscription
-	for rows.Next() {
-		var subscription LATopicSubscription
-		var createdAt time.Time
-		if err := rows.Scan(&subscription.LARegistrationID, &subscription.TopicID, &createdAt); err != nil {
-			return nil, fmt.Errorf("error scanning LA topic subscription: %w", err)
-		}
-		subscription.CreatedAt = formatTime(createdAt)
-		subscriptions = append(subscriptions, subscription)
-	}
-
-	return subscriptions, rows.Err()
-}
-
-func (s *PostgresStore) GetLARegistrationsByTopicID(ctx context.Context, topicID string, cursor string, batchSize int) (*LARegistrationBatch, error) {
-	query := `
-		SELECT r.id, r.user_id, r.platform, r.start_token, r.auto_start_enabled, r.enabled, r.created_at, r.updated_at
-		FROM la_registrations r
-		INNER JOIN la_topic_subscriptions s ON s.la_registration_id = r.id
-		WHERE s.topic_id = $1 AND r.enabled = TRUE
-		AND r.id > $2
-		ORDER BY r.id
-		LIMIT $3
-		`
-	rows, err := s.db.QueryContext(ctx, query, topicID, cursor, batchSize+1)
-	if err != nil {
-		return nil, fmt.Errorf("error listing LA registrations for topic: %w", err)
-	}
-	defer rows.Close()
-
-	var registrations []LARegistration
-	for rows.Next() {
-		var registration LARegistration
-		var createdAt time.Time
-		var updatedAt time.Time
-		if err := rows.Scan(
-			&registration.ID,
-			&registration.UserID,
-			&registration.Platform,
-			&registration.StartToken,
-			&registration.AutoStartEnabled,
-			&registration.Enabled,
-			&createdAt,
-			&updatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("error scanning LA registration for topic: %w", err)
-		}
-		registration.CreatedAt = formatTime(createdAt)
-		registration.UpdatedAt = formatTime(updatedAt)
-		registrations = append(registrations, registration)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
-	}
-
-	batch := &LARegistrationBatch{
-		Registrations: registrations,
-		HasMore:       false,
-	}
-
-	if len(registrations) > batchSize {
-		batch.HasMore = true
-		batch.Registrations = registrations[:batchSize]
-		batch.NextCursor = registrations[batchSize-1].ID
-	}
-	return batch, nil
 }
 
 func (s *PostgresStore) CreateLAActivity(ctx context.Context, activity *LAActivity) (*LAActivity, error) {
@@ -619,249 +476,140 @@ func (s *PostgresStore) ClaimReadyLAActivities(ctx context.Context, claimToken s
 	return activities, rows.Err()
 }
 
-func (s *PostgresStore) CreateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error) {
-	lastAttemptAt, err := parseRFC3339ToNullableTime(instance.LastAttemptAt)
-	if err != nil {
-		return nil, err
-	}
-	nextRetryAt, err := parseRFC3339ToNullableTime(instance.NextRetryAt)
-	if err != nil {
-		return nil, err
-	}
-
+func (s *PostgresStore) CompleteLAActivityDispatch(ctx context.Context, laID, claimToken string, claimedVersion int64, status LAActivityStatus, lastError string) (*LAActivity, error) {
 	query := `
-		INSERT INTO la_instances(
-			id, la_id, la_registration_id, platform, status, delivery_token,
-			last_success_version, last_attempt_version, last_attempt_at, next_retry_at,
-			failure_count, last_error
-		)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
-	_, err = s.db.ExecContext(ctx, query,
-		instance.ID,
-		instance.LAID,
-		instance.LARegistrationID,
-		instance.Platform,
-		instance.Status,
-		instance.DeliveryToken,
-		instance.LastSuccessVersion,
-		instance.LastAttemptVersion,
-		lastAttemptAt,
-		nextRetryAt,
-		instance.FailureCount,
-		instance.LastError,
-	)
-	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
-			return nil, Errors.AlreadyExists
-		}
-		return nil, fmt.Errorf("error creating LA instance: %w", err)
-	}
+		UPDATE la_activities
+		SET status = CASE WHEN state_version = $3 THEN $4 ELSE status END,
+			dispatch_needed = CASE WHEN state_version > $3 THEN TRUE ELSE FALSE END,
+			dispatch_after = CASE WHEN state_version > $3 THEN NOW() ELSE dispatch_after END,
+			last_dispatch_at = NOW(),
+			last_error = $5,
+			claim_token = '',
+			claim_until = NULL,
+			updated_at = NOW()
+		WHERE id = $1 AND claim_token = $2
+		RETURNING
+			id, kind, audience_kind, user_id, topic_id, external_ref, status, pending_event,
+			start_attributes, current_state, alert, state_version, claimed_version,
+			claim_token, claim_until, dispatch_needed, dispatch_after, last_dispatch_at,
+			last_error, created_at, updated_at`
+	row := s.db.QueryRowContext(ctx, query, laID, claimToken, claimedVersion, status, lastError)
 
-	return s.GetLAInstance(ctx, instance.ID)
-}
-
-func (s *PostgresStore) CreateMissingLAInstances(ctx context.Context, instances []LAInstance) error {
-	if len(instances) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("error starting LA instance transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	query := `
-		INSERT INTO la_instances(
-			id, la_id, la_registration_id, platform, status, delivery_token,
-			last_success_version, last_attempt_version, last_attempt_at, next_retry_at,
-			failure_count, last_error
-		)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		ON CONFLICT (la_id, la_registration_id) DO NOTHING`
-
-	for _, instance := range instances {
-		lastAttemptAt, err := parseRFC3339ToNullableTime(instance.LastAttemptAt)
-		if err != nil {
-			return err
-		}
-		nextRetryAt, err := parseRFC3339ToNullableTime(instance.NextRetryAt)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, query,
-			instance.ID,
-			instance.LAID,
-			instance.LARegistrationID,
-			instance.Platform,
-			instance.Status,
-			instance.DeliveryToken,
-			instance.LastSuccessVersion,
-			instance.LastAttemptVersion,
-			lastAttemptAt,
-			nextRetryAt,
-			instance.FailureCount,
-			instance.LastError,
-		); err != nil {
-			return fmt.Errorf("error creating missing LA instances: %w", err)
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("error committing LA instance transaction: %w", err)
-	}
-
-	return nil
-}
-
-func (s *PostgresStore) GetLAInstance(ctx context.Context, instanceID string) (*LAInstance, error) {
-	query := `
-		SELECT id, la_id, la_registration_id, platform, status, delivery_token,
-		       last_success_version, last_attempt_version, last_attempt_at, next_retry_at,
-		       failure_count, last_error, created_at, updated_at
-		FROM la_instances
-		WHERE id = $1`
-	row := s.db.QueryRowContext(ctx, query, instanceID)
-
-	instance, err := scanLAInstance(row)
+	activity, err := scanLAActivity(row)
 	if err != nil {
 		if err == Errors.NotFound {
 			return nil, err
 		}
-		return nil, fmt.Errorf("error getting LA instance: %w", err)
+		return nil, fmt.Errorf("error completing LA activity dispatch: %w", err)
 	}
 
-	return instance, nil
+	return activity, nil
 }
 
-func (s *PostgresStore) GetLAInstancesByActivityID(ctx context.Context, laID string) ([]LAInstance, error) {
+func (s *PostgresStore) UpsertLAUpdateTokenByUser(ctx context.Context, updateToken *LAUpdateToken) (*LAUpdateToken, error) {
+	expiresAt, err := time.Parse(time.RFC3339, updateToken.ExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing LA update token expiry: %w", err)
+	}
+
 	query := `
-		SELECT id, la_id, la_registration_id, platform, status, delivery_token,
-		       last_success_version, last_attempt_version, last_attempt_at, next_retry_at,
-		       failure_count, last_error, created_at, updated_at
-		FROM la_instances
-		WHERE la_id = $1
+		INSERT INTO la_update_tokens(id, user_id, platform, token, expires_at)
+		VALUES($1, $2, $3, $4, $5)
+		ON CONFLICT (user_id, platform, token)
+		DO UPDATE SET expires_at = EXCLUDED.expires_at, updated_at = NOW()
+		RETURNING id, user_id, topic_id, platform, token, expires_at, created_at, updated_at`
+	row := s.db.QueryRowContext(ctx, query,
+		updateToken.ID,
+		updateToken.UserID,
+		updateToken.Platform,
+		updateToken.Token,
+		expiresAt.UTC(),
+	)
+
+	return scanLAUpdateToken(row)
+}
+
+func (s *PostgresStore) UpsertLAUpdateTokenByTopic(ctx context.Context, updateToken *LAUpdateToken) (*LAUpdateToken, error) {
+	expiresAt, err := time.Parse(time.RFC3339, updateToken.ExpiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing LA update token expiry: %w", err)
+	}
+
+	query := `
+		INSERT INTO la_update_tokens(id, topic_id, platform, token, expires_at)
+		VALUES($1, $2, $3, $4, $5)
+		ON CONFLICT (topic_id, platform, token)
+		DO UPDATE SET expires_at = EXCLUDED.expires_at, updated_at = NOW()
+		RETURNING id, user_id, topic_id, platform, token, expires_at, created_at, updated_at`
+	row := s.db.QueryRowContext(ctx, query,
+		updateToken.ID,
+		updateToken.TopicID,
+		updateToken.Platform,
+		updateToken.Token,
+		expiresAt.UTC(),
+	)
+
+	return scanLAUpdateToken(row)
+}
+
+func (s *PostgresStore) GetLAUpdateTokensByUser(ctx context.Context, userID string) ([]LAUpdateToken, error) {
+	query := `
+		SELECT id, user_id, topic_id, platform, token, expires_at, created_at, updated_at
+		FROM la_update_tokens
+		WHERE user_id = $1 AND expires_at > NOW()
 		ORDER BY created_at ASC`
-	rows, err := s.db.QueryContext(ctx, query, laID)
+	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
-		return nil, fmt.Errorf("error listing LA instances: %w", err)
+		return nil, fmt.Errorf("error getting LA update tokens by user: %w", err)
 	}
 	defer rows.Close()
 
-	var instances []LAInstance
+	var tokens []LAUpdateToken
 	for rows.Next() {
-		instance, err := scanLAInstance(rows)
+		updateToken, err := scanLAUpdateToken(rows)
 		if err != nil {
-			return nil, fmt.Errorf("error scanning LA instance: %w", err)
+			return nil, fmt.Errorf("error scanning LA update token: %w", err)
 		}
-		instances = append(instances, *instance)
+		tokens = append(tokens, *updateToken)
 	}
 
-	return instances, rows.Err()
+	return tokens, rows.Err()
 }
 
-func (s *PostgresStore) GetRetryableLAInstancesByActivityID(ctx context.Context, laID string, asOf time.Time) ([]LAInstance, error) {
+func (s *PostgresStore) GetLAUpdateTokensByTopic(ctx context.Context, topicID string) ([]LAUpdateToken, error) {
 	query := `
-		SELECT id, la_id, la_registration_id, platform, status, delivery_token,
-		       last_success_version, last_attempt_version, last_attempt_at, next_retry_at,
-		       failure_count, last_error, created_at, updated_at
-		FROM la_instances
-		WHERE la_id = $1
-		  AND next_retry_at IS NOT NULL
-		  AND next_retry_at <= $2
-		ORDER BY next_retry_at ASC`
-	rows, err := s.db.QueryContext(ctx, query, laID, asOf.UTC())
+		SELECT id, user_id, topic_id, platform, token, expires_at, created_at, updated_at
+		FROM la_update_tokens
+		WHERE topic_id = $1 AND expires_at > NOW()
+		ORDER BY created_at ASC`
+	rows, err := s.db.QueryContext(ctx, query, topicID)
 	if err != nil {
-		return nil, fmt.Errorf("error listing retryable LA instances: %w", err)
+		return nil, fmt.Errorf("error getting LA update tokens by topic: %w", err)
 	}
 	defer rows.Close()
 
-	var instances []LAInstance
+	var tokens []LAUpdateToken
 	for rows.Next() {
-		instance, err := scanLAInstance(rows)
+		updateToken, err := scanLAUpdateToken(rows)
 		if err != nil {
-			return nil, fmt.Errorf("error scanning retryable LA instance: %w", err)
+			return nil, fmt.Errorf("error scanning LA update token: %w", err)
 		}
-		instances = append(instances, *instance)
+		tokens = append(tokens, *updateToken)
 	}
 
-	return instances, rows.Err()
+	return tokens, rows.Err()
 }
 
-func (s *PostgresStore) ActivateLAInstance(ctx context.Context, instanceID string, deliveryToken string) error {
-	query := `
-		UPDATE la_instances
-		SET delivery_token = $2,
-			status = 'active',
-			updated_at = NOW()
-		WHERE id = $1`
-	result, err := s.db.ExecContext(ctx, query, instanceID, deliveryToken)
+func (s *PostgresStore) DeleteLAUpdateToken(ctx context.Context, tokenID string) error {
+	query := `DELETE FROM la_update_tokens WHERE id = $1`
+	result, err := s.db.ExecContext(ctx, query, tokenID)
 	if err != nil {
-		return fmt.Errorf("error activating LA instance: %w", err)
+		return fmt.Errorf("error deleting LA update token: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		return Errors.NotFound
-	}
-
-	return nil
-}
-
-func (s *PostgresStore) UpdateLAInstance(ctx context.Context, instance *LAInstance) (*LAInstance, error) {
-	lastAttemptAt, err := parseRFC3339ToNullableTime(instance.LastAttemptAt)
-	if err != nil {
-		return nil, err
-	}
-	nextRetryAt, err := parseRFC3339ToNullableTime(instance.NextRetryAt)
-	if err != nil {
-		return nil, err
-	}
-
-	query := `
-		UPDATE la_instances
-		SET status = $2,
-			delivery_token = $3,
-			last_success_version = $4,
-			last_attempt_version = $5,
-			last_attempt_at = $6,
-			next_retry_at = $7,
-			failure_count = $8,
-			last_error = $9,
-			updated_at = NOW()
-		WHERE id = $1`
-	result, err := s.db.ExecContext(ctx, query,
-		instance.ID,
-		instance.Status,
-		instance.DeliveryToken,
-		instance.LastSuccessVersion,
-		instance.LastAttemptVersion,
-		lastAttemptAt,
-		nextRetryAt,
-		instance.FailureCount,
-		instance.LastError,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error updating LA instance: %w", err)
-	}
-
-	rowsAffected, _ := result.RowsAffected()
-	if rowsAffected == 0 {
-		return nil, Errors.NotFound
-	}
-
-	return s.GetLAInstance(ctx, instance.ID)
-}
-
-func (s *PostgresStore) UpdateActiveLAInstancesDeliveryTokenByRegistrationID(ctx context.Context, laRegistrationID, deliveryToken string) error {
-	query := `
-		UPDATE la_instances
-		SET delivery_token = $2,
-			updated_at = NOW()
-		WHERE la_registration_id = $1 AND status = 'active'`
-	_, err := s.db.ExecContext(ctx, query, laRegistrationID, deliveryToken)
-	if err != nil {
-		return fmt.Errorf("error updating active LA instance delivery tokens: %w", err)
 	}
 
 	return nil
@@ -920,6 +668,32 @@ func formatNullString(s sql.NullString) string {
 		return ""
 	}
 	return s.String
+}
+
+func scanLARegistration(scanner laRowScanner) (*LARegistration, error) {
+	var registration LARegistration
+	var createdAt time.Time
+	var updatedAt time.Time
+	err := scanner.Scan(
+		&registration.ID,
+		&registration.UserID,
+		&registration.Platform,
+		&registration.StartToken,
+		&registration.AutoStartEnabled,
+		&registration.Enabled,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, Errors.NotFound
+		}
+		return nil, err
+	}
+
+	registration.CreatedAt = formatTime(createdAt)
+	registration.UpdatedAt = formatTime(updatedAt)
+	return &registration, nil
 }
 
 func scanLAActivity(scanner laRowScanner) (*LAActivity, error) {
@@ -1004,26 +778,21 @@ func scanLAActivity(scanner laRowScanner) (*LAActivity, error) {
 	return &activity, nil
 }
 
-func scanLAInstance(scanner laRowScanner) (*LAInstance, error) {
-	var instance LAInstance
-	var lastAttemptAt sql.NullTime
-	var nextRetryAt sql.NullTime
+func scanLAUpdateToken(scanner laRowScanner) (*LAUpdateToken, error) {
+	var updateToken LAUpdateToken
+	var userID sql.NullString
+	var topicID sql.NullString
+	var expiresAt time.Time
 	var createdAt time.Time
 	var updatedAt time.Time
 
 	err := scanner.Scan(
-		&instance.ID,
-		&instance.LAID,
-		&instance.LARegistrationID,
-		&instance.Platform,
-		&instance.Status,
-		&instance.DeliveryToken,
-		&instance.LastSuccessVersion,
-		&instance.LastAttemptVersion,
-		&lastAttemptAt,
-		&nextRetryAt,
-		&instance.FailureCount,
-		&instance.LastError,
+		&updateToken.ID,
+		&userID,
+		&topicID,
+		&updateToken.Platform,
+		&updateToken.Token,
+		&expiresAt,
 		&createdAt,
 		&updatedAt,
 	)
@@ -1034,10 +803,10 @@ func scanLAInstance(scanner laRowScanner) (*LAInstance, error) {
 		return nil, err
 	}
 
-	instance.LastAttemptAt = formatNullTime(lastAttemptAt)
-	instance.NextRetryAt = formatNullTime(nextRetryAt)
-	instance.CreatedAt = formatTime(createdAt)
-	instance.UpdatedAt = formatTime(updatedAt)
-
-	return &instance, nil
+	updateToken.UserID = formatNullString(userID)
+	updateToken.TopicID = formatNullString(topicID)
+	updateToken.ExpiresAt = formatTime(expiresAt)
+	updateToken.CreatedAt = formatTime(createdAt)
+	updateToken.UpdatedAt = formatTime(updatedAt)
+	return &updateToken, nil
 }

@@ -32,15 +32,6 @@ const (
 	LAActivityStatusFailed   LAActivityStatus = "failed"
 )
 
-type LAInstanceStatus string
-
-const (
-	LAInstanceStatusPendingStart LAInstanceStatus = "pending_start"
-	LAInstanceStatusActive       LAInstanceStatus = "active"
-	LAInstanceStatusEnded        LAInstanceStatus = "ended"
-	LAInstanceStatusFailed       LAInstanceStatus = "failed"
-)
-
 type LARegistration struct {
 	ID               string
 	UserID           string
@@ -56,12 +47,6 @@ type LAUserTopicPreference struct {
 	UserID    string
 	TopicID   string
 	CreatedAt string
-}
-
-type LATopicSubscription struct {
-	LARegistrationID string
-	TopicID          string
-	CreatedAt        string
 }
 
 type LAAlert struct {
@@ -98,31 +83,13 @@ type LAActivity struct {
 	UpdatedAt      string
 }
 
-type LAInstance struct {
-	ID                 string
-	LAID               string
-	LARegistrationID   string
-	Platform           LAPlatform
-	Status             LAInstanceStatus
-	DeliveryToken      string
-	LastSuccessVersion int64
-	LastAttemptVersion int64
-	LastAttemptAt      string
-	NextRetryAt        string
-	FailureCount       int
-	LastError          string
-	CreatedAt          string
-	UpdatedAt          string
-}
-
-type LARegistrationBatch struct {
-	Registrations []LARegistration
-	NextCursor    string
-	HasMore       bool
-}
-
-type LAInstanceBatch struct {
-	Tokens     []LAInstance
-	NextCursor string
-	hasMore    bool
+type LAUpdateToken struct {
+	ID        string
+	UserID    string
+	TopicID   string
+	Platform  LAPlatform
+	Token     string
+	ExpiresAt string
+	CreatedAt string
+	UpdatedAt string
 }

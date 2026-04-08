@@ -9,6 +9,8 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
+const defaultLAUpdateTokenTTL = 8 * time.Hour
+
 func validateLAPlatform(platform string) error {
 	switch storage.LAPlatform(platform) {
 	case storage.LAPlatformIOS, storage.LAPlatformAndroid:
@@ -16,6 +18,17 @@ func validateLAPlatform(platform string) error {
 	default:
 		return fmt.Errorf("invalid LA platform: must be 'ios' or 'android'")
 	}
+}
+
+func computeLAUpdateTokenExpiry(ttlSeconds int) (string, error) {
+	if ttlSeconds < 0 {
+		return "", fmt.Errorf("ttlSeconds must be non-negative")
+	}
+	ttl := defaultLAUpdateTokenTTL
+	if ttlSeconds > 0 {
+		ttl = time.Duration(ttlSeconds) * time.Second
+	}
+	return time.Now().UTC().Add(ttl).Format(time.RFC3339), nil
 }
 
 func (s *PushboyService) CreateLARegistration(ctx context.Context, userID string, platform string, startToken string, autoStartEnabled bool, enabled bool) (*storage.LARegistration, error) {
@@ -118,19 +131,6 @@ func (s *PushboyService) SubscribeUserToLATopic(ctx context.Context, userID, top
 		return nil, err
 	}
 
-	registrations, err := s.store.GetLARegistrationsByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-	for _, registration := range registrations.Registrations {
-		if _, err := s.store.UpsertLATopicSubscription(ctx, &storage.LATopicSubscription{
-			LARegistrationID: registration.ID,
-			TopicID:          topicID,
-		}); err != nil {
-			return nil, err
-		}
-	}
-
 	return preference, nil
 }
 
@@ -144,16 +144,6 @@ func (s *PushboyService) UnsubscribeUserFromLATopic(ctx context.Context, userID,
 
 	if err := s.store.DeleteLAUserTopicPreference(ctx, userID, topicID); err != nil {
 		return err
-	}
-
-	registrations, err := s.store.GetLARegistrationsByUserID(ctx, userID)
-	if err != nil {
-		return err
-	}
-	for _, registration := range registrations.Registrations {
-		if err := s.store.DeleteLATopicSubscription(ctx, registration.ID, topicID); err != nil && err != storage.Errors.NotFound {
-			return err
-		}
 	}
 
 	return nil
@@ -185,26 +175,6 @@ func (s *PushboyService) StartLAForUser(ctx context.Context, userID, kind, exter
 	}
 	activity, err := s.store.CreateLAActivity(ctx, activity)
 	if err != nil {
-		return nil, err
-	}
-
-	registrations, err := s.store.GetEnabledLARegistrationsByUserID(ctx, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	instances := make([]storage.LAInstance, 0, len(registrations))
-	for _, registration := range registrations {
-		instances = append(instances, storage.LAInstance{
-			ID:               uuid.New().String(),
-			LAID:             activity.ID,
-			LARegistrationID: registration.ID,
-			Platform:         registration.Platform,
-			Status:           storage.LAInstanceStatusPendingStart,
-		})
-	}
-
-	if err := s.store.CreateMissingLAInstances(ctx, instances); err != nil {
 		return nil, err
 	}
 
@@ -285,14 +255,62 @@ func (s *PushboyService) EndLA(ctx context.Context, laID string, state map[strin
 	return s.store.UpdateLAActivity(ctx, activity)
 }
 
-func (s *PushboyService) ActivateLAInstance(ctx context.Context, laInstanceID, deliveryToken string) (*storage.LAInstance, error) {
-	if laInstanceID == "" || deliveryToken == "" {
-		return nil, fmt.Errorf("laInstanceID and deliveryToken are required")
+func (s *PushboyService) UpsertLAUpdateTokenForUser(ctx context.Context, userID, platform, token string, ttlSeconds int) (*storage.LAUpdateToken, error) {
+	if userID == "" {
+		return nil, fmt.Errorf("userID is required")
 	}
-
-	if err := s.store.ActivateLAInstance(ctx, laInstanceID, deliveryToken); err != nil {
+	if token == "" {
+		return nil, fmt.Errorf("token is required")
+	}
+	if err := validateLAPlatform(platform); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetUser(ctx, userID); err != nil {
 		return nil, err
 	}
 
-	return s.store.GetLAInstance(ctx, laInstanceID)
+	expiresAt, err := computeLAUpdateTokenExpiry(ttlSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	updateToken := &storage.LAUpdateToken{
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		Platform:  storage.LAPlatform(platform),
+		Token:     token,
+		ExpiresAt: expiresAt,
+	}
+
+	return s.store.UpsertLAUpdateTokenByUser(ctx, updateToken)
+}
+
+func (s *PushboyService) UpsertLAUpdateTokenForTopic(ctx context.Context, topicID, platform, token string, ttlSeconds int) (*storage.LAUpdateToken, error) {
+	if topicID == "" {
+		return nil, fmt.Errorf("topicID is required")
+	}
+	if token == "" {
+		return nil, fmt.Errorf("token is required")
+	}
+	if err := validateLAPlatform(platform); err != nil {
+		return nil, err
+	}
+	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		return nil, err
+	}
+
+	expiresAt, err := computeLAUpdateTokenExpiry(ttlSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	updateToken := &storage.LAUpdateToken{
+		ID:        uuid.New().String(),
+		TopicID:   topicID,
+		Platform:  storage.LAPlatform(platform),
+		Token:     token,
+		ExpiresAt: expiresAt,
+	}
+
+	return s.store.UpsertLAUpdateTokenByTopic(ctx, updateToken)
 }

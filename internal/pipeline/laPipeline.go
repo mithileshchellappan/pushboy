@@ -4,207 +4,189 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
+	"sync"
 
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type LAPipeline struct {
-	store            storage.Store
-	dispatchers      map[string]dispatch.Dispatcher
-	tokensChan       chan storage.LAInstance
-	registrationChan chan storage.LARegistration
-	// resultsChan chan storage.DeliveryReceipt
-	numSenders int
-	batchSize  int
+	store       storage.Store
+	dispatchers map[string]dispatch.LADispatcher
+	numSenders  int
 }
 
-func NewLAPipeline(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numSenders int, batchSize int) *LAPipeline {
+func NewLAPipeline(store storage.Store, dispatchers map[string]dispatch.LADispatcher, numSenders int) *LAPipeline {
+	if numSenders < 1 {
+		numSenders = 1
+	}
 	return &LAPipeline{
 		store:       store,
 		dispatchers: dispatchers,
 		numSenders:  numSenders,
-		batchSize:   batchSize,
 	}
 }
 
-// func (p *LAPipeline) ProcessJob(ctx context.Context, job *storage.LASnapshot) error {
+func (p *LAPipeline) ProcessJob(ctx context.Context, snapshot *storage.LASnapshot, claimedVersion int64, claimToken string) error {
+	if snapshot == nil {
+		return fmt.Errorf("la snapshot is required")
+	}
 
-// }
+	payload := &dispatch.LAPayload{
+		LAID:            snapshot.ID,
+		Kind:            snapshot.Kind,
+		ExternalRef:     snapshot.ExternalRef,
+		Event:           snapshot.PendingEvent,
+		StartAttributes: snapshot.StartAttributes,
+		CurrentState:    snapshot.CurrentState,
+		Alert:           snapshot.Alert,
+	}
 
-func (p *LAPipeline) fetchLARegistrations(ctx context.Context, job *storage.LASnapshot) error {
-	defer close(p.registrationChan)
-	cursor := ""
-	for {
-		var batch *storage.LARegistrationBatch
-		var err error
-		if job.TopicID != "" {
-			batch, err = p.store.GetLARegistrationsByTopicID(ctx, job.TopicID, cursor, p.batchSize)
-		} else if job.UserID != "" {
-			batch, err = p.store.GetLARegistrationsByUserID(ctx, job.UserID)
+	var dispatchErrors []string
+
+	if snapshot.PendingEvent == storage.LAEventStart {
+		registrations, err := p.fetchRegistrations(ctx, snapshot)
+		if err != nil {
+			dispatchErrors = append(dispatchErrors, err.Error())
 		} else {
-			return fmt.Errorf("can only fetch LA tokens for either user or topic. Require topicID or userID")
+			dispatchErrors = append(dispatchErrors, p.dispatchStarts(ctx, registrations, payload)...)
 		}
-		if err != nil {
-			log.Printf("Error fetching registration tokens: %v", err)
-			return fmt.Errorf("Error fetching registration tokens: %v", err)
-		}
+	}
 
-		for _, registration := range batch.Registrations {
-			select {
-			case p.registrationChan <- registration:
-			case <-ctx.Done():
-				return nil
-			}
-		}
-		if !batch.HasMore {
-			break
-		}
-		cursor = batch.NextCursor
+	updateTokens, err := p.fetchUpdateTokens(ctx, snapshot)
+	if err != nil {
+		dispatchErrors = append(dispatchErrors, err.Error())
+	} else {
+		dispatchErrors = append(dispatchErrors, p.dispatchUpdates(ctx, updateTokens, payload)...)
+	}
 
+	lastError := strings.Join(dispatchErrors, "; ")
+	if _, err := p.store.CompleteLAActivityDispatch(ctx, snapshot.ID, claimToken, claimedVersion, finalLAStatus(snapshot.PendingEvent), lastError); err != nil {
+		if lastError != "" {
+			return fmt.Errorf("%s; complete dispatch: %w", lastError, err)
+		}
+		return err
+	}
+
+	if lastError != "" {
+		return fmt.Errorf("%s", lastError)
 	}
 
 	return nil
 }
 
-func (p *LAPipeline) fetch(ctx context.Context, job *storage.LASnapshot) error {
-	defer close(p.tokensChan)
-	cursor := ""
-
-	for {
-		var batch *storage.TokenBatch
-		var err error
-		// jobType := job.PendingEvent
-		// if job.TopicID != "" {
-		// 	batch, err = p.store.GetTokenBatchForTopic(ctx, job.TopicID, cursor, p.batchSize)
-
-		// } else if job.UserID != "" {
-		// 	batch, err = p.store.GetTokenBatchForUser(ctx, job.UserID, cursor, p.batchSize)
-		// } else {
-		// 	return fmt.Errorf("can only fetch tokens for either user or topic. Require topicID or userID")
-		// }
-
-		if err != nil {
-			log.Printf("Error fetching tokens: %v", err)
-			return fmt.Errorf("error fetching tokens: %v", err)
-		}
-
-		for _, token := range batch.Tokens {
-			select {
-			case p.tokensChan <- token:
-			case <-ctx.Done():
-				return nil
-			}
-		}
-
-		if !batch.HasMore {
-			break
-		}
-
-		cursor = batch.NextCursor
+func (p *LAPipeline) fetchRegistrations(ctx context.Context, snapshot *storage.LASnapshot) ([]storage.LARegistration, error) {
+	switch snapshot.AudienceKind {
+	case storage.LAAudienceKindUser:
+		return p.store.GetEnabledLARegistrationsByUserID(ctx, snapshot.UserID)
+	case storage.LAAudienceKindTopic:
+		return p.store.GetEnabledLARegistrationsByTopicID(ctx, snapshot.TopicID)
+	default:
+		return nil, fmt.Errorf("unsupported LA audience kind: %s", snapshot.AudienceKind)
 	}
-	return nil
 }
 
-// func (p *NotificationPipeline) startSenders(ctx context.Context, job *storage.NotificationSnapshot) {
-// 	var wg sync.WaitGroup
-// 	for i := 1; i <= p.numSenders; i++ {
-// 		wg.Add(1)
-// 		go p.sender(ctx, job, &wg)
-// 	}
-// 	wg.Wait()
-// 	close(p.resultsChan)
-// }
+func (p *LAPipeline) fetchUpdateTokens(ctx context.Context, snapshot *storage.LASnapshot) ([]storage.LAUpdateToken, error) {
+	switch snapshot.AudienceKind {
+	case storage.LAAudienceKindUser:
+		return p.store.GetLAUpdateTokensByUser(ctx, snapshot.UserID)
+	case storage.LAAudienceKindTopic:
+		return p.store.GetLAUpdateTokensByTopic(ctx, snapshot.TopicID)
+	default:
+		return nil, fmt.Errorf("unsupported LA audience kind: %s", snapshot.AudienceKind)
+	}
+}
 
-// func (p *NotificationPipeline) sender(ctx context.Context, job *storage.NotificationSnapshot, wg *sync.WaitGroup) {
-// 	defer wg.Done()
+func (p *LAPipeline) dispatchStarts(ctx context.Context, registrations []storage.LARegistration, payload *dispatch.LAPayload) []string {
+	if len(registrations) == 0 {
+		return nil
+	}
 
-// 	// Convert storage.NotificationPayload to dispatch.NotificationPayload
-// 	var payload *dispatch.NotificationPayload
-// 	if job.Payload != nil {
-// 		payload = &dispatch.NotificationPayload{
-// 			Title:      job.Payload.Title,
-// 			Body:       job.Payload.Body,
-// 			ImageURL:   job.Payload.ImageURL,
-// 			Sound:      job.Payload.Sound,
-// 			Badge:      job.Payload.Badge,
-// 			Data:       job.Payload.Data,
-// 			Silent:     job.Payload.Silent,
-// 			CollapseID: job.Payload.CollapseID,
-// 			Priority:   job.Payload.Priority,
-// 			TTL:        job.Payload.TTL,
-// 			ThreadID:   job.Payload.ThreadID,
-// 			Category:   job.Payload.Category,
-// 		}
-// 	} else {
-// 		// Fallback for jobs without payload (shouldn't happen but safe)
-// 		payload = &dispatch.NotificationPayload{}
-// 	}
+	jobs := make(chan storage.LARegistration, len(registrations))
+	errs := make(chan string, len(registrations))
+	var wg sync.WaitGroup
 
-// 	for token := range p.tokensChan {
-// 		dispatcher, ok := p.dispatchers[token.Platform]
-// 		deliveryReceipt := storage.DeliveryReceipt{
-// 			ID:           uuid.New().String(),
-// 			JobID:        job.ID,
-// 			TokenID:      token.ID,
-// 			Status:       "SUCCESS",
-// 			StatusReason: "",
-// 			DispatchedAt: time.Now().UTC().Format(time.RFC3339),
-// 		}
+	for i := 0; i < p.numSenders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for registration := range jobs {
+				if !registration.AutoStartEnabled {
+					continue
+				}
+				dispatcher, ok := p.dispatchers[string(registration.Platform)]
+				if !ok {
+					errs <- fmt.Sprintf("missing LA dispatcher for platform %s", registration.Platform)
+					continue
+				}
+				if err := dispatcher.SendStart(ctx, &registration, payload); err != nil {
+					errs <- err.Error()
+				}
+			}
+		}()
+	}
 
-// 		if !ok {
-// 			deliveryReceipt.Status = "FAILED"
-// 			deliveryReceipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", token.Platform)
-// 			p.resultsChan <- deliveryReceipt
-// 			continue
-// 		}
+	for _, registration := range registrations {
+		jobs <- registration
+	}
+	close(jobs)
+	wg.Wait()
+	close(errs)
 
-// 		err := dispatcher.Send(ctx, &token, payload)
+	return collectLAErrors(errs)
+}
 
-// 		if err != nil {
-// 			deliveryReceipt.Status = "FAILED"
-// 			deliveryReceipt.StatusReason = err.Error()
-// 		}
-// 		p.resultsChan <- deliveryReceipt
-// 	}
-// }
+func (p *LAPipeline) dispatchUpdates(ctx context.Context, updateTokens []storage.LAUpdateToken, payload *dispatch.LAPayload) []string {
+	if len(updateTokens) == 0 {
+		return nil
+	}
 
-// func (p *NotificationPipeline) collectResults(ctx context.Context) {
-// 	var batch []storage.DeliveryReceipt
+	jobs := make(chan storage.LAUpdateToken, len(updateTokens))
+	errs := make(chan string, len(updateTokens))
+	var wg sync.WaitGroup
 
-// 	ticker := time.NewTicker(1 * time.Second)
-// 	defer ticker.Stop()
+	for i := 0; i < p.numSenders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for updateToken := range jobs {
+				dispatcher, ok := p.dispatchers[string(updateToken.Platform)]
+				if !ok {
+					errs <- fmt.Sprintf("missing LA dispatcher for platform %s", updateToken.Platform)
+					continue
+				}
+				if err := dispatcher.SendUpdate(ctx, &updateToken, payload); err != nil {
+					errs <- err.Error()
+				}
+			}
+		}()
+	}
 
-// 	flush := func() {
-// 		if len(batch) == 0 {
-// 			return
-// 		}
+	for _, updateToken := range updateTokens {
+		jobs <- updateToken
+	}
+	close(jobs)
+	wg.Wait()
+	close(errs)
 
-// 		if err := p.store.BulkInsertReceipts(ctx, batch); err != nil {
-// 			log.Printf("WORKER: -> CRITICAL: failed to bulk insert delivery receipts: %v", err)
-// 		}
+	return collectLAErrors(errs)
+}
 
-// 		batch = batch[:0]
-// 	}
+func collectLAErrors(errs <-chan string) []string {
+	var collected []string
+	for err := range errs {
+		log.Printf("WORKER: -> LA dispatch error: %s", err)
+		collected = append(collected, err)
+	}
+	return collected
+}
 
-// 	for {
-// 		select {
-// 		case receipt, ok := <-p.resultsChan:
-
-// 			if !ok {
-// 				flush()
-// 				return
-// 			}
-
-// 			batch = append(batch, receipt)
-// 			if len(batch) >= 1000 {
-// 				flush()
-// 			}
-// 		case <-ticker.C:
-// 			flush()
-// 		case <-ctx.Done():
-// 			flush()
-// 			return
-// 		}
-// 	}
-// }
+func finalLAStatus(event storage.LAEvent) storage.LAActivityStatus {
+	switch event {
+	case storage.LAEventEnd:
+		return storage.LAActivityStatusEnded
+	default:
+		return storage.LAActivityStatusActive
+	}
+}

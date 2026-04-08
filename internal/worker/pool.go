@@ -11,26 +11,28 @@ import (
 )
 
 type Pool struct {
-	store       storage.Store
-	dispatchers map[string]dispatch.Dispatcher
-	jobChan     chan *WorkItem
-	numWorkers  int
-	numSenders  int
-	batchSize   int
-	wg          sync.WaitGroup
-	closed      bool
-	mu          sync.RWMutex
+	store                   storage.Store
+	notificationDispatchers map[string]dispatch.Dispatcher
+	laDispatchers           map[string]dispatch.LADispatcher
+	jobChan                 chan *WorkItem
+	numWorkers              int
+	numSenders              int
+	batchSize               int
+	wg                      sync.WaitGroup
+	closed                  bool
+	mu                      sync.RWMutex
 }
 
-func NewPool(store storage.Store, dispatchers map[string]dispatch.Dispatcher, numWorkers, numSenders, queueSize, batchSize int) *Pool {
+func NewPool(store storage.Store, notificationDispatchers map[string]dispatch.Dispatcher, laDispatchers map[string]dispatch.LADispatcher, numWorkers, numSenders, queueSize, batchSize int) *Pool {
 	return &Pool{
-		store:       store,
-		dispatchers: dispatchers,
-		jobChan:     make(chan *WorkItem, queueSize),
-		numWorkers:  numWorkers,
-		numSenders:  numSenders,
-		batchSize:   batchSize,
-		wg:          sync.WaitGroup{},
+		store:                   store,
+		notificationDispatchers: notificationDispatchers,
+		laDispatchers:           laDispatchers,
+		jobChan:                 make(chan *WorkItem, queueSize),
+		numWorkers:              numWorkers,
+		numSenders:              numSenders,
+		batchSize:               batchSize,
+		wg:                      sync.WaitGroup{},
 	}
 }
 
@@ -44,16 +46,25 @@ func (p *Pool) Start() {
 func (p *Pool) worker(id int) {
 	defer p.wg.Done()
 
-	pipe := pipeline.NewNotificationPipeline(p.store, p.dispatchers, p.numSenders, p.batchSize)
-	log.Printf("Worker %d: Pipeline created with %d senders, batch size %d", id, p.numSenders, p.batchSize)
+	notificationPipe := pipeline.NewNotificationPipeline(p.store, p.notificationDispatchers, p.numSenders, p.batchSize)
+	laPipe := pipeline.NewLAPipeline(p.store, p.laDispatchers, p.numSenders)
+	log.Printf("Worker %d: Pipelines created with %d senders, batch size %d", id, p.numSenders, p.batchSize)
 
 	for job := range p.jobChan {
 		log.Printf("Worker %d: Processing job %s", id, job.ID)
 		if job.Kind == WorkKindNotification && job.Notification != nil {
-			if err := pipe.ProcessJob(context.Background(), &job.Notification.NotificationSnapshot); err != nil {
+			if err := notificationPipe.ProcessJob(context.Background(), &job.Notification.NotificationSnapshot); err != nil {
 				log.Printf("Worker %d: Error processing notification job %s: %v", id, job.ID, err)
 			}
+			continue
 		}
+		if job.Kind == WorkKindLA && job.LA != nil {
+			if err := laPipe.ProcessJob(context.Background(), &job.LA.LASnapshot, job.LA.ClaimedVersion, job.LA.ClaimToken); err != nil {
+				log.Printf("Worker %d: Error processing LA job %s: %v", id, job.ID, err)
+			}
+			continue
+		}
+		log.Printf("Worker %d: Ignoring malformed work item %s", id, job.ID)
 	}
 
 	log.Printf("Worker %d: Exiting", id)
