@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
 
 func main() {
@@ -107,6 +109,16 @@ func main() {
 
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start()
+
+	var masterWg sync.WaitGroup
+	var masters = make(map[int]workers.MasterWorker)
+
+	for i := 0; i < 10; i++ {
+		masterWg.Add(1)
+		master := workers.NewMaster(store, jobPipeline)
+		masters[i] = master
+		go master.Start()
+	}
 
 	httpServer := server.New(pushboyService, jobPipeline)
 

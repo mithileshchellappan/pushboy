@@ -25,6 +25,10 @@ func (p *JobPipeline) Close() {
 	close(p.jobChan)
 }
 
+func (p *JobPipeline) Jobs() <-chan model.JobItem {
+	return p.jobChan
+}
+
 // func (p *JobPipeline) fetchTokens(ctx context.Context, job *model.JobItem) error {
 // 	defer close(p.tokensChan)
 // 	cursor := ""
