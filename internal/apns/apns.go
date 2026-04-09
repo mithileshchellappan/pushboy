@@ -15,8 +15,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 const (
@@ -143,7 +142,7 @@ func (c *Client) generateJWT() (string, error) {
 	return tokenString, nil
 }
 
-func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
 	jwtToken, err := c.getJWT()
 	if err != nil {
 		return fmt.Errorf("failed to get JWT: %w", err)
@@ -209,12 +208,12 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		return err
 	}
 
-	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token.Token)
+	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token)
 
 	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, payload)
 }
 
-func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, payload *dispatch.NotificationPayload) error {
+func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, payload *model.NotificationPayload) error {
 	backoff := initialBackoff
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {

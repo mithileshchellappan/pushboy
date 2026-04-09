@@ -10,8 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -80,9 +79,9 @@ func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) 
 	return &Client{httpClient: httpClient, projectID: projectID}, nil
 }
 
-func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
 	message := FcmMessage{
-		Token: token.Token,
+		Token: token,
 	}
 
 	// For silent notifications, omit the notification block entirely

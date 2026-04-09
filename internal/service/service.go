@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
@@ -198,7 +199,7 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 
 // Send to user operations
 
-func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
 	// Validate scheduledAt format
 	if err := validateScheduledAt(scheduledAt); err != nil {
 		return nil, err
@@ -227,7 +228,7 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 
 // Publish job operations
 
-func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
 	// Validate scheduledAt format
 	if err := validateScheduledAt(scheduledAt); err != nil {
 		return nil, err

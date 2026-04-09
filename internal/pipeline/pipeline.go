@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
@@ -30,7 +31,7 @@ func NewNotificationPipeline(store storage.Store, dispatchers map[string]dispatc
 	}
 }
 
-func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.PublishJob) error {
+func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *model.WorkItem) error {
 	log.Printf("WORKER: -> Starting job: %s", job.ID)
 
 	// Create fresh channels for this job (channels are closed after each job completes)
@@ -73,7 +74,7 @@ func (p *NotificationPipeline) ProcessJob(ctx context.Context, job *storage.Publ
 	return nil
 }
 
-func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *storage.PublishJob) error {
+func (p *NotificationPipeline) fetchTokens(ctx context.Context, job *model.WorkItem) error {
 	defer close(p.tokensChan)
 	cursor := ""
 
@@ -125,9 +126,9 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 	defer wg.Done()
 
 	// Convert storage.NotificationPayload to dispatch.NotificationPayload
-	var payload *dispatch.NotificationPayload
+	var payload *model.NotificationPayload
 	if job.Payload != nil {
-		payload = &dispatch.NotificationPayload{
+		payload = &model.NotificationPayload{
 			Title:      job.Payload.Title,
 			Body:       job.Payload.Body,
 			ImageURL:   job.Payload.ImageURL,
@@ -143,7 +144,7 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 		}
 	} else {
 		// Fallback for jobs without payload (shouldn't happen but safe)
-		payload = &dispatch.NotificationPayload{}
+		payload = &model.NotificationPayload{}
 	}
 
 	for token := range p.tokensChan {
@@ -164,7 +165,7 @@ func (p *NotificationPipeline) sender(ctx context.Context, job *storage.PublishJ
 			continue
 		}
 
-		err := dispatcher.Send(ctx, &token, payload)
+		err := dispatcher.Send(ctx, token.Token, payload)
 
 		if err != nil {
 			deliveryReceipt.Status = "FAILED"

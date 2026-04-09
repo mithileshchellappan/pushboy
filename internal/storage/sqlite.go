@@ -13,6 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 type SQLiteStore struct {
@@ -405,7 +406,7 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}
@@ -460,7 +461,7 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {
-		var payload NotificationPayload
+		var payload model.NotificationPayload
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			return nil, fmt.Errorf("error deserializing payload: %w", err)
 		}

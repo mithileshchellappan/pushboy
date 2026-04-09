@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 	"github.com/mithileshchellappan/pushboy/internal/worker"
@@ -325,7 +326,7 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 // Send to user handler
 
 type SendNotificationRequest struct {
-	storage.NotificationPayload
+	model.NotificationPayload
 	ScheduledAt string `json:"scheduled_at,omitempty"`
 }
 
@@ -349,7 +350,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := &storage.NotificationPayload{
+	payload := &model.NotificationPayload{
 		Title:      req.Title,
 		Body:       req.Body,
 		ImageURL:   req.ImageURL,
@@ -509,7 +510,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := &storage.NotificationPayload{
+	payload := &model.NotificationPayload{
 		Title:      req.Title,
 		Body:       req.Body,
 		ImageURL:   req.ImageURL,

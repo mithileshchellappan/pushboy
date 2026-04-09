@@ -13,6 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	pq "github.com/lib/pq"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 type PostgresStore struct {
@@ -492,7 +493,7 @@ func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publ
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}
@@ -552,7 +553,7 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {
-		var payload NotificationPayload
+		var payload model.NotificationPayload
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			return nil, fmt.Errorf("error deserializing payload: %w", err)
 		}
@@ -627,7 +628,7 @@ func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, err
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}
