@@ -33,11 +33,11 @@ type SendResult struct {
 	StatusReason Status
 }
 
-type WorkItem struct {
+type JobItem struct {
 	ID      string
 	JobType JobType
 	Payload *NotificationPayload
-	//TODO: Add LA Payload when working on LA
+	//TODO: Add LA Payload when working on
 	TopicID string
 	UserID  string
 }

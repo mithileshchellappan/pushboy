@@ -11,20 +11,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
-	"github.com/mithileshchellappan/pushboy/internal/worker"
 )
 
 type Server struct {
-	service    *service.PushboyService
-	workerPool *worker.Pool
-	httpServer *http.Server
-	router     chi.Router
+	service     *service.PushboyService
+	jobPipeline *pipeline.JobPipeline
+	httpServer  *http.Server
+	router      chi.Router
 }
 
-func New(s *service.PushboyService, pool *worker.Pool) *Server {
-	return &Server{service: s, workerPool: pool}
+func New(s *service.PushboyService, jobPipeline *pipeline.JobPipeline) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -375,8 +375,16 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error sending notification to user: %v", err)
 		return
 	}
+
+	jobItem := model.JobItem{
+		ID:      job.ID,
+		JobType: model.JobTypePush,
+		Payload: payload,
+		UserID:  userID,
+	}
+
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		s.jobPipeline.SubmitJob(&jobItem)
 	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
@@ -531,8 +539,16 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error creating publish job: %v", err)
 		return
 	}
+
+	jobItem := model.JobItem{
+		ID:      job.ID,
+		JobType: model.JobTypePush,
+		Payload: payload,
+		TopicID: topicID,
+	}
+
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		s.jobPipeline.SubmitJob(&jobItem)
 	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }

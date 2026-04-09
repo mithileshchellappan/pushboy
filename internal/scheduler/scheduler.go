@@ -6,24 +6,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
-	"github.com/mithileshchellappan/pushboy/internal/worker"
 )
 
 type Scheduler struct {
-	store      storage.Store
-	workerPool *worker.Pool
-	stopChan   chan struct{}
-	interval   int
-	stopOnce   sync.Once
+	store       storage.Store
+	jobPipeline *pipeline.JobPipeline
+	stopChan    chan struct{}
+	interval    int
+	stopOnce    sync.Once
 }
 
-func New(store storage.Store, workerPool *worker.Pool, interval int) *Scheduler {
+func New(store storage.Store, jobPipeline *pipeline.JobPipeline, interval int) *Scheduler {
 	return &Scheduler{
-		store:      store,
-		workerPool: workerPool,
-		interval:   interval,
-		stopChan:   make(chan struct{}),
+		store:       store,
+		jobPipeline: jobPipeline,
+		interval:    interval,
+		stopChan:    make(chan struct{}),
 	}
 }
 
@@ -57,9 +58,15 @@ func (s *Scheduler) processScheduledJobs() {
 	}
 
 	for _, job := range jobs {
-		if !s.workerPool.Submit(&job) {
-			log.Printf("Worker pool closed, stopping job submission")
-			return
+
+		jobItem := model.JobItem{
+			ID:      job.ID,
+			JobType: model.JobTypePush, //TODO: Support LA type scheduled jobs
+			Payload: job.Payload,
+			TopicID: job.TopicID,
+			UserID:  job.UserID,
 		}
+
+		s.jobPipeline.SubmitJob(&jobItem)
 	}
 }
