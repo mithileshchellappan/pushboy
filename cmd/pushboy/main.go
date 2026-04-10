@@ -18,6 +18,7 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/config"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/fcm"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/scheduler"
 	"github.com/mithileshchellappan/pushboy/internal/server"
@@ -105,19 +106,21 @@ func main() {
 
 	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
 
-	jobPipeline := pipeline.NewJobPipeline(store)
+	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
 
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start()
 
+	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
+
 	var masterWg sync.WaitGroup
 	var masters = make(map[int]workers.MasterWorker)
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < cfg.WorkerCount; i++ {
 		masterWg.Add(1)
-		master := workers.NewMaster(store, jobPipeline)
+		master := workers.NewMaster(store, jobPipeline, taskPipeline, 1000)
 		masters[i] = master
-		go master.Start()
+		go master.Start(context.Background())
 	}
 
 	httpServer := server.New(pushboyService, jobPipeline)
@@ -142,7 +145,8 @@ func main() {
 	}
 
 	scheduler.Stop()
-	jobPipeline.Close()
+	jobPipeline.Close(ctx)
+	taskPipeline.Close(ctx)
 
 	if err := store.Close(); err != nil {
 		log.Printf("Error closing database: %v", err)

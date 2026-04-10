@@ -13,13 +13,13 @@ import (
 
 type Scheduler struct {
 	store       storage.Store
-	jobPipeline *pipeline.JobPipeline
+	jobPipeline pipeline.Pipeline[model.JobItem]
 	stopChan    chan struct{}
 	interval    int
 	stopOnce    sync.Once
 }
 
-func New(store storage.Store, jobPipeline *pipeline.JobPipeline, interval int) *Scheduler {
+func New(store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], interval int) *Scheduler {
 	return &Scheduler{
 		store:       store,
 		jobPipeline: jobPipeline,
@@ -51,7 +51,8 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) processScheduledJobs() {
-	jobs, err := s.store.GetScheduledJobs(context.Background())
+	ctx := context.Background()
+	jobs, err := s.store.GetScheduledJobs(ctx)
 	if err != nil {
 		log.Printf("Error starting scheduled jobs: %v", err)
 		return
@@ -67,6 +68,6 @@ func (s *Scheduler) processScheduledJobs() {
 			UserID:  job.UserID,
 		}
 
-		s.jobPipeline.SubmitJob(&jobItem)
+		s.jobPipeline.Submit(ctx, jobItem)
 	}
 }

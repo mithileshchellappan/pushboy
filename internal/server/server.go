@@ -18,12 +18,12 @@ import (
 
 type Server struct {
 	service     *service.PushboyService
-	jobPipeline *pipeline.JobPipeline
+	jobPipeline pipeline.Pipeline[model.JobItem]
 	httpServer  *http.Server
 	router      chi.Router
 }
 
-func New(s *service.PushboyService, jobPipeline *pipeline.JobPipeline) *Server {
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
 	return &Server{service: s, jobPipeline: jobPipeline}
 }
 
@@ -384,7 +384,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if job.ScheduledAt == "" {
-		s.jobPipeline.SubmitJob(&jobItem)
+		s.jobPipeline.Submit(r.Context(), jobItem)
 	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
@@ -548,7 +548,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if job.ScheduledAt == "" {
-		s.jobPipeline.SubmitJob(&jobItem)
+		s.jobPipeline.Submit(r.Context(), jobItem)
 	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }

@@ -1,32 +1,52 @@
+// package pipeline
+
+// import (
+// 	"github.com/mithileshchellappan/pushboy/internal/model"
+// 	"github.com/mithileshchellappan/pushboy/internal/storage"
+// )
+
+// type JobPipeline struct {
+// 	store   storage.Store
+// 	jobChan chan model.JobItem
+// }
+
+// func NewJobPipeline(store storage.Store) *JobPipeline {
+// 	return &JobPipeline{
+// 		store:   store,
+// 		jobChan: make(chan model.JobItem),
+// 	}
+// }
+
+// func (p *JobPipeline) SubmitJob(job *model.JobItem) {
+// 	p.jobChan <- *job
+// }
+
+// func (p *JobPipeline) Close() {
+// 	close(p.jobChan)
+// }
+
+// func (p *JobPipeline) Jobs() <-chan model.JobItem {
+// 	return p.jobChan
+// }
+
 package pipeline
 
 import (
-	"github.com/mithileshchellappan/pushboy/internal/model"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"context"
+	"errors"
 )
 
-type JobPipeline struct {
-	store   storage.Store
-	jobChan chan model.JobItem
+var ErrClosed = errors.New("pipeline closed")
+
+type Delivery[T any] interface {
+	Get() T
+	Retry(ctx context.Context) error
 }
 
-func NewJobPipeline(store storage.Store) *JobPipeline {
-	return &JobPipeline{
-		store:   store,
-		jobChan: make(chan model.JobItem),
-	}
-}
-
-func (p *JobPipeline) SubmitJob(job *model.JobItem) {
-	p.jobChan <- *job
-}
-
-func (p *JobPipeline) Close() {
-	close(p.jobChan)
-}
-
-func (p *JobPipeline) Jobs() <-chan model.JobItem {
-	return p.jobChan
+type Pipeline[T any] interface {
+	Submit(ctx context.Context, item T) error
+	Receive(ctx context.Context) (Delivery[T], error)
+	Close(ctx context.Context) error
 }
 
 // func (p *JobPipeline) fetchTokens(ctx context.Context, job *model.JobItem) error {

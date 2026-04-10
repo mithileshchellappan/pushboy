@@ -1,33 +1,89 @@
 package workers
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
 
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type MasterWorker struct {
-	store       storage.Store
-	jobPipeline *pipeline.JobPipeline
+	store        storage.Store
+	jobPipeline  pipeline.Pipeline[model.JobItem]
+	taskPipeline pipeline.Pipeline[model.SendTask]
+	batchSize    int
 	// workPipeline
 }
 
-func NewMaster(store storage.Store, jobPipeline *pipeline.JobPipeline) MasterWorker {
+func NewMaster(store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], taskPipeline pipeline.Pipeline[model.SendTask], batchSize int) MasterWorker {
 	return MasterWorker{
-		store:       store,
-		jobPipeline: jobPipeline,
+		store:        store,
+		jobPipeline:  jobPipeline,
+		taskPipeline: taskPipeline,
+		batchSize:    batchSize,
 	}
 }
 
-func (m *MasterWorker) Start() {
+func (m *MasterWorker) Start(ctx context.Context) {
 	go func() {
-		for job := range m.jobPipeline.Jobs() {
-			fmt.Println("got job ", job.ID)
+		for {
+			delivery, err := m.jobPipeline.Receive(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return
+				}
+
+				log.Printf("Master receive error: %v", err)
+				continue
+			}
+			job := delivery.Get()
+			print(job.Payload)
+			continue
 		}
 	}()
 }
 
 func (m *MasterWorker) Stop() {
 
+}
+
+func (m *MasterWorker) fetchTokens(ctx context.Context, job *model.JobItem) error {
+	// defer close(p.tokensChan)
+	cursor := ""
+
+	for {
+		var batch *storage.TokenBatch
+		var err error
+		if job.TopicID != "" {
+			batch, err = m.store.GetTokenBatchForTopic(ctx, job.TopicID, cursor, m.batchSize)
+
+		} else if job.UserID != "" {
+			batch, err = m.store.GetTokenBatchForUser(ctx, job.UserID, cursor, m.batchSize)
+		} else {
+			return fmt.Errorf("can only fetch tokens for either user or topic. Require topicID or userID")
+		}
+
+		if err != nil {
+			log.Printf("Error fetching tokens: %v", err)
+			return fmt.Errorf("error fetching tokens: %v", err)
+		}
+		// for _, token := range batch.Tokens {
+		// 	select {
+		// 	case .tokensChan <- token:
+		// 	case <-ctx.Done():
+		// 		return nil
+		// 	}
+		// }
+
+		if !batch.HasMore {
+			break
+		}
+
+		cursor = batch.NextCursor
+	}
+	return nil
 }
