@@ -6,10 +6,9 @@ import (
 )
 
 type MemoryPipeline[T any] struct {
-	channel    chan T
-	closed     bool
-	closeCh    chan struct{}
-	closeMutex sync.Mutex
+	channel chan T
+	closeCh chan struct{}
+	closed  sync.Once
 }
 
 func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
@@ -50,14 +49,9 @@ func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 }
 
 func (p *MemoryPipeline[T]) Close(ctx context.Context) error {
-	p.closeMutex.Lock()
-
-	defer p.closeMutex.Unlock()
-	if p.closed {
-		return nil
-	}
-	close(p.closeCh)
-	p.closed = true
+	p.closed.Do(func() {
+		close(p.closeCh)
+	})
 	return nil
 }
 
