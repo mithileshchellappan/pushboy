@@ -50,7 +50,7 @@ func main() {
 	}
 
 	// Initialize dispatchers - only add successfully created clients
-	dispatchers := make(map[string]dispatch.Dispatcher)
+	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -63,7 +63,7 @@ func main() {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
 			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
-			dispatchers["apns"] = apnsClient
+			dispatchers[model.APNS] = apnsClient
 			log.Println("APNS dispatcher initialized")
 		}
 	} else {
@@ -79,7 +79,7 @@ func main() {
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
-			dispatchers["fcm"] = fcmClient
+			dispatchers[model.FCM] = fcmClient
 			log.Println("FCM dispatcher initialized")
 		}
 	}
@@ -116,11 +116,21 @@ func main() {
 	var masterWg sync.WaitGroup
 	var masters = make(map[int]workers.MasterWorker)
 
+	var senderWg sync.WaitGroup
+	var senders = make(map[int]workers.SenderWorker)
+
 	for i := 0; i < cfg.WorkerCount; i++ {
 		masterWg.Add(1)
 		master := workers.NewMaster(store, jobPipeline, taskPipeline, 1000)
 		masters[i] = master
 		go master.Start(context.Background())
+	}
+
+	for i := 0; i < cfg.SenderCount; i++ {
+		senderWg.Add(1)
+		sender := workers.NewSender(store, taskPipeline, 10000)
+		senders[i] = sender
+		go sender.Start(context.Background())
 	}
 
 	httpServer := server.New(pushboyService, jobPipeline)

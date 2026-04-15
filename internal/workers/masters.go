@@ -41,7 +41,7 @@ func (m *MasterWorker) Start(ctx context.Context) {
 				continue
 			}
 			job := delivery.Get()
-			print(job.Payload)
+			m.fetchAndPushTokens(ctx, &job)
 			continue
 		}
 	}()
@@ -51,7 +51,7 @@ func (m *MasterWorker) Stop() {
 
 }
 
-func (m *MasterWorker) fetchTokens(ctx context.Context, job *model.JobItem) error {
+func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job *model.JobItem) error {
 	// defer close(p.tokensChan)
 	cursor := ""
 

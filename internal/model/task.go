@@ -17,7 +17,7 @@ const (
 type SendTarget struct {
 	TokenID  string
 	Token    string
-	Platform string
+	Platform Platform
 }
 
 type SendTask struct {

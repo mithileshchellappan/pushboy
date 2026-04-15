@@ -176,17 +176,18 @@ func (s *Server) handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Platform != "apns" && req.Platform != "fcm" {
-		http.Error(w, "Invalid platform (must be 'apns' or 'fcm')", http.StatusBadRequest)
-		return
-	}
-
 	if req.Token == "" {
 		http.Error(w, "token is required", http.StatusBadRequest)
 		return
 	}
 
-	token, user, err := s.service.RegisterToken(r.Context(), req.ID, req.Platform, req.Token)
+	platform, err := model.ParsePlatform(req.Platform)
+	if err != nil {
+		http.Error(w, "Invalid platform (must be 'apns' or 'fcm')", http.StatusBadRequest)
+		return
+	}
+
+	token, user, err := s.service.RegisterToken(r.Context(), req.ID, platform, req.Token)
 	if err != nil {
 		if errors.Is(err, storage.Errors.AlreadyExists) {
 			http.Error(w, "Token already registered", http.StatusConflict)

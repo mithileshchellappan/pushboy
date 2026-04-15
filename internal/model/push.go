@@ -1,5 +1,14 @@
 package model
 
+import "fmt"
+
+type Platform string
+
+const (
+	APNS Platform = "apns"
+	FCM  Platform = "fcm"
+)
+
 type NotificationPayload struct {
 	// Required fields
 	Title string `json:"title"`
@@ -22,4 +31,15 @@ type NotificationPayload struct {
 	// Grouping and actions
 	ThreadID string `json:"thread_id,omitempty"` // Group related notifications together
 	Category string `json:"category,omitempty"`  // Actionable notification category ID
+}
+
+//Helper methods
+
+func ParsePlatform(s string) (Platform, error) {
+	switch Platform(s) {
+	case APNS, FCM:
+		return Platform(s), nil
+	default:
+		return "", fmt.Errorf("invalid platform: %q", s)
+	}
 }

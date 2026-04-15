@@ -15,11 +15,11 @@ import (
 
 type PushboyService struct {
 	store            storage.Store
-	dispatchers      map[string]dispatch.Dispatcher
+	dispatchers      map[model.Platform]dispatch.Dispatcher
 	broadcastTopicID string // ID of the broadcast topic (all users auto-subscribe)
 }
 
-func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher, broadcastTopicID string) *PushboyService {
+func NewPushBoyService(s storage.Store, dispatchers map[model.Platform]dispatch.Dispatcher, broadcastTopicID string) *PushboyService {
 	return &PushboyService{store: s, dispatchers: dispatchers, broadcastTopicID: broadcastTopicID}
 }
 
@@ -81,7 +81,7 @@ func (s *PushboyService) DeleteUser(ctx context.Context, userID string) error {
 
 // Token operations
 
-func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platform string, tokenValue string) (*storage.Token, *storage.User, error) {
+func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platform model.Platform, tokenValue string) (*storage.Token, *storage.User, error) {
 	if platform != "apns" && platform != "fcm" {
 		return nil, nil, fmt.Errorf("invalid platform: must be 'apns' or 'fcm'")
 	}

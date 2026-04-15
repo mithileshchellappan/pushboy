@@ -17,7 +17,7 @@ type User struct {
 type Token struct {
 	ID        string
 	UserID    string
-	Platform  string // apns or fcm
+	Platform  model.Platform // apns or fcm
 	Token     string
 	CreatedAt string
 }
