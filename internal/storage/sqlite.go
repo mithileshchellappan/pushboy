@@ -165,7 +165,11 @@ func (s *SQLiteStore) DeleteToken(ctx context.Context, tokenID string) error {
 // Topic operations
 
 func (s *SQLiteStore) CreateTopic(ctx context.Context, topic *Topic) error {
-	topic.ID = fmt.Sprintf("topic:%s", strings.ToLower(topic.Name))
+	topic.ID = strings.TrimSpace(topic.ID)
+	topic.Name = strings.TrimSpace(topic.Name)
+	if topic.ID == "" || topic.Name == "" {
+		return fmt.Errorf("topic id and name are required")
+	}
 
 	query := `INSERT INTO topics(id, name) VALUES(?, ?)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)

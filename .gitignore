@@ -7,3 +7,4 @@ service-account.json
 *.env
 !.env.example
 migrate-pushboy/
+.gocache

@@ -243,6 +243,11 @@ func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 // Topic operations
 
 func (s *PostgresStore) CreateTopic(ctx context.Context, topic *Topic) error {
+	topic.ID = strings.TrimSpace(topic.ID)
+	topic.Name = strings.TrimSpace(topic.Name)
+	if topic.ID == "" || topic.Name == "" {
+		return fmt.Errorf("topic id and name are required")
+	}
 
 	query := `INSERT INTO topics(id, name) VALUES($1, $2)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)

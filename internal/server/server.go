@@ -536,6 +536,14 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 
 	job, err := s.service.CreatePublishJob(r.Context(), topicID, payload, req.ScheduledAt)
 	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		if strings.Contains(err.Error(), "scheduledAt") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
 		log.Printf("Error creating publish job: %v", err)
 		return

@@ -90,21 +90,33 @@ func main() {
 
 	// Ensure broadcast topic exists
 	var broadcastTopicID string
-	if cfg.BroadcastTopicName != "" {
-		broadcastTopicID = strings.ToLower(cfg.BroadcastTopicName)
-		topic := &storage.Topic{Name: cfg.BroadcastTopicName}
-		if err := store.CreateTopic(context.Background(), topic); err != nil {
-			if errors.Is(err, storage.Errors.AlreadyExists) {
-				log.Printf("Broadcast topic '%s' already exists (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
-			} else {
+	broadcastTopicName := strings.TrimSpace(cfg.BroadcastTopicName)
+	if broadcastTopicName != "" {
+		broadcastTopicID = strings.ToLower(broadcastTopicName)
+
+		if _, err := store.GetTopicByID(context.Background(), broadcastTopicID); err != nil {
+			if !errors.Is(err, storage.Errors.NotFound) {
+				log.Fatalf("Failed to check broadcast topic: %v", err)
+			}
+
+			topic := &storage.Topic{
+				ID:   broadcastTopicID,
+				Name: broadcastTopicName,
+			}
+			if err := store.CreateTopic(context.Background(), topic); err != nil {
+				if errors.Is(err, storage.Errors.AlreadyExists) {
+					log.Fatalf("Broadcast topic '%s' exists with a conflicting id. Clean the bad row from topics and restart.", broadcastTopicName)
+				}
 				log.Fatalf("Failed to create broadcast topic: %v", err)
 			}
+
+			log.Printf("Created broadcast topic '%s' (id: %s)", broadcastTopicName, broadcastTopicID)
 		} else {
-			log.Printf("Created broadcast topic '%s' (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
+			log.Printf("Broadcast topic '%s' already exists (id: %s)", broadcastTopicName, broadcastTopicID)
 		}
 	}
 
-	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
+	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
 
@@ -128,7 +140,7 @@ func main() {
 
 	for i := 0; i < cfg.SenderCount; i++ {
 		senderWg.Add(1)
-		sender := workers.NewSender(store, taskPipeline, 10000)
+		sender := workers.NewSender(store, taskPipeline, dispatchers, 10000)
 		senders[i] = sender
 		go sender.Start(context.Background())
 	}

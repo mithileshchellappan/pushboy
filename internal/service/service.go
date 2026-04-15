@@ -5,22 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type PushboyService struct {
 	store            storage.Store
-	dispatchers      map[model.Platform]dispatch.Dispatcher
 	broadcastTopicID string // ID of the broadcast topic (all users auto-subscribe)
 }
 
-func NewPushBoyService(s storage.Store, dispatchers map[model.Platform]dispatch.Dispatcher, broadcastTopicID string) *PushboyService {
-	return &PushboyService{store: s, dispatchers: dispatchers, broadcastTopicID: broadcastTopicID}
+func NewPushBoyService(s storage.Store, broadcastTopicID string) *PushboyService {
+	return &PushboyService{store: s, broadcastTopicID: broadcastTopicID}
 }
 
 // validateScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future
@@ -140,6 +139,12 @@ func (s *PushboyService) DeleteToken(ctx context.Context, tokenID string) error 
 // Topic operations
 
 func (s *PushboyService) CreateTopic(ctx context.Context, ID string, name string) (*storage.Topic, error) {
+	ID = strings.TrimSpace(ID)
+	name = strings.TrimSpace(name)
+	if ID == "" || name == "" {
+		return nil, fmt.Errorf("topic id and name are required")
+	}
+
 	topic := &storage.Topic{ID: ID, Name: name}
 
 	err := s.store.CreateTopic(ctx, topic)
@@ -229,6 +234,10 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 // Publish job operations
 
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		return nil, err
+	}
+
 	// Validate scheduledAt format
 	if err := validateScheduledAt(scheduledAt); err != nil {
 		return nil, err
