@@ -15,15 +15,14 @@ const (
 )
 
 type SendTarget struct {
-	JobID    string
 	TokenID  string
 	Token    string
 	Platform string
 }
 
 type SendTask struct {
-	Target  SendTarget
-	JobType JobType
+	Target SendTarget
+	Job    *JobItem
 }
 
 type SendResult struct {

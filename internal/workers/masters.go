@@ -71,13 +71,21 @@ func (m *MasterWorker) fetchTokens(ctx context.Context, job *model.JobItem) erro
 			log.Printf("Error fetching tokens: %v", err)
 			return fmt.Errorf("error fetching tokens: %v", err)
 		}
-		// for _, token := range batch.Tokens {
-		// 	select {
-		// 	case .tokensChan <- token:
-		// 	case <-ctx.Done():
-		// 		return nil
-		// 	}
-		// }
+		for _, token := range batch.Tokens {
+			task := model.SendTask{
+				Target: model.SendTarget{
+					TokenID:  token.ID,
+					Token:    token.Token,
+					Platform: token.Platform,
+				},
+				Job: job,
+			}
+			err := m.taskPipeline.Submit(ctx, task)
+			if err != nil {
+				fmt.Printf("error adding task to pipeline %v", err)
+				m.taskPipeline.Submit(ctx, task)
+			}
+		}
 
 		if !batch.HasMore {
 			break
