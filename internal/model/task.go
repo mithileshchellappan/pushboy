@@ -33,9 +33,10 @@ type SendResult struct {
 }
 
 type JobItem struct {
-	ID      string
-	JobType JobType
-	Payload *NotificationPayload
+	ID       string
+	JobType  JobType
+	Payload  *NotificationPayload
+	MaxRetry int
 	//TODO: Add LA Payload when working on
 	TopicID string
 	UserID  string

@@ -40,8 +40,7 @@ func (m *MasterWorker) Start(ctx context.Context) {
 				log.Printf("Master receive error: %v", err)
 				continue
 			}
-			job := delivery.Get()
-			m.fetchAndPushTokens(ctx, &job)
+			m.fetchAndPushTokens(ctx, delivery)
 			continue
 		}
 	}()
@@ -51,13 +50,14 @@ func (m *MasterWorker) Stop() {
 
 }
 
-func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job *model.JobItem) error {
+func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline.Delivery[model.JobItem]) error {
 	// defer close(p.tokensChan)
 	cursor := ""
 
 	for {
 		var batch *storage.TokenBatch
 		var err error
+		job := delivery.Get()
 		if job.TopicID != "" {
 			batch, err = m.store.GetTokenBatchForTopic(ctx, job.TopicID, cursor, m.batchSize)
 
@@ -66,7 +66,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job *model.JobIte
 		} else {
 			return fmt.Errorf("can only fetch tokens for either user or topic. Require topicID or userID")
 		}
-
+		log.Printf("fetching tokens for job %v", job.ID)
 		if err != nil {
 			log.Printf("Error fetching tokens: %v", err)
 			return fmt.Errorf("error fetching tokens: %v", err)
@@ -78,12 +78,11 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job *model.JobIte
 					Token:    token.Token,
 					Platform: token.Platform,
 				},
-				Job: job,
+				Job: &job,
 			}
 			err := m.taskPipeline.Submit(ctx, task)
 			if err != nil {
 				fmt.Printf("error adding task to pipeline %v", err)
-				m.taskPipeline.Submit(ctx, task)
 			}
 		}
 

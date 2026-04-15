@@ -40,7 +40,7 @@ var ErrClosed = errors.New("pipeline closed")
 
 type Delivery[T any] interface {
 	Get() T
-	Retry(ctx context.Context) error
+	Retry(ctx context.Context, maxRetry int) error
 }
 
 type Pipeline[T any] interface {

@@ -14,6 +14,10 @@ type Config struct {
 	JobQueueSize int // Size of the job queue buffer
 	BatchSize    int // Number of tokens to fetch per batch from DB
 
+	//Retry
+	MaxRetryNotification int
+	//TODO: LA Add separate retry count for LA
+
 	DatabaseDriver string
 	DatabaseURL    string
 
@@ -32,21 +36,22 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ServerPort:         getEnv("SERVER_PORT", ":8080"),
-		WorkerCount:        getIntEnv("WORKER_COUNT", 10),
-		SenderCount:        getIntEnv("SENDER_COUNT", 200),
-		JobQueueSize:       getIntEnv("JOB_QUEUE_SIZE", 1000),
-		BatchSize:          getIntEnv("BATCH_SIZE", 5000),
-		DatabaseDriver:     getEnv("DATABASE_DRIVER", "postgres"),
-		DatabaseURL:        getEnv("DATABASE_URL", "./pushboy.db"),
-		APNSKeyID:          getEnv("APNS_KEY_ID", ""),
-		APNSTeamID:         getEnv("APNS_TEAM_ID", ""),
-		APNSTopicID:        getEnv("APNS_TOPIC_ID", ""),
-		APNSKeyPath:        getEnv("APNS_KEY_PATH", ""),
-		FCMProjectID:       getEnv("FCM_PROJECT_ID", ""),
-		FCMServiceAccount:  getEnv("FCM_SERVICE_ACCOUNT", ""),
-		FCMKeyPath:         getEnv("FCM_KEY_PATH", "keys/service-account.json"),
-		BroadcastTopicName: getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
+		ServerPort:           getEnv("SERVER_PORT", ":8080"),
+		WorkerCount:          getIntEnv("WORKER_COUNT", 10),
+		SenderCount:          getIntEnv("SENDER_COUNT", 200),
+		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
+		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
+		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
+		DatabaseDriver:       getEnv("DATABASE_DRIVER", "postgres"),
+		DatabaseURL:          getEnv("DATABASE_URL", "./pushboy.db"),
+		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
+		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
+		APNSTopicID:          getEnv("APNS_TOPIC_ID", ""),
+		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
+		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
+		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
+		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
+		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
 	}
 }
 

@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -39,7 +40,7 @@ func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 			if !ok {
 				return nil, ctx.Err()
 			}
-			return memoryDelivery[T]{pipe: p, item: item}, nil
+			return memoryDelivery[T]{pipe: p, item: item, retryCount: 0}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-p.closeCh:
@@ -56,14 +57,20 @@ func (p *MemoryPipeline[T]) Close(ctx context.Context) error {
 }
 
 type memoryDelivery[T any] struct {
-	pipe *MemoryPipeline[T]
-	item T
+	pipe       *MemoryPipeline[T]
+	item       T
+	retryCount int
 }
 
 func (md memoryDelivery[T]) Get() T {
 	return md.item
 }
 
-func (md memoryDelivery[T]) Retry(ctx context.Context) error {
+func (md memoryDelivery[T]) Retry(ctx context.Context, maxRetry int) error {
+
+	if md.retryCount > maxRetry {
+		return fmt.Errorf("Max retry rechead")
+	}
+	md.retryCount++
 	return md.pipe.Submit(ctx, md.item)
 }

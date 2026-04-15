@@ -378,10 +378,11 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jobItem := model.JobItem{
-		ID:      job.ID,
-		JobType: model.JobTypePush,
-		Payload: payload,
-		UserID:  userID,
+		ID:       job.ID,
+		JobType:  model.JobTypePush,
+		MaxRetry: 3,
+		Payload:  payload,
+		UserID:   userID,
 	}
 
 	if job.ScheduledAt == "" {
