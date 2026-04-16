@@ -132,7 +132,7 @@ func (s *PostgresStore) CreateToken(ctx context.Context, token *Token) (*Token, 
 }
 
 func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([]Token, error) {
-	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = $1`
+	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`
 	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting tokens: %w", err)
@@ -158,6 +158,7 @@ func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID strin
 		WHERE t.user_id IN (
 			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
 		) 
+		AND t.is_deleted = FALSE
 		AND t.id > $2 
 		ORDER BY t.id 
 		LIMIT $3`
@@ -193,7 +194,7 @@ func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID strin
 }
 
 func (s *PostgresStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
-	query := `SELECT id, token, platform FROM tokens WHERE tokens.user_id = $1 AND tokens.id > $2 ORDER BY tokens.id LIMIT $3 `
+	query := `SELECT id, token, platform FROM tokens WHERE tokens.user_id = $1 AND tokens.is_deleted = FALSE AND tokens.id > $2 ORDER BY tokens.id LIMIT $3 `
 	rows, err := s.db.QueryContext(ctx, query, userID, cursor, batchSize+1)
 	if err != nil {
 		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
@@ -230,6 +231,40 @@ func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 	result, err := s.db.ExecContext(ctx, query, tokenID)
 	if err != nil {
 		return fmt.Errorf("error deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) SoftDeleteToken(ctx context.Context, tokenID string) error {
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = $1 AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("error soft deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error {
+	if len(tokenIDs) == 0 {
+		return nil
+	}
+
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = ANY($1) AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, pq.Array(tokenIDs))
+	if err != nil {
+		return fmt.Errorf("error bulk soft deleting tokens: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -406,7 +441,8 @@ func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (
 		SELECT COUNT(*) FROM tokens t
 		WHERE t.user_id IN (
 			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
-		)`
+		)
+		AND t.is_deleted = FALSE`
 	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
 	if err := row.Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("error counting tokens: %w", err)
@@ -449,7 +485,7 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 
 	// Count user's tokens for total_count
 	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = $1`, job.UserID).Scan(&totalCount)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`, job.UserID).Scan(&totalCount)
 	if err != nil {
 		return nil, fmt.Errorf("error counting user tokens: %w", err)
 	}

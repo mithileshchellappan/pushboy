@@ -33,7 +33,7 @@ func (m *MasterWorker) Start(ctx context.Context) {
 		for {
 			delivery, err := m.jobPipeline.Receive(ctx)
 			if err != nil {
-				if errors.Is(err, context.Canceled) {
+				if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
 					return
 				}
 

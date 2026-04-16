@@ -73,6 +73,8 @@ type Store interface {
 	CreateToken(ctx context.Context, token *Token) (*Token, error)
 	GetTokensByUserID(ctx context.Context, userID string) ([]Token, error)
 	DeleteToken(ctx context.Context, tokenID string) error
+	SoftDeleteToken(ctx context.Context, tokenID string) error
+	BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error
 
 	// Topic operations
 	CreateTopic(ctx context.Context, topic *Topic) error

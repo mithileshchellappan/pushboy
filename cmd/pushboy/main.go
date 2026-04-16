@@ -118,6 +118,9 @@ func main() {
 
 	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
@@ -146,12 +149,13 @@ func main() {
 	}
 
 	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
-	outcomeWorker.Start(context.Background())
+	outcomeDone := make(chan struct{})
+	go func() {
+		defer close(outcomeDone)
+		outcomeWorker.Start(context.Background())
+	}()
 
 	httpServer := server.New(pushboyService, jobPipeline)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
@@ -170,8 +174,21 @@ func main() {
 	}
 
 	scheduler.Stop()
-	jobPipeline.Close(ctx)
-	taskPipeline.Close(ctx)
+	if err := jobPipeline.Close(shutdownCtx); err != nil {
+		log.Printf("Job pipeline shutdown error: %v", err)
+	}
+	if err := taskPipeline.Close(shutdownCtx); err != nil {
+		log.Printf("Task pipeline shutdown error: %v", err)
+	}
+	if err := dlqPipeline.Close(shutdownCtx); err != nil {
+		log.Printf("DLQ pipeline shutdown error: %v", err)
+	}
+
+	select {
+	case <-outcomeDone:
+	case <-shutdownCtx.Done():
+		log.Printf("Timed out waiting for outcome worker shutdown: %v", shutdownCtx.Err())
+	}
 
 	if err := store.Close(); err != nil {
 		log.Printf("Error closing database: %v", err)

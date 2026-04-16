@@ -128,7 +128,7 @@ func (s *SQLiteStore) CreateToken(ctx context.Context, token *Token) (*Token, er
 }
 
 func (s *SQLiteStore) GetTokensByUserID(ctx context.Context, userID string) ([]Token, error) {
-	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = ?`
+	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = ? AND is_deleted = FALSE`
 	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting tokens: %w", err)
@@ -152,6 +152,49 @@ func (s *SQLiteStore) DeleteToken(ctx context.Context, tokenID string) error {
 	result, err := s.db.ExecContext(ctx, query, tokenID)
 	if err != nil {
 		return fmt.Errorf("error deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) SoftDeleteToken(ctx context.Context, tokenID string) error {
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = ? AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("error soft deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error {
+	if len(tokenIDs) == 0 {
+		return nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(tokenIDs)), ",")
+	args := make([]any, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		args = append(args, tokenID)
+	}
+
+	query := fmt.Sprintf(
+		`UPDATE tokens SET is_deleted = TRUE WHERE id IN (%s) AND is_deleted = FALSE`,
+		placeholders,
+	)
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("error bulk soft deleting tokens: %w", err)
 	}
 
 	rowsAffected, _ := result.RowsAffected()
@@ -332,7 +375,8 @@ func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*P
 		SELECT COUNT(*) FROM tokens t
 		WHERE t.user_id IN (
 			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = ?
-		)`
+		)
+		AND t.is_deleted = FALSE`
 	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
 	if err := row.Scan(&totalCount); err != nil {
 		return nil, fmt.Errorf("error counting tokens: %w", err)
@@ -368,7 +412,7 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 
 	// Count user's tokens for total_count
 	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = ?`, job.UserID).Scan(&totalCount)
+	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = ? AND is_deleted = FALSE`, job.UserID).Scan(&totalCount)
 	if err != nil {
 		return nil, fmt.Errorf("error counting user tokens: %w", err)
 	}

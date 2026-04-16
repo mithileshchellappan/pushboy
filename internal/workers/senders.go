@@ -36,10 +36,9 @@ func (s *SenderWorker) Start(ctx context.Context) {
 	go func() {
 		for {
 			delivery, err := s.taskPipeline.Receive(ctx)
-			log.Printf("received token to send %s", delivery)
 
 			if err != nil {
-				if errors.Is(err, context.Canceled) {
+				if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
 					return
 				}
 
@@ -58,18 +57,35 @@ func (s *SenderWorker) sendTask(ctx context.Context, delivery pipeline.Delivery[
 
 	task := delivery.Get()
 	log.Printf("sending to token %s", task.Target.Token)
-	err := s.dispatchers[task.Target.Platform].Send(ctx, task.Target.Token, task.Job.Payload)
+
+	dispatcher, ok := s.dispatchers[task.Target.Platform]
+	receipt := model.DeliveryReceipt{
+		ID:           uuid.New().String(),
+		JobID:        task.Job.ID,
+		TokenID:      task.Target.TokenID,
+		DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if !ok {
+		receipt.Status = string(model.Failed)
+		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
+		s.pushToDLQ(ctx, receipt, task)
+		return
+	}
+
+	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
-		receipt := model.DeliveryReceipt{
-			ID:           uuid.New().String(),
-			JobID:        task.Job.ID,
-			TokenID:      task.Target.TokenID,
-			Status:       string(model.Failed),
-			StatusReason: err.Error(),
-			DispatchedAt: time.Now().UTC().Format(time.RFC3339),
-		}
 
+		receipt.Status = string(model.Failed)
+		receipt.StatusReason = err.Error()
+		s.pushToDLQ(ctx, receipt, task)
+		return
+	}
+	return
+}
+
+func (s *SenderWorker) pushToDLQ(ctx context.Context, receipt model.DeliveryReceipt, task model.SendTask) {
+	if receipt.Status != string(model.Success) {
 		outcome := model.SendOutcome{
 			Receipt: receipt,
 			Task:    task,
