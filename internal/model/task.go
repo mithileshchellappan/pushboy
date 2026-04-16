@@ -10,8 +10,8 @@ const (
 type Status string
 
 const (
-	Failed  Status = "failed"
-	Success Status = "success"
+	Failed  Status = "FAILED"
+	Success Status = "SUCCESS"
 )
 
 type SendTarget struct {
@@ -25,13 +25,6 @@ type SendTask struct {
 	Job    *JobItem
 }
 
-type SendResult struct {
-	JobID        string
-	TokenID      string
-	Status       string
-	StatusReason Status
-}
-
 type JobItem struct {
 	ID       string
 	JobType  JobType
@@ -40,4 +33,18 @@ type JobItem struct {
 	//TODO: Add LA Payload when working on
 	TopicID string
 	UserID  string
+}
+
+type SendOutcome struct {
+	Task    SendTask
+	Receipt DeliveryReceipt
+}
+
+type DeliveryReceipt struct {
+	ID           string
+	JobID        string
+	TokenID      string
+	Status       string
+	StatusReason string
+	DispatchedAt string
 }

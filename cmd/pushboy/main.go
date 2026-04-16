@@ -119,11 +119,11 @@ func main() {
 	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
+	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
+	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start()
-
-	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 
 	var masterWg sync.WaitGroup
 	var masters = make(map[int]workers.MasterWorker)
@@ -140,10 +140,13 @@ func main() {
 
 	for i := 0; i < cfg.SenderCount; i++ {
 		senderWg.Add(1)
-		sender := workers.NewSender(store, taskPipeline, dispatchers, 10000)
+		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, 10000)
 		senders[i] = sender
 		go sender.Start(context.Background())
 	}
+
+	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
+	outcomeWorker.Start(context.Background())
 
 	httpServer := server.New(pushboyService, jobPipeline)
 

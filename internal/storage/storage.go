@@ -55,14 +55,6 @@ type PublishJob struct {
 }
 
 // DeliveryReceipt tracks the delivery status of a notification
-type DeliveryReceipt struct {
-	ID           string
-	JobID        string
-	TokenID      string
-	Status       string
-	StatusReason string
-	DispatchedAt string
-}
 
 type TokenBatch struct {
 	Tokens     []Token
@@ -106,8 +98,8 @@ type Store interface {
 	GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error)
 
 	// Delivery receipt operations
-	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
-	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
+	RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error
+	BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error
 
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)

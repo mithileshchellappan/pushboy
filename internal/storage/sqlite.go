@@ -483,13 +483,13 @@ func (s *SQLiteStore) IncrementJobCounters(ctx context.Context, jobID string, su
 
 // Delivery receipt operations
 
-func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 
-func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}

@@ -576,13 +576,13 @@ func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, 
 
 // Delivery receipt operations
 
-func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 
-func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}
