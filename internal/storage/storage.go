@@ -98,6 +98,8 @@ type Store interface {
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
 	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)
 	GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error)
+	GetTokenCountForTopic(ctx context.Context, topicID string) (int, error)
+	GetTokenCountForUser(ctx context.Context, userID string) (int, error)
 
 	// Delivery receipt operations
 	RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error

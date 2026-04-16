@@ -21,8 +21,10 @@ type SendTarget struct {
 }
 
 type SendTask struct {
-	Target SendTarget
-	Job    *JobItem
+	Target  SendTarget
+	Job     *JobItem
+	Count   int
+	HasMore bool
 }
 
 type JobItem struct {
@@ -31,8 +33,9 @@ type JobItem struct {
 	Payload  *NotificationPayload
 	MaxRetry int
 	//TODO: Add LA Payload when working on
-	TopicID string
-	UserID  string
+	TopicID    string
+	UserID     string
+	TotalCount int
 }
 
 type SendOutcome struct {

@@ -314,6 +314,21 @@ func (s *SQLiteStore) GetTokenBatchForTopic(ctx context.Context, topicID string,
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (s *SQLiteStore) GetTokenCountForTopic(ctx context.Context, topicID string) (int, error) {
+	var count int
+	query := `
+		SELECT COUNT(*)
+		FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = ?
+		)
+		AND t.is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, topicID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting topic tokens: %w", err)
+	}
+	return count, nil
+}
+
 func (s *SQLiteStore) GetUserSubscriptions(ctx context.Context, userID string) ([]UserTopicSubscription, error) {
 	query := `SELECT id, user_id, topic_id, created_at FROM user_topic_subscriptions WHERE user_id = ?`
 	rows, err := s.db.QueryContext(ctx, query, userID)
@@ -369,16 +384,8 @@ func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID strin
 // Publish job operations
 
 func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	// Count tokens for this topic (not subscribers, since one user can have multiple tokens)
-	var totalCount int
-	countQuery := `
-		SELECT COUNT(*) FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = ?
-		)
-		AND t.is_deleted = FALSE`
-	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
-	if err := row.Scan(&totalCount); err != nil {
+	totalCount, err := s.GetTokenCountForTopic(ctx, job.TopicID)
+	if err != nil {
 		return nil, fmt.Errorf("error counting tokens: %w", err)
 	}
 	job.TotalCount = totalCount
@@ -410,9 +417,7 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 		return nil, Errors.NotFound
 	}
 
-	// Count user's tokens for total_count
-	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = ? AND is_deleted = FALSE`, job.UserID).Scan(&totalCount)
+	totalCount, err := s.GetTokenCountForUser(ctx, job.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("error counting user tokens: %w", err)
 	}
@@ -563,6 +568,15 @@ func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []model.D
 
 func (s *SQLiteStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *SQLiteStore) GetTokenCountForUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM tokens WHERE user_id = ? AND is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting user tokens: %w", err)
+	}
+	return count, nil
 }
 
 func (s *SQLiteStore) Close() error {

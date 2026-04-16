@@ -19,6 +19,11 @@ type OutcomeWorker struct {
 	queueFlushTime int
 }
 
+type statusCountHolder struct {
+	success int
+	failure int
+}
+
 func NewOutcomeWorker(store storage.Store, dlqPipeline pipeline.Pipeline[model.SendOutcome], queueSize int, queueFlushTime int) OutcomeWorker {
 	return OutcomeWorker{
 		store:          store,
@@ -95,18 +100,39 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 	//TODO: handle retry with maxRetries and retryExp (check apple docs)
 	deliveryReceiptBatch := make([]model.DeliveryReceipt, 0, len(outcomes))
 	softDeleteTokenBatch := make([]string, 0)
+	jobStatusCount := make(map[string]*statusCountHolder)
+
 	for i := range len(outcomes) {
 		outcome := outcomes[i].Get()
+
 		reason := outcome.Receipt.StatusReason
+		status := outcome.Receipt.Status
 
 		if strings.Contains(reason, "BadDeviceToken") {
 			softDeleteTokenBatch = append(softDeleteTokenBatch, outcome.Receipt.TokenID)
 		}
 
+		_, ok := jobStatusCount[outcome.Receipt.JobID]
+
+		if !ok {
+			jobStatusCount[outcome.Receipt.JobID] = &statusCountHolder{
+				success: 0,
+				failure: 0,
+			}
+		}
+
+		if status == string(model.Success) {
+			jobStatusCount[outcome.Receipt.JobID].success++
+		} else if status == string(model.Failed) {
+			jobStatusCount[outcome.Receipt.JobID].failure++
+		}
 		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
+
+		if !outcome.Task.HasMore {
+			o.store.UpdateJobStatus(ctx, outcome.Receipt.JobID, "COMPLETED")
+		}
 	}
 	err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch)
-
 	if err != nil {
 		log.Printf("Error bulk inserting task receipts %v", err.Error())
 	}
@@ -115,6 +141,11 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		if err != nil {
 			log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
 		}
+	}
+
+	for jobID, status := range jobStatusCount {
+		o.store.IncrementJobCounters(ctx, jobID, status.success, status.failure)
+		delete(jobStatusCount, jobID)
 	}
 	return
 }

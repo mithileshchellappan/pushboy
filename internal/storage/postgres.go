@@ -226,6 +226,30 @@ func (s *PostgresStore) GetTokenBatchForUser(ctx context.Context, userID string,
 	return batch, nil
 }
 
+func (s *PostgresStore) GetTokenCountForTopic(ctx context.Context, topicID string) (int, error) {
+	var count int
+	query := `
+		SELECT COUNT(*)
+		FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
+		)
+		AND t.is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, topicID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting topic tokens: %w", err)
+	}
+	return count, nil
+}
+
+func (s *PostgresStore) GetTokenCountForUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting user tokens: %w", err)
+	}
+	return count, nil
+}
+
 func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 	query := `DELETE FROM tokens WHERE id = $1`
 	result, err := s.db.ExecContext(ctx, query, tokenID)
@@ -435,16 +459,8 @@ func (s *PostgresStore) GetTopicSubscriberCount(ctx context.Context, topicID str
 // Publish job operations
 
 func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	// Count tokens for this topic (not subscribers, since one user can have multiple tokens)
-	var totalCount int
-	countQuery := `
-		SELECT COUNT(*) FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
-		)
-		AND t.is_deleted = FALSE`
-	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
-	if err := row.Scan(&totalCount); err != nil {
+	totalCount, err := s.GetTokenCountForTopic(ctx, job.TopicID)
+	if err != nil {
 		return nil, fmt.Errorf("error counting tokens: %w", err)
 	}
 	job.TotalCount = totalCount
@@ -483,9 +499,7 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 		return nil, Errors.NotFound
 	}
 
-	// Count user's tokens for total_count
-	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`, job.UserID).Scan(&totalCount)
+	totalCount, err := s.GetTokenCountForUser(ctx, job.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("error counting user tokens: %w", err)
 	}

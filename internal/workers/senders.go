@@ -73,33 +73,32 @@ func (s *SenderWorker) sendTask(ctx context.Context, delivery pipeline.Delivery[
 	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
-
 		receipt.Status = string(model.Failed)
 		receipt.StatusReason = err.Error()
 		s.pushToDLQ(ctx, receipt, task)
 		return
 	}
+	receipt.Status = string(model.Success)
+	s.pushToDLQ(ctx, receipt, task)
 	return
 }
 
 func (s *SenderWorker) pushToDLQ(ctx context.Context, receipt model.DeliveryReceipt, task model.SendTask) {
-	if receipt.Status != string(model.Success) {
-		outcome := model.SendOutcome{
-			Receipt: receipt,
-			Task:    task,
-		}
+	outcome := model.SendOutcome{
+		Receipt: receipt,
+		Task:    task,
+	}
 
-		err := s.dlqPipeline.Submit(ctx, outcome)
+	err := s.dlqPipeline.Submit(ctx, outcome)
 
-		if errors.Is(err, context.Canceled) {
-			return
-		}
+	if errors.Is(err, context.Canceled) {
+		return
+	}
 
-		if err != nil {
-			err2 := s.dlqPipeline.Submit(ctx, outcome) //try resubmitting once
-			if err2 != nil {
-				fmt.Printf("Error submitting failed job to dlq try 1: %v try 2: %v", err.Error(), err2.Error())
-			}
+	if err != nil {
+		err2 := s.dlqPipeline.Submit(ctx, outcome) //try resubmitting once
+		if err2 != nil {
+			fmt.Printf("Error submitting failed job to dlq try 1: %v try 2: %v", err.Error(), err2.Error())
 		}
 	}
 	return

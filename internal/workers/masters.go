@@ -35,7 +35,7 @@ func (m *MasterWorker) Start(ctx context.Context) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
 				return
 			}
-
+			m.store.UpdateJobStatus(ctx, delivery.Get().ID, "FAILED")
 			log.Printf("Master receive error: %v", err)
 			continue
 		}
@@ -49,13 +49,13 @@ func (m *MasterWorker) Stop() {
 }
 
 func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline.Delivery[model.JobItem]) error {
-	// defer close(p.tokensChan)
+	job := delivery.Get()
+	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
 
 	for {
 		var batch *storage.TokenBatch
 		var err error
-		job := delivery.Get()
 		if job.TopicID != "" {
 			batch, err = m.store.GetTokenBatchForTopic(ctx, job.TopicID, cursor, m.batchSize)
 
@@ -67,6 +67,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 		log.Printf("fetching tokens for job %v", job.ID)
 		if err != nil {
 			log.Printf("Error fetching tokens: %v", err)
+			m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
 			return fmt.Errorf("error fetching tokens: %v", err)
 		}
 		for _, token := range batch.Tokens {
@@ -76,7 +77,9 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 					Token:    token.Token,
 					Platform: token.Platform,
 				},
-				Job: &job,
+				Job:     &job,
+				Count:   len(batch.Tokens),
+				HasMore: batch.HasMore,
 			}
 			err := m.taskPipeline.Submit(ctx, task)
 			if err != nil {
