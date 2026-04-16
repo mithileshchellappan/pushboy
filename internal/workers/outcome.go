@@ -134,10 +134,10 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		return
 	}
 	if len(softDeleteTokenBatch) > 0 {
-		err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch)
-		if err != nil {
-			log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
-		}
+		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
+		// if err != nil {
+		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
+		// }
 	}
 
 	for jobID, status := range jobStatusCount {
