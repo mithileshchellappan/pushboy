@@ -384,12 +384,6 @@ func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID strin
 // Publish job operations
 
 func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	totalCount, err := s.GetTokenCountForTopic(ctx, job.TopicID)
-	if err != nil {
-		return nil, fmt.Errorf("error counting tokens: %w", err)
-	}
-	job.TotalCount = totalCount
-
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
 	if err != nil {
@@ -416,12 +410,6 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 	if !userExists {
 		return nil, Errors.NotFound
 	}
-
-	totalCount, err := s.GetTokenCountForUser(ctx, job.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("error counting user tokens: %w", err)
-	}
-	job.TotalCount = totalCount
 
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
@@ -482,6 +470,32 @@ func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 	return err
 }
 
+func (s *SQLiteStore) FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error {
+	if totalCount == 0 {
+		_, err := s.db.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET total_count = ?, status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			totalCount,
+			jobID,
+		)
+		if err != nil {
+			return fmt.Errorf("error finalizing empty dispatch: %w", err)
+		}
+		return nil
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs SET total_count = ?, status = 'DISPATCHED' WHERE id = ?`,
+		totalCount,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error finalizing dispatch: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
 	query := `
 		SELECT 
@@ -528,6 +542,22 @@ func (s *SQLiteStore) IncrementJobCounters(ctx context.Context, jobID string, su
 	query := `UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
+}
+
+func (s *SQLiteStore) CompleteJobIfDone(ctx context.Context, jobID string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs
+		SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+		AND status = 'DISPATCHED'
+		AND success_count + failure_count >= total_count`,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error completing job: %w", err)
+	}
+	return nil
 }
 
 // Delivery receipt operations

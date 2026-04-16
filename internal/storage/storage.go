@@ -94,8 +94,10 @@ type Store interface {
 	CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
+	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
+	CompleteJobIfDone(ctx context.Context, jobID string) error
 	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)
 	GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error)
 	GetTokenCountForTopic(ctx context.Context, topicID string) (int, error)

@@ -127,14 +127,11 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 			jobStatusCount[outcome.Receipt.JobID].failure++
 		}
 		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
-
-		if !outcome.Task.HasMore {
-			o.store.UpdateJobStatus(ctx, outcome.Receipt.JobID, "COMPLETED")
-		}
 	}
 	err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch)
 	if err != nil {
 		log.Printf("Error bulk inserting task receipts %v", err.Error())
+		return
 	}
 	if len(softDeleteTokenBatch) > 0 {
 		err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch)
@@ -144,8 +141,13 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 	}
 
 	for jobID, status := range jobStatusCount {
-		o.store.IncrementJobCounters(ctx, jobID, status.success, status.failure)
-		delete(jobStatusCount, jobID)
+		if err := o.store.IncrementJobCounters(ctx, jobID, status.success, status.failure); err != nil {
+			log.Printf("Error incrementing job counters for job %s: %v", jobID, err)
+			continue
+		}
+		if err := o.store.CompleteJobIfDone(ctx, jobID); err != nil {
+			log.Printf("Error completing job %s: %v", jobID, err)
+		}
 	}
 	return
 }

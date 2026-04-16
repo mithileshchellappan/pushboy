@@ -459,12 +459,6 @@ func (s *PostgresStore) GetTopicSubscriberCount(ctx context.Context, topicID str
 // Publish job operations
 
 func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	totalCount, err := s.GetTokenCountForTopic(ctx, job.TopicID)
-	if err != nil {
-		return nil, fmt.Errorf("error counting tokens: %w", err)
-	}
-	job.TotalCount = totalCount
-
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
 	if err != nil {
@@ -498,12 +492,6 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 	if !userExists {
 		return nil, Errors.NotFound
 	}
-
-	totalCount, err := s.GetTokenCountForUser(ctx, job.UserID)
-	if err != nil {
-		return nil, fmt.Errorf("error counting user tokens: %w", err)
-	}
-	job.TotalCount = totalCount
 
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
@@ -571,6 +559,32 @@ func (s *PostgresStore) UpdateJobStatus(ctx context.Context, jobID string, statu
 	return err
 }
 
+func (s *PostgresStore) FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error {
+	if totalCount == 0 {
+		_, err := s.db.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET total_count = $1, status = 'COMPLETED', completed_at = NOW() WHERE id = $2`,
+			totalCount,
+			jobID,
+		)
+		if err != nil {
+			return fmt.Errorf("error finalizing empty dispatch: %w", err)
+		}
+		return nil
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs SET total_count = $1, status = 'DISPATCHED' WHERE id = $2`,
+		totalCount,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error finalizing dispatch: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
 	query := `
 		SELECT 
@@ -622,6 +636,22 @@ func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, 
 	query := `UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
+}
+
+func (s *PostgresStore) CompleteJobIfDone(ctx context.Context, jobID string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs
+		SET status = 'COMPLETED', completed_at = NOW()
+		WHERE id = $1
+		AND status = 'DISPATCHED'
+		AND success_count + failure_count >= total_count`,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error completing job: %w", err)
+	}
+	return nil
 }
 
 // Delivery receipt operations

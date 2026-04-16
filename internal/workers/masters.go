@@ -35,7 +35,6 @@ func (m *MasterWorker) Start(ctx context.Context) {
 			if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
 				return
 			}
-			m.store.UpdateJobStatus(ctx, delivery.Get().ID, "FAILED")
 			log.Printf("Master receive error: %v", err)
 			continue
 		}
@@ -52,7 +51,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 	job := delivery.Get()
 	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
-
+	totalTokenCount := 0
 	for {
 		var batch *storage.TokenBatch
 		var err error
@@ -70,6 +69,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 			m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
 			return fmt.Errorf("error fetching tokens: %v", err)
 		}
+		totalTokenCount += len(batch.Tokens)
 		for _, token := range batch.Tokens {
 			task := model.SendTask{
 				Target: model.SendTarget{
@@ -77,9 +77,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 					Token:    token.Token,
 					Platform: token.Platform,
 				},
-				Job:     &job,
-				Count:   len(batch.Tokens),
-				HasMore: batch.HasMore,
+				Job: &job,
 			}
 			err := m.taskPipeline.Submit(ctx, task)
 			if err != nil {
@@ -92,6 +90,11 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 		}
 
 		cursor = batch.NextCursor
+	}
+	if err := m.store.FinalizeJobDispatch(ctx, job.ID, totalTokenCount); err != nil {
+		log.Printf("Error finalizing dispatch for job %v: %v", job.ID, err)
+		m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
+		return fmt.Errorf("error finalizing dispatch: %v", err)
 	}
 	return nil
 }

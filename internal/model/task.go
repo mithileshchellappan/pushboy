@@ -21,10 +21,8 @@ type SendTarget struct {
 }
 
 type SendTask struct {
-	Target  SendTarget
-	Job     *JobItem
-	Count   int
-	HasMore bool
+	Target SendTarget
+	Job    *JobItem
 }
 
 type JobItem struct {
