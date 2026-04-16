@@ -268,3 +268,7 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {
 	return s.store.GetJobStatus(ctx, jobID)
 }
+
+func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+	return s.store.UpdateJobStatus(ctx, jobID, status)
+}

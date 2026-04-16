@@ -54,7 +54,6 @@ func (s *SenderWorker) Start(ctx context.Context) {
 func (s *SenderWorker) sendTask(ctx context.Context, delivery pipeline.Delivery[model.SendTask]) {
 
 	task := delivery.Get()
-	log.Printf("sending to token %s", task.Target.Token)
 
 	dispatcher, ok := s.dispatchers[task.Target.Platform]
 	receipt := model.DeliveryReceipt{

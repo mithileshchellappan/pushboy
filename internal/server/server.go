@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -22,6 +23,8 @@ type Server struct {
 	httpServer  *http.Server
 	router      chi.Router
 }
+
+const immediateEnqueueTimeout = 2 * time.Second
 
 func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
 	return &Server{service: s, jobPipeline: jobPipeline}
@@ -87,6 +90,23 @@ func (s *Server) setupRouter() chi.Router {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error {
+	enqueueCtx, cancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+	defer cancel()
+
+	if err := s.jobPipeline.Submit(enqueueCtx, jobItem); err != nil {
+		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+		defer statusCancel()
+
+		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, "FAILED"); updateErr != nil {
+			log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobID, updateErr)
+		}
+		return err
+	}
+
+	return nil
 }
 
 // Health check
@@ -386,7 +406,15 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if job.ScheduledAt == "" {
-		s.jobPipeline.Submit(r.Context(), jobItem)
+		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
+			log.Printf("Error enqueueing immediate user job %s: %v", job.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
+				http.Error(w, "Job queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "Error queueing notification", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
@@ -558,7 +586,15 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if job.ScheduledAt == "" {
-		s.jobPipeline.Submit(r.Context(), jobItem)
+		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
+			log.Printf("Error enqueueing immediate topic job %s: %v", job.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
+				http.Error(w, "Job queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "Error queueing publish job", http.StatusInternalServerError)
+			return
+		}
 	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }
