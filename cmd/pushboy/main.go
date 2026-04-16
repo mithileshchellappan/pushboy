@@ -128,7 +128,7 @@ func main() {
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
 	scheduler := scheduler.New(store, jobPipeline, 10)
-	scheduler.Start()
+	scheduler.Start(workerCtx)
 
 	var masterWg sync.WaitGroup
 	var masters = make(map[int]workers.MasterWorker)

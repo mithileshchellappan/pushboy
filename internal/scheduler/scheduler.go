@@ -28,7 +28,7 @@ func New(store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], inte
 	}
 }
 
-func (s *Scheduler) Start() {
+func (s *Scheduler) Start(ctx context.Context) {
 	go func() {
 		ticker := time.NewTicker(time.Duration(s.interval) * time.Second)
 		defer ticker.Stop()
@@ -36,7 +36,7 @@ func (s *Scheduler) Start() {
 		for {
 			select {
 			case <-ticker.C:
-				s.processScheduledJobs()
+				s.processScheduledJobs(ctx)
 			case <-s.stopChan:
 				return
 			}
@@ -50,8 +50,7 @@ func (s *Scheduler) Stop() {
 	})
 }
 
-func (s *Scheduler) processScheduledJobs() {
-	ctx := context.Background()
+func (s *Scheduler) processScheduledJobs(ctx context.Context) {
 	jobs, err := s.store.GetScheduledJobs(ctx)
 	if err != nil {
 		log.Printf("Error starting scheduled jobs: %v", err)

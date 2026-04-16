@@ -8,8 +8,7 @@ import (
 
 type MemoryPipeline[T any] struct {
 	channel chan T
-	closeCh chan struct{}
-	closed  sync.Once
+	once    sync.Once
 }
 
 func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
@@ -18,7 +17,6 @@ func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
 	}
 	return &MemoryPipeline[T]{
 		channel: make(chan T, bufferSize),
-		closeCh: make(chan struct{}),
 	}
 }
 
@@ -28,30 +26,27 @@ func (p *MemoryPipeline[T]) Submit(ctx context.Context, item T) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-p.closeCh:
-		return ErrClosed
 	}
 }
 
 func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 	for {
 		select {
+		case <-ctx.Done():
+			return nil, ErrClosed
 		case item, ok := <-p.channel:
 			if !ok {
-				return nil, ctx.Err()
+				return nil, ErrClosed
 			}
 			return memoryDelivery[T]{pipe: p, item: item, retryCount: 0}, nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-p.closeCh:
-			return nil, ErrClosed
+
 		}
 	}
 }
 
 func (p *MemoryPipeline[T]) Close(ctx context.Context) error {
-	p.closed.Do(func() {
-		close(p.closeCh)
+	p.once.Do(func() {
+		close(p.channel)
 	})
 	return nil
 }
