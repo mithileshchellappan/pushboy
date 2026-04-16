@@ -33,24 +33,22 @@ func NewSender(store storage.Store, taskPipeline pipeline.Pipeline[model.SendTas
 }
 
 func (s *SenderWorker) Start(ctx context.Context) {
-	go func() {
-		for {
-			delivery, err := s.taskPipeline.Receive(ctx)
+	for {
+		delivery, err := s.taskPipeline.Receive(ctx)
 
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
-					return
-				}
-
-				log.Printf("Sender receiver error: %v", err)
-				continue
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
+				return
 			}
 
-			s.sendTask(ctx, delivery)
+			log.Printf("Sender receiver error: %v", err)
 			continue
 		}
 
-	}()
+		s.sendTask(ctx, delivery)
+		continue
+	}
+
 }
 
 func (s *SenderWorker) sendTask(ctx context.Context, delivery pipeline.Delivery[model.SendTask]) {

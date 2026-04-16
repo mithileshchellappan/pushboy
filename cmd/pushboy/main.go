@@ -32,6 +32,11 @@ func main() {
 
 	var store storage.Store
 	var err error
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	workerCtx, workerStop := context.WithCancel(context.Background())
+	defer workerStop()
 
 	switch cfg.DatabaseDriver {
 	// case "sqlite":
@@ -75,7 +80,7 @@ func main() {
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
-		fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
+		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
@@ -94,7 +99,7 @@ func main() {
 	if broadcastTopicName != "" {
 		broadcastTopicID = strings.ToLower(broadcastTopicName)
 
-		if _, err := store.GetTopicByID(context.Background(), broadcastTopicID); err != nil {
+		if _, err := store.GetTopicByID(ctx, broadcastTopicID); err != nil {
 			if !errors.Is(err, storage.Errors.NotFound) {
 				log.Fatalf("Failed to check broadcast topic: %v", err)
 			}
@@ -103,7 +108,7 @@ func main() {
 				ID:   broadcastTopicID,
 				Name: broadcastTopicName,
 			}
-			if err := store.CreateTopic(context.Background(), topic); err != nil {
+			if err := store.CreateTopic(ctx, topic); err != nil {
 				if errors.Is(err, storage.Errors.AlreadyExists) {
 					log.Fatalf("Broadcast topic '%s' exists with a conflicting id. Clean the bad row from topics and restart.", broadcastTopicName)
 				}
@@ -118,9 +123,6 @@ func main() {
 
 	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
@@ -134,26 +136,35 @@ func main() {
 	var senderWg sync.WaitGroup
 	var senders = make(map[int]workers.SenderWorker)
 
-	for i := 0; i < cfg.WorkerCount; i++ {
+	for i := range cfg.WorkerCount {
 		masterWg.Add(1)
 		master := workers.NewMaster(store, jobPipeline, taskPipeline, 1000)
 		masters[i] = master
-		go master.Start(context.Background())
+		go func(m workers.MasterWorker) {
+			defer masterWg.Done()
+			m.Start(workerCtx)
+		}(master)
+
 	}
 
-	for i := 0; i < cfg.SenderCount; i++ {
+	for i := range cfg.SenderCount {
 		senderWg.Add(1)
 		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, 10000)
 		senders[i] = sender
-		go sender.Start(context.Background())
+		go func(m workers.SenderWorker) {
+			defer senderWg.Done()
+			m.Start(workerCtx)
+		}(sender)
 	}
 
 	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
-	outcomeDone := make(chan struct{})
-	go func() {
-		defer close(outcomeDone)
-		outcomeWorker.Start(context.Background())
-	}()
+	var outcomeWg sync.WaitGroup
+	//If required more DLQ outcome workers change it into a looped go routines
+	outcomeWg.Add(1)
+	go func(o workers.OutcomeWorker) {
+		defer outcomeWg.Done()
+		o.Start(workerCtx)
+	}(outcomeWorker)
 
 	httpServer := server.New(pushboyService, jobPipeline)
 
@@ -174,25 +185,33 @@ func main() {
 	}
 
 	scheduler.Stop()
-	if err := jobPipeline.Close(shutdownCtx); err != nil {
-		log.Printf("Job pipeline shutdown error: %v", err)
-	}
-	if err := taskPipeline.Close(shutdownCtx); err != nil {
-		log.Printf("Task pipeline shutdown error: %v", err)
-	}
-	if err := dlqPipeline.Close(shutdownCtx); err != nil {
-		log.Printf("DLQ pipeline shutdown error: %v", err)
-	}
+	gracefulDone := make(chan struct{})
+	go func() {
+		defer close(gracefulDone)
+		if err := jobPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("Job pipeline shutdown error: %v", err)
+		}
+		masterWg.Wait()
+		if err := taskPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("Task pipeline shutdown error: %v", err)
+		}
+		senderWg.Wait()
+		if err := dlqPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("DLQ pipeline shutdown error: %v", err)
+		}
+		outcomeWg.Wait()
+		if err := store.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
 
 	select {
-	case <-outcomeDone:
+	case <-gracefulDone:
+		log.Printf("Gracefully Shutdown all workers.")
 	case <-shutdownCtx.Done():
 		log.Printf("Timed out waiting for outcome worker shutdown: %v", shutdownCtx.Err())
+		workerStop()
 	}
 
-	if err := store.Close(); err != nil {
-		log.Printf("Error closing database: %v", err)
-	}
-
-	log.Println("Server exiting")
+	log.Println("Pushboy exiting. See ya!")
 }

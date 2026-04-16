@@ -29,21 +29,19 @@ func NewMaster(store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem]
 }
 
 func (m *MasterWorker) Start(ctx context.Context) {
-	go func() {
-		for {
-			delivery, err := m.jobPipeline.Receive(ctx)
-			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
-					return
-				}
-
-				log.Printf("Master receive error: %v", err)
-				continue
+	for {
+		delivery, err := m.jobPipeline.Receive(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, pipeline.ErrClosed) {
+				return
 			}
-			m.fetchAndPushTokens(ctx, delivery)
+
+			log.Printf("Master receive error: %v", err)
 			continue
 		}
-	}()
+		m.fetchAndPushTokens(ctx, delivery)
+		continue
+	}
 }
 
 func (m *MasterWorker) Stop() {
