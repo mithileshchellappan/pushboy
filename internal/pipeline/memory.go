@@ -8,7 +8,8 @@ import (
 
 type MemoryPipeline[T any] struct {
 	channel chan T
-	once    sync.Once
+	mu      sync.RWMutex
+	closed  bool
 }
 
 func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
@@ -21,6 +22,12 @@ func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
 }
 
 func (p *MemoryPipeline[T]) Submit(ctx context.Context, item T) error {
+	p.mu.RLock()
+	if p.closed {
+		p.mu.RUnlock()
+		return ErrClosed
+	}
+	defer p.mu.RUnlock()
 	select {
 	case p.channel <- item:
 		return nil
@@ -45,9 +52,16 @@ func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 }
 
 func (p *MemoryPipeline[T]) Close(ctx context.Context) error {
-	p.once.Do(func() {
-		close(p.channel)
-	})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.closed {
+		return nil
+	}
+
+	p.closed = true
+	close(p.channel)
+
 	return nil
 }
 
