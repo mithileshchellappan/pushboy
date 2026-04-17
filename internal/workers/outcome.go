@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -145,10 +146,11 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 	for jobID, status := range jobStatusCount {
 		if err := o.store.IncrementJobCounters(ctx, jobID, status.success, status.failure); err != nil {
 			log.Printf("Error incrementing job counters for job %s: %v", jobID, err)
-			continue
+			return fmt.Errorf("Error incrementing job counters for job %s: %v", jobID, err)
 		}
 		if err := o.store.CompleteJobIfDone(ctx, jobID); err != nil {
 			log.Printf("Error completing job %s: %v", jobID, err)
+			return fmt.Errorf("Error completing job %s: %v", jobID, err)
 		}
 	}
 	return nil
