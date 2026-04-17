@@ -69,9 +69,12 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 		}
 		defer cancel()
 
-		o.processOutcome(flushCtx, outcomeBatch)
-		clear(outcomeBatch)
-		outcomeBatch = outcomeBatch[:0]
+		if err := o.processOutcome(flushCtx, outcomeBatch); err != nil {
+			log.Printf("Error processing outcome :%v", err)
+		} else {
+			clear(outcomeBatch)
+			outcomeBatch = outcomeBatch[:0]
+		}
 	}
 	for {
 		select {
@@ -96,7 +99,7 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 	}
 }
 
-func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.Delivery[model.SendOutcome]) {
+func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.Delivery[model.SendOutcome]) error {
 	//TODO: handle retry with maxRetries and retryExp (check apple docs)
 	deliveryReceiptBatch := make([]model.DeliveryReceipt, 0, len(outcomes))
 	softDeleteTokenBatch := make([]string, 0)
@@ -128,10 +131,9 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		}
 		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
 	}
-	err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch)
-	if err != nil {
+	if err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch); err != nil {
 		log.Printf("Error bulk inserting task receipts %v", err.Error())
-		return
+		return err
 	}
 	if len(softDeleteTokenBatch) > 0 {
 		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
@@ -149,5 +151,5 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 			log.Printf("Error completing job %s: %v", jobID, err)
 		}
 	}
-	return
+	return nil
 }

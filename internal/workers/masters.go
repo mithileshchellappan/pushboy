@@ -79,8 +79,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 				},
 				Job: &job,
 			}
-			err := m.taskPipeline.Submit(ctx, task)
-			if err != nil {
+			if err := m.taskPipeline.Submit(ctx, task); err != nil {
 				fmt.Printf("error adding task to pipeline %v", err)
 			}
 		}
@@ -95,6 +94,11 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 		log.Printf("Error finalizing dispatch for job %v: %v", job.ID, err)
 		m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
 		return fmt.Errorf("error finalizing dispatch: %v", err)
+	}
+
+	if err := m.store.CompleteJobIfDone(ctx, job.ID); err != nil {
+		log.Printf("Error re-checking job completeion after dispatch %v: %v", job.ID, err)
+		return fmt.Errorf("error rechechking job completion %v", err)
 	}
 	return nil
 }

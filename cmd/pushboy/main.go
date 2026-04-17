@@ -138,7 +138,7 @@ func main() {
 
 	for i := range cfg.WorkerCount {
 		masterWg.Add(1)
-		master := workers.NewMaster(store, jobPipeline, taskPipeline, 1000)
+		master := workers.NewMaster(store, jobPipeline, taskPipeline, cfg.WorkerCount)
 		masters[i] = master
 		go func(m workers.MasterWorker) {
 			defer masterWg.Done()
@@ -149,7 +149,7 @@ func main() {
 
 	for i := range cfg.SenderCount {
 		senderWg.Add(1)
-		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, 10000)
+		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, cfg.SenderCount)
 		senders[i] = sender
 		go func(m workers.SenderWorker) {
 			defer senderWg.Done()
