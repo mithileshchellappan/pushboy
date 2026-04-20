@@ -505,14 +505,12 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 			pj.payload, 
 			pj.status, 
 			pj.total_count, 
-			COALESCE(SUM(CASE WHEN dr.status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success_count,
-			COALESCE(SUM(CASE WHEN dr.status = 'FAILED' THEN 1 ELSE 0 END), 0) as failure_count,
+			pj.success_count,
+			pj.failure_count,
 			pj.created_at,
 			COALESCE(pj.completed_at, '')
 		FROM publish_jobs pj
-		LEFT JOIN delivery_receipts dr ON pj.id = dr.job_id
-		WHERE pj.id = ?
-		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at, pj.completed_at`
+		WHERE pj.id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
@@ -536,6 +534,80 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 	}
 
 	return &job, nil
+}
+
+func (s *SQLiteStore) ApplyOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	type counterDelta struct {
+		success int
+		failure int
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting outcome transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	deltas := make(map[string]*counterDelta)
+
+	for _, receipt := range receipts {
+		if _, ok := deltas[receipt.JobID]; !ok {
+			deltas[receipt.JobID] = &counterDelta{}
+		}
+
+		switch receipt.Status {
+		case string(model.Success):
+			deltas[receipt.JobID].success++
+		case string(model.Failed):
+			deltas[receipt.JobID].failure++
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`,
+				receipt.ID,
+				receipt.JobID,
+				receipt.TokenID,
+				receipt.Status,
+				receipt.StatusReason,
+				receipt.DispatchedAt,
+			); err != nil {
+				return fmt.Errorf("error recording failure receipt for job %s token %s: %w", receipt.JobID, receipt.TokenID, err)
+			}
+		}
+	}
+
+	for jobID, delta := range deltas {
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?`,
+			delta.success,
+			delta.failure,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error updating counters for job %s: %w", jobID, err)
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs
+			SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+			AND status = 'DISPATCHED'
+			AND success_count + failure_count >= total_count`,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error completing job %s: %w", jobID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing outcome transaction: %w", err)
+	}
+
+	return nil
 }
 
 func (s *SQLiteStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {

@@ -96,6 +96,7 @@ type Store interface {
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
+	ApplyOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
 	CompleteJobIfDone(ctx context.Context, jobID string) error
 	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)

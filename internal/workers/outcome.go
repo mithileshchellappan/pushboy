@@ -3,7 +3,6 @@ package workers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -18,11 +17,6 @@ type OutcomeWorker struct {
 	dlqPipeline    pipeline.Pipeline[model.SendOutcome]
 	queueSize      int
 	queueFlushTime int
-}
-
-type statusCountHolder struct {
-	success int
-	failure int
 }
 
 func NewOutcomeWorker(store storage.Store, dlqPipeline pipeline.Pipeline[model.SendOutcome], queueSize int, queueFlushTime int) OutcomeWorker {
@@ -104,49 +98,21 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 	//TODO: handle retry with maxRetries and retryExp (check apple docs)
 	deliveryReceiptBatch := make([]model.DeliveryReceipt, 0, len(outcomes))
 	softDeleteTokenBatch := make([]string, 0)
-	jobStatusCount := make(map[string]*statusCountHolder)
 
 	for i := range len(outcomes) {
 		outcome := outcomes[i].Get()
 
 		reason := outcome.Receipt.StatusReason
-		status := outcome.Receipt.Status
 
 		if strings.Contains(reason, "BadDeviceToken") {
 			softDeleteTokenBatch = append(softDeleteTokenBatch, outcome.Receipt.TokenID)
 		}
 
-		_, ok := jobStatusCount[outcome.Receipt.JobID]
-
-		if !ok {
-			jobStatusCount[outcome.Receipt.JobID] = &statusCountHolder{
-				success: 0,
-				failure: 0,
-			}
-		}
-
-		if status == string(model.Success) {
-			jobStatusCount[outcome.Receipt.JobID].success++
-		} else if status == string(model.Failed) {
-			jobStatusCount[outcome.Receipt.JobID].failure++
-			deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
-		}
-
+		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
 	}
 
-	for jobID, status := range jobStatusCount {
-		if err := o.store.IncrementJobCounters(ctx, jobID, status.success, status.failure); err != nil {
-			log.Printf("Error incrementing job counters for job %s: %v", jobID, err)
-			return fmt.Errorf("Error incrementing job counters for job %s: %v", jobID, err)
-		}
-		if err := o.store.CompleteJobIfDone(ctx, jobID); err != nil {
-			log.Printf("Error completing job %s: %v", jobID, err)
-			return fmt.Errorf("Error completing job %s: %v", jobID, err)
-		}
-	}
-
-	if err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch); err != nil {
-		log.Printf("Error bulk inserting task receipts %v", err.Error())
+	if err := o.store.ApplyOutcomeBatch(ctx, deliveryReceiptBatch); err != nil {
+		log.Printf("Error applying outcome batch %v", err.Error())
 		return err
 	}
 	if len(softDeleteTokenBatch) > 0 {
