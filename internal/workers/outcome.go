@@ -129,18 +129,9 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 			jobStatusCount[outcome.Receipt.JobID].success++
 		} else if status == string(model.Failed) {
 			jobStatusCount[outcome.Receipt.JobID].failure++
+			deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
 		}
-		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
-	}
-	if err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch); err != nil {
-		log.Printf("Error bulk inserting task receipts %v", err.Error())
-		return err
-	}
-	if len(softDeleteTokenBatch) > 0 {
-		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
-		// if err != nil {
-		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
-		// }
+
 	}
 
 	for jobID, status := range jobStatusCount {
@@ -153,5 +144,17 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 			return fmt.Errorf("Error completing job %s: %v", jobID, err)
 		}
 	}
+
+	if err := o.store.BulkInsertReceipts(ctx, deliveryReceiptBatch); err != nil {
+		log.Printf("Error bulk inserting task receipts %v", err.Error())
+		return err
+	}
+	if len(softDeleteTokenBatch) > 0 {
+		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
+		// if err != nil {
+		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
+		// }
+	}
+
 	return nil
 }
