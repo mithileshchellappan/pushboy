@@ -615,7 +615,7 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 	}
 
 	if completedAt.Valid {
-		job.CompletedAt = completedAt.Time.Format(time.RFC3339)
+		job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	// Deserialize payload from JSON
@@ -766,7 +766,7 @@ func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []model
 }
 
 func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
-	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, COALESCE(completed_at::text, ''), COALESCE(scheduled_at::text, '')`
+	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at`
 
 	rows, err := s.db.QueryContext(ctx, query)
 
@@ -779,9 +779,16 @@ func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, err
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
-		var completedAt sql.NullString
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &job.ScheduledAt); err != nil {
+		var completedAt sql.NullTime
+		var scheduledAt sql.NullTime
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &scheduledAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		if completedAt.Valid {
+			job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if scheduledAt.Valid {
+			job.ScheduledAt = scheduledAt.Time.UTC().Format(time.RFC3339)
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
