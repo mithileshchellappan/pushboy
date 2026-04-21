@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
@@ -201,16 +202,6 @@ func (s *PostgresStore) CreateLiveActivityJob(ctx context.Context, job *LiveActi
 
 func (s *PostgresStore) GetLiveActivityJob(ctx context.Context, jobID string) (*LiveActivityJob, error) {
 	query := `
-		WITH expired AS (
-			UPDATE live_activity_jobs
-			SET status = 'expired',
-				closed_at = COALESCE(closed_at, NOW()),
-				updated_at = NOW()
-			WHERE id = $1
-			  AND status IN ('active', 'closing')
-			  AND expires_at IS NOT NULL
-			  AND expires_at <= NOW()
-		)
 		SELECT id, activity_type, COALESCE(user_id, ''), COALESCE(topic_id, ''), status, latest_payload, COALESCE(options, '{}'::jsonb), created_at, updated_at, expires_at, closed_at
 		FROM live_activity_jobs
 		WHERE id = $1`
@@ -228,24 +219,13 @@ func (s *PostgresStore) GetLiveActivityJob(ctx context.Context, jobID string) (*
 
 func (s *PostgresStore) FindLiveActivityJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error) {
 	query := `
-		WITH expired AS (
-			UPDATE live_activity_jobs
-			SET status = 'expired',
-				closed_at = COALESCE(closed_at, NOW()),
-				updated_at = NOW()
-			WHERE activity_type = $1
-			  AND user_id = $2
-			  AND topic_id IS NULL
-			  AND status IN ('active', 'closing')
-			  AND expires_at IS NOT NULL
-			  AND expires_at <= NOW()
-		)
 		SELECT id, activity_type, COALESCE(user_id, ''), COALESCE(topic_id, ''), status, latest_payload, COALESCE(options, '{}'::jsonb), created_at, updated_at, expires_at, closed_at
 		FROM live_activity_jobs
 		WHERE activity_type = $1
 		  AND user_id = $2
 		  AND topic_id IS NULL
 		  AND status IN ('active', 'closing')
+		  AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY updated_at DESC
 		LIMIT 1`
 
@@ -262,24 +242,13 @@ func (s *PostgresStore) FindLiveActivityJobByUserScope(ctx context.Context, acti
 
 func (s *PostgresStore) FindLiveActivityJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error) {
 	query := `
-		WITH expired AS (
-			UPDATE live_activity_jobs
-			SET status = 'expired',
-				closed_at = COALESCE(closed_at, NOW()),
-				updated_at = NOW()
-			WHERE activity_type = $1
-			  AND topic_id = $2
-			  AND user_id IS NULL
-			  AND status IN ('active', 'closing')
-			  AND expires_at IS NOT NULL
-			  AND expires_at <= NOW()
-		)
 		SELECT id, activity_type, COALESCE(user_id, ''), COALESCE(topic_id, ''), status, latest_payload, COALESCE(options, '{}'::jsonb), created_at, updated_at, expires_at, closed_at
 		FROM live_activity_jobs
 		WHERE activity_type = $1
 		  AND topic_id = $2
 		  AND user_id IS NULL
 		  AND status IN ('active', 'closing')
+		  AND (expires_at IS NULL OR expires_at > NOW())
 		ORDER BY updated_at DESC
 		LIMIT 1`
 
@@ -502,6 +471,11 @@ func (s *PostgresStore) ApplyLiveActivityOutcomeBatch(ctx context.Context, outco
 	defer tx.Rollback()
 
 	deltas := make(map[string]*counterDelta)
+	invalidTokenIDs := make(map[string]struct{})
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("live_activity_dispatch_attempts", "id", "dispatch_id", "live_activity_token_id", "platform", "status", "reason", "sent_at"))
+	if err != nil {
+		return fmt.Errorf("error preparing live activity dispatch attempts bulk insert: %w", err)
+	}
 
 	for _, outcome := range outcomes {
 		dispatchID := outcome.Receipt.JobID
@@ -516,10 +490,8 @@ func (s *PostgresStore) ApplyLiveActivityOutcomeBatch(ctx context.Context, outco
 			deltas[dispatchID].failure++
 		}
 
-		if _, err := tx.ExecContext(
+		if _, err := stmt.ExecContext(
 			ctx,
-			`INSERT INTO live_activity_dispatch_attempts(id, dispatch_id, live_activity_token_id, platform, status, reason, sent_at)
-			 VALUES($1, $2, $3, $4, $5, $6, $7)`,
 			outcome.Receipt.ID,
 			dispatchID,
 			outcome.Receipt.TokenID,
@@ -528,17 +500,44 @@ func (s *PostgresStore) ApplyLiveActivityOutcomeBatch(ctx context.Context, outco
 			nullableString(outcome.Receipt.StatusReason),
 			outcome.Receipt.DispatchedAt,
 		); err != nil {
+			stmt.Close()
 			return fmt.Errorf("error inserting live activity dispatch attempt: %w", err)
 		}
 
 		if outcome.Receipt.Status == string(model.Failed) && isLiveActivityTokenInvalid(outcome.Receipt.StatusReason) {
-			if _, err := tx.ExecContext(
-				ctx,
-				`UPDATE live_activity_tokens SET invalidated_at = NOW() WHERE id = $1 AND invalidated_at IS NULL`,
-				outcome.Receipt.TokenID,
-			); err != nil {
-				return fmt.Errorf("error invalidating live activity token: %w", err)
-			}
+			invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}
+		}
+	}
+
+	if _, err := stmt.ExecContext(ctx); err != nil {
+		stmt.Close()
+		return fmt.Errorf("error finalizing live activity dispatch attempts bulk insert: %w", err)
+	}
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("error closing live activity dispatch attempts bulk insert: %w", err)
+	}
+
+	for tokenID := range invalidTokenIDs {
+		result, err := tx.ExecContext(
+			ctx,
+			`DELETE FROM live_activity_tokens WHERE id = $1 AND token_type = 'update'`,
+			tokenID,
+		)
+		if err != nil {
+			return fmt.Errorf("error deleting live activity update token: %w", err)
+		}
+
+		rowsAffected, _ := result.RowsAffected()
+		if rowsAffected > 0 {
+			continue
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE live_activity_tokens SET invalidated_at = NOW() WHERE id = $1 AND invalidated_at IS NULL`,
+			tokenID,
+		); err != nil {
+			return fmt.Errorf("error invalidating live activity start token: %w", err)
 		}
 	}
 

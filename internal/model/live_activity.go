@@ -50,3 +50,10 @@ const (
 
 type LiveActivityPayload = json.RawMessage
 type LiveActivityOptions = json.RawMessage
+
+type LiveActivityRequest struct {
+	Action       LiveActivityAction
+	ActivityType string
+	Payload      LiveActivityPayload
+	Options      LiveActivityOptions
+}

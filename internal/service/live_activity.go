@@ -29,31 +29,33 @@ type LiveActivityDispatchResult struct {
 	Status   string
 }
 
-func validateLiveActivityExpiry(expiresAt string) error {
+const defaultLiveActivityJobLifetime = 8 * time.Hour
+
+func normalizeLiveActivityExpiry(expiresAt string) (string, error) {
 	if expiresAt == "" {
-		return nil
+		return "", nil
 	}
 
 	t, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
-		return fmt.Errorf("invalid expiresAt format, must be RFC3339: %w", err)
+		return "", fmt.Errorf("invalid expiresAt format, must be RFC3339: %w", err)
 	}
 	if t.Before(time.Now()) {
-		return fmt.Errorf("expiresAt must be in the future")
+		return "", fmt.Errorf("expiresAt must be in the future")
 	}
-	return nil
+	return t.UTC().Format(time.RFC3339), nil
 }
 
-func (s *PushboyService) ensureUser(ctx context.Context, userID string) (*storage.User, error) {
-	user, err := s.store.GetUser(ctx, userID)
-	if err == nil {
-		return user, nil
-	}
-	if !errors.Is(err, storage.Errors.NotFound) {
-		return nil, err
+func isLiveActivityExpired(expiresAt string) bool {
+	if expiresAt == "" {
+		return false
 	}
 
-	return s.CreateUser(ctx, userID)
+	t, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false
+	}
+	return !t.After(time.Now())
 }
 
 func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string) (*storage.LiveActivityToken, *storage.User, error) {
@@ -63,7 +65,8 @@ func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID s
 	if tokenValue == "" {
 		return nil, nil, fmt.Errorf("token is required")
 	}
-	if err := validateLiveActivityExpiry(expiresAt); err != nil {
+	normalizedExpiresAt, err := normalizeLiveActivityExpiry(expiresAt)
+	if err != nil {
 		return nil, nil, err
 	}
 
@@ -93,7 +96,7 @@ func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID s
 		Platform:   platform,
 		TokenType:  tokenType,
 		Token:      tokenValue,
-		ExpiresAt:  expiresAt,
+		ExpiresAt:  normalizedExpiresAt,
 		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
 		LastSeenAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -180,8 +183,9 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 	if req.Action != model.LiveActivityActionEnd && len(req.Payload) == 0 {
 		return nil, fmt.Errorf("payload is required")
 	}
-	if err := validateLiveActivityExpiry(req.ExpiresAt); err != nil {
-		return nil, err
+	normalizedExpiresAt, normalizeErr := normalizeLiveActivityExpiry(req.ExpiresAt)
+	if normalizeErr != nil {
+		return nil, normalizeErr
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -242,7 +246,10 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 			Options:       req.Options,
 			CreatedAt:     now,
 			UpdatedAt:     now,
-			ExpiresAt:     req.ExpiresAt,
+			ExpiresAt:     normalizedExpiresAt,
+		}
+		if job.ExpiresAt == "" {
+			job.ExpiresAt = time.Now().UTC().Add(defaultLiveActivityJobLifetime).Format(time.RFC3339)
 		}
 		if _, err := s.store.CreateLiveActivityJob(ctx, job); err != nil {
 			if errors.Is(err, storage.Errors.AlreadyExists) {
@@ -255,7 +262,7 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 		}
 
 	case model.LiveActivityActionUpdate:
-		if job == nil {
+		if job == nil || isLiveActivityExpired(job.ExpiresAt) {
 			return nil, storage.Errors.NotFound
 		}
 		if job.Status != model.LiveActivityJobStatusActive {
@@ -270,7 +277,7 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 		}
 
 	case model.LiveActivityActionEnd:
-		if job == nil {
+		if job == nil || isLiveActivityExpired(job.ExpiresAt) {
 			return nil, storage.Errors.NotFound
 		}
 		if job.Status == model.LiveActivityJobStatusClosed || job.Status == model.LiveActivityJobStatusExpired || job.Status == model.LiveActivityJobStatusFailed {

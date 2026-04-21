@@ -39,7 +39,14 @@ func (m *MasterWorker) Start(ctx context.Context) {
 			log.Printf("Master receive error: %v", err)
 			continue
 		}
-		m.fetchAndPushTokens(ctx, delivery)
+
+		job := delivery.Get()
+		if job.JobType == model.JobTypeLA {
+			m.fetchAndPushLiveActivityTokens(ctx, job)
+			continue
+		}
+
+		m.fetchAndPushTokens(ctx, job)
 		continue
 	}
 }
@@ -75,12 +82,7 @@ func (m *MasterWorker) recoverLiveActivityJobAfterDispatchFailure(ctx context.Co
 	}
 }
 
-func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline.Delivery[model.JobItem]) error {
-	job := delivery.Get()
-	if job.JobType == model.JobTypeLA {
-		return m.fetchAndPushLiveActivityTokens(ctx, job)
-	}
-
+func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem) error {
 	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
 	totalTokenCount := 0
