@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
@@ -62,6 +63,69 @@ type TokenBatch struct {
 	HasMore    bool
 }
 
+type LiveActivityToken struct {
+	ID            string
+	UserID        string
+	Platform      model.Platform
+	TokenType     model.LiveActivityTokenType
+	Token         string
+	CreatedAt     string
+	LastSeenAt    string
+	ExpiresAt     string
+	InvalidatedAt string
+}
+
+type LiveActivityUserTopicSubscription struct {
+	ID        string
+	UserID    string
+	TopicID   string
+	CreatedAt string
+}
+
+type LiveActivityJob struct {
+	ID            string
+	ActivityType  string
+	UserID        string
+	TopicID       string
+	Status        model.LiveActivityJobStatus
+	LatestPayload json.RawMessage
+	Options       json.RawMessage
+	CreatedAt     string
+	UpdatedAt     string
+	ExpiresAt     string
+	ClosedAt      string
+}
+
+type LiveActivityDispatch struct {
+	ID                string
+	LiveActivityJobID string
+	Action            model.LiveActivityAction
+	Payload           json.RawMessage
+	Options           json.RawMessage
+	Status            string
+	TotalCount        int
+	SuccessCount      int
+	FailureCount      int
+	CreatedAt         string
+	CompletedAt       string
+}
+
+type LiveActivityDispatchAttempt struct {
+	ID                  string
+	DispatchID          string
+	LiveActivityTokenID string
+	Platform            model.Platform
+	Status              string
+	Reason              string
+	SentAt              string
+}
+
+type LiveActivityTokenBatch struct {
+	Tokens     []LiveActivityToken
+	NextCursor string
+	HasMore    bool
+}
+
 // Store defines the interface for data persistence
 type Store interface {
 	// User operations
@@ -110,6 +174,21 @@ type Store interface {
 
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
+
+	// Live Activity operations
+	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
+	InvalidateLiveActivityToken(ctx context.Context, tokenID string) error
+	SubscribeUserToLiveActivityTopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	CreateLiveActivityJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, error)
+	GetLiveActivityJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
+	FindLiveActivityJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
+	FindLiveActivityJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
+	UpdateLiveActivityJob(ctx context.Context, job *LiveActivityJob) error
+	CreateLiveActivityDispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
+	UpdateLiveActivityDispatchStatus(ctx context.Context, dispatchID string, status string) error
+	GetLiveActivityTokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	FinalizeLiveActivityDispatch(ctx context.Context, dispatchID string, totalCount int) error
+	ApplyLiveActivityOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
 
 	// Lifecycle
 	Close() error

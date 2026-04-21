@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
@@ -47,8 +48,39 @@ func (m *MasterWorker) Stop() {
 
 }
 
+func (m *MasterWorker) recoverLiveActivityJobAfterDispatchFailure(ctx context.Context, job model.JobItem) {
+	if job.LAAction != model.LiveActivityActionStart && job.LAAction != model.LiveActivityActionEnd {
+		return
+	}
+
+	liveActivityJob, err := m.store.GetLiveActivityJob(ctx, job.LAJobID)
+	if err != nil {
+		log.Printf("Error loading live activity job %s after dispatch failure: %v", job.LAJobID, err)
+		return
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	switch job.LAAction {
+	case model.LiveActivityActionStart:
+		liveActivityJob.Status = model.LiveActivityJobStatusFailed
+		liveActivityJob.ClosedAt = now
+	case model.LiveActivityActionEnd:
+		liveActivityJob.Status = model.LiveActivityJobStatusActive
+		liveActivityJob.ClosedAt = ""
+	}
+	liveActivityJob.UpdatedAt = now
+
+	if err := m.store.UpdateLiveActivityJob(ctx, liveActivityJob); err != nil {
+		log.Printf("Error recovering live activity job %s after dispatch failure: %v", job.LAJobID, err)
+	}
+}
+
 func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline.Delivery[model.JobItem]) error {
 	job := delivery.Get()
+	if job.JobType == model.JobTypeLA {
+		return m.fetchAndPushLiveActivityTokens(ctx, job)
+	}
+
 	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
 	totalTokenCount := 0
@@ -100,5 +132,53 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 		log.Printf("Error re-checking job completeion after dispatch %v: %v", job.ID, err)
 		return fmt.Errorf("error rechechking job completion %v", err)
 	}
+	return nil
+}
+
+func (m *MasterWorker) fetchAndPushLiveActivityTokens(ctx context.Context, job model.JobItem) error {
+	if err := m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "IN_PROGRESS"); err != nil {
+		return fmt.Errorf("error marking live activity dispatch in progress: %w", err)
+	}
+
+	cursor := ""
+	tokens := make([]storage.LiveActivityToken, 0, m.batchSize)
+
+	for {
+		batch, err := m.store.GetLiveActivityTokenBatchForDispatch(ctx, job.LADispatchID, cursor, m.batchSize)
+		if err != nil {
+			_ = m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "FAILED")
+			m.recoverLiveActivityJobAfterDispatchFailure(ctx, job)
+			return fmt.Errorf("error fetching live activity tokens: %w", err)
+		}
+
+		tokens = append(tokens, batch.Tokens...)
+
+		if !batch.HasMore {
+			break
+		}
+		cursor = batch.NextCursor
+	}
+
+	totalTokenCount := len(tokens)
+	if err := m.store.FinalizeLiveActivityDispatch(ctx, job.LADispatchID, totalTokenCount); err != nil {
+		_ = m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "FAILED")
+		m.recoverLiveActivityJobAfterDispatchFailure(ctx, job)
+		return fmt.Errorf("error finalizing live activity dispatch: %w", err)
+	}
+
+	for _, token := range tokens {
+		task := model.SendTask{
+			Target: model.SendTarget{
+				TokenID:  token.ID,
+				Token:    token.Token,
+				Platform: token.Platform,
+			},
+			Job: &job,
+		}
+		if err := m.taskPipeline.Submit(ctx, task); err != nil {
+			fmt.Printf("error adding live activity task to pipeline %v", err)
+		}
+	}
+
 	return nil
 }

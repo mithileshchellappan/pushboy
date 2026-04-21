@@ -83,6 +83,12 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
 		})
+
+		r.Route("/live-activity", func(r chi.Router) {
+			r.Post("/tokens", s.handleRegisterLiveActivityToken)
+			r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLiveActivityTopic)
+			r.Post("/jobs", s.handleCreateLiveActivityJob)
+		})
 	})
 
 	return r

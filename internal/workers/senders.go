@@ -69,7 +69,25 @@ func (s *SenderWorker) sendTask(ctx context.Context, delivery pipeline.Delivery[
 		return
 	}
 
-	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
+	var err error
+	if task.Job.JobType == model.JobTypeLA {
+		laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
+		if !ok {
+			receipt.Status = string(model.Failed)
+			receipt.StatusReason = fmt.Sprintf("No live activity dispatcher configured for platform: %s", task.Target.Platform)
+			s.pushToDLQ(ctx, receipt, task)
+			return
+		}
+
+		err = laDispatcher.SendLiveActivity(ctx, task.Target.Token, &dispatch.LiveActivityRequest{
+			Action:       task.Job.LAAction,
+			ActivityType: task.Job.LAActivity,
+			Payload:      task.Job.LAPayload,
+			Options:      task.Job.LAOptions,
+		})
+	} else {
+		err = dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
+	}
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = string(model.Failed)

@@ -1,5 +1,7 @@
 package model
 
+import "encoding/json"
+
 type JobType string
 
 const (
@@ -30,10 +32,17 @@ type JobItem struct {
 	JobType  JobType
 	Payload  *NotificationPayload
 	MaxRetry int
-	//TODO: Add LA Payload when working on
+
 	TopicID    string
 	UserID     string
 	TotalCount int
+
+	LAAction     LiveActivityAction
+	LAJobID      string
+	LADispatchID string
+	LAActivity   string
+	LAPayload    json.RawMessage
+	LAOptions    json.RawMessage
 }
 
 type SendOutcome struct {
