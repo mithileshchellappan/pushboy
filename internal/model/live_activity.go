@@ -44,8 +44,16 @@ const (
 	LiveActivityJobStatusActive  LiveActivityJobStatus = "active"
 	LiveActivityJobStatusClosing LiveActivityJobStatus = "closing"
 	LiveActivityJobStatusClosed  LiveActivityJobStatus = "closed"
-	LiveActivityJobStatusExpired LiveActivityJobStatus = "expired"
 	LiveActivityJobStatusFailed  LiveActivityJobStatus = "failed"
+)
+
+type LiveActivityClosedReason string
+
+const (
+	LiveActivityClosedReasonEnded      LiveActivityClosedReason = "ended"
+	LiveActivityClosedReasonSuperseded LiveActivityClosedReason = "superseded"
+	LiveActivityClosedReasonExpired    LiveActivityClosedReason = "expired"
+	LiveActivityClosedReasonFailed     LiveActivityClosedReason = "failed"
 )
 
 type LiveActivityPayload = json.RawMessage

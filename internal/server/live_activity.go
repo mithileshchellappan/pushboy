@@ -25,8 +25,8 @@ type registerLiveActivityTokenRequest struct {
 
 type createLiveActivityJobRequest struct {
 	Action       string          `json:"action"`
+	ActivityID   string          `json:"activityId,omitempty"`
 	ActivityType string          `json:"activityType,omitempty"`
-	JobID        string          `json:"jobId,omitempty"`
 	UserID       string          `json:"userId,omitempty"`
 	TopicID      string          `json:"topicId,omitempty"`
 	Payload      json.RawMessage `json:"payload,omitempty"`
@@ -137,8 +137,8 @@ func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Requ
 
 	result, err := s.service.CreateLiveActivityDispatch(r.Context(), service.LiveActivityDispatchRequest{
 		Action:       action,
+		ActivityID:   req.ActivityID,
 		ActivityType: req.ActivityType,
-		JobID:        req.JobID,
 		UserID:       req.UserID,
 		TopicID:      req.TopicID,
 		Payload:      req.Payload,
@@ -182,14 +182,13 @@ func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Requ
 	}
 
 	response := map[string]any{
-		"jobId":  result.Job.ID,
-		"status": result.Status,
+		"activityId": result.Job.ActivityID,
+		"status":     result.Status,
 	}
 	if result.Dispatch != nil {
 		response["dispatchId"] = result.Dispatch.ID
 	}
-	if result.Status == "already_active" {
-		response["mustStopExisting"] = true
+	if result.Status == "already_started" || result.Status == "closing" {
 		s.respond(w, r, response, http.StatusOK)
 		return
 	}

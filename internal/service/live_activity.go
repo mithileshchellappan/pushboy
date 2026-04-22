@@ -14,8 +14,8 @@ import (
 
 type LiveActivityDispatchRequest struct {
 	Action       model.LiveActivityAction
+	ActivityID   string
 	ActivityType string
-	JobID        string
 	UserID       string
 	TopicID      string
 	Payload      json.RawMessage
@@ -31,7 +31,7 @@ type LiveActivityDispatchResult struct {
 
 const defaultLiveActivityJobLifetime = 8 * time.Hour
 
-func normalizeLiveActivityExpiry(expiresAt string) (string, error) {
+func normalizeLiveActivityExpiryAt(expiresAt string, now time.Time) (string, error) {
 	if expiresAt == "" {
 		return "", nil
 	}
@@ -40,10 +40,38 @@ func normalizeLiveActivityExpiry(expiresAt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid expiresAt format, must be RFC3339: %w", err)
 	}
-	if t.Before(time.Now()) {
+	if t.Before(now) {
 		return "", fmt.Errorf("expiresAt must be in the future")
 	}
 	return t.UTC().Format(time.RFC3339), nil
+}
+
+func normalizeLiveActivityExpiry(expiresAt string) (string, error) {
+	return normalizeLiveActivityExpiryAt(expiresAt, time.Now())
+}
+
+func normalizeLiveActivityTokenExpiry(tokenType model.LiveActivityTokenType, expiresAt string, now time.Time) (string, error) {
+	normalizedExpiresAt, err := normalizeLiveActivityExpiryAt(expiresAt, now)
+	if err != nil {
+		return "", err
+	}
+	if tokenType != model.LiveActivityTokenTypeUpdate {
+		return normalizedExpiresAt, nil
+	}
+
+	maxExpiry := now.UTC().Add(defaultLiveActivityJobLifetime)
+	if normalizedExpiresAt == "" {
+		return maxExpiry.Format(time.RFC3339), nil
+	}
+
+	expiryTime, err := time.Parse(time.RFC3339, normalizedExpiresAt)
+	if err != nil {
+		return "", err
+	}
+	if expiryTime.After(maxExpiry) {
+		return maxExpiry.Format(time.RFC3339), nil
+	}
+	return normalizedExpiresAt, nil
 }
 
 func isLiveActivityExpired(expiresAt string) bool {
@@ -65,7 +93,8 @@ func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID s
 	if tokenValue == "" {
 		return nil, nil, fmt.Errorf("token is required")
 	}
-	normalizedExpiresAt, err := normalizeLiveActivityExpiry(expiresAt)
+	now := time.Now().UTC()
+	normalizedExpiresAt, err := normalizeLiveActivityTokenExpiry(tokenType, expiresAt, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -83,7 +112,7 @@ func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID s
 			ID:        uuid.New().String(),
 			UserID:    userID,
 			TopicID:   topicID,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			CreatedAt: now.Format(time.RFC3339),
 		}
 		if _, err := s.store.SubscribeUserToLiveActivityTopic(ctx, sub); err != nil {
 			return nil, nil, fmt.Errorf("failed to subscribe user to live activity topic: %w", err)
@@ -97,8 +126,8 @@ func (s *PushboyService) RegisterLiveActivityToken(ctx context.Context, userID s
 		TokenType:  tokenType,
 		Token:      tokenValue,
 		ExpiresAt:  normalizedExpiresAt,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-		LastSeenAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:  now.Format(time.RFC3339),
+		LastSeenAt: now.Format(time.RFC3339),
 	}
 
 	stored, err := s.store.UpsertLiveActivityToken(ctx, token)
@@ -154,60 +183,54 @@ func (s *PushboyService) RecoverLiveActivityJobAfterDispatchFailure(ctx context.
 		return nil
 	}
 
-	job, err := s.store.GetLiveActivityJob(ctx, jobID)
-	if err != nil {
-		return err
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
 	switch action {
 	case model.LiveActivityActionStart:
-		job.Status = model.LiveActivityJobStatusFailed
-		job.ClosedAt = now
+		if err := s.store.MarkLiveActivityJobFailedIfActive(ctx, jobID); err != nil && !errors.Is(err, storage.Errors.NotFound) {
+			return err
+		}
 	case model.LiveActivityActionEnd:
-		job.Status = model.LiveActivityJobStatusActive
-		job.ClosedAt = ""
+		if err := s.store.ReopenLiveActivityJobIfClosing(ctx, jobID); err != nil && !errors.Is(err, storage.Errors.NotFound) {
+			return err
+		}
 	}
-	job.UpdatedAt = now
-
-	return s.store.UpdateLiveActivityJob(ctx, job)
+	return nil
 }
 
 func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req LiveActivityDispatchRequest) (*LiveActivityDispatchResult, error) {
 	if req.Action == "" {
 		return nil, fmt.Errorf("action is required")
 	}
-	if req.JobID != "" && (req.UserID != "" || req.TopicID != "") {
-		return nil, fmt.Errorf("provide either jobId or userId/topicId, not both")
+	if req.ActivityID != "" && (req.UserID != "" || req.TopicID != "") && req.Action != model.LiveActivityActionStart {
+		return nil, fmt.Errorf("provide either activityId or userId/topicId, not both")
 	}
 	if req.Action != model.LiveActivityActionEnd && len(req.Payload) == 0 {
 		return nil, fmt.Errorf("payload is required")
 	}
-	normalizedExpiresAt, normalizeErr := normalizeLiveActivityExpiry(req.ExpiresAt)
+	nowTime := time.Now().UTC()
+	normalizedExpiresAt, normalizeErr := normalizeLiveActivityExpiryAt(req.ExpiresAt, nowTime)
 	if normalizeErr != nil {
 		return nil, normalizeErr
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowTime.Format(time.RFC3339)
 	var job *storage.LiveActivityJob
-	var err error
 
-	if req.JobID != "" {
-		job, err = s.store.GetLiveActivityJob(ctx, req.JobID)
+	loadJob := func() (*storage.LiveActivityJob, error) {
+		if req.ActivityID != "" {
+			return s.store.GetLiveActivityJobByActivityID(ctx, req.ActivityID)
+		}
+
+		job, err := s.resolveLiveActivityJobByScope(ctx, req.ActivityType, req.UserID, req.TopicID)
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		job, err = s.resolveLiveActivityJobByScope(ctx, req.ActivityType, req.UserID, req.TopicID)
-		if err != nil && !errors.Is(err, storage.Errors.NotFound) {
-			return nil, err
-		}
+		return job, nil
 	}
 
 	switch req.Action {
 	case model.LiveActivityActionStart:
-		if req.JobID != "" {
-			return nil, fmt.Errorf("jobId is not allowed for start")
+		if req.ActivityID == "" {
+			return nil, fmt.Errorf("activityId is required")
 		}
 		if req.ActivityType == "" {
 			return nil, fmt.Errorf("activityType is required")
@@ -229,15 +252,9 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 			}
 		}
 
-		if job != nil {
-			return &LiveActivityDispatchResult{
-				Job:    job,
-				Status: "already_active",
-			}, nil
-		}
-
 		job = &storage.LiveActivityJob{
 			ID:            uuid.New().String(),
+			ActivityID:    req.ActivityID,
 			ActivityType:  req.ActivityType,
 			UserID:        req.UserID,
 			TopicID:       req.TopicID,
@@ -249,38 +266,93 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 			ExpiresAt:     normalizedExpiresAt,
 		}
 		if job.ExpiresAt == "" {
-			job.ExpiresAt = time.Now().UTC().Add(defaultLiveActivityJobLifetime).Format(time.RFC3339)
+			job.ExpiresAt = nowTime.Add(defaultLiveActivityJobLifetime).Format(time.RFC3339)
 		}
-		if _, err := s.store.CreateLiveActivityJob(ctx, job); err != nil {
-			if errors.Is(err, storage.Errors.AlreadyExists) {
-				existing, findErr := s.resolveLiveActivityJobByScope(ctx, req.ActivityType, req.UserID, req.TopicID)
-				if findErr == nil {
-					return &LiveActivityDispatchResult{Job: existing, Status: "already_active"}, nil
-				}
-			}
+		storedJob, created, err := s.store.CreateOrGetLiveActivityStartJob(ctx, job)
+		if err != nil {
 			return nil, err
+		}
+		job = storedJob
+		if !created {
+			return &LiveActivityDispatchResult{
+				Job:    job,
+				Status: "already_started",
+			}, nil
 		}
 
 	case model.LiveActivityActionUpdate:
-		if job == nil || isLiveActivityExpired(job.ExpiresAt) {
+		if req.ActivityID == "" {
+			if req.ActivityType == "" {
+				return nil, fmt.Errorf("activityType is required")
+			}
+			if req.UserID == "" && req.TopicID == "" {
+				return nil, fmt.Errorf("either userId or topicId is required")
+			}
+			if req.UserID != "" && req.TopicID != "" {
+				return nil, fmt.Errorf("provide either userId or topicId, not both")
+			}
+		}
+
+		var err error
+		job, err = loadJob()
+		if err != nil {
+			if errors.Is(err, storage.Errors.NotFound) {
+				return nil, storage.Errors.NotFound
+			}
+			return nil, err
+		}
+		if job == nil || job.ClosedAt != "" || job.Status == model.LiveActivityJobStatusClosed || job.Status == model.LiveActivityJobStatusFailed || isLiveActivityExpired(job.ExpiresAt) {
 			return nil, storage.Errors.NotFound
 		}
 		if job.Status != model.LiveActivityJobStatusActive {
 			return nil, fmt.Errorf("live activity job is not active")
 		}
 
+		if err := s.store.UpdateLiveActivityJobPayloadIfActive(ctx, job.ID, req.Payload, req.Options, now); err != nil {
+			if errors.Is(err, storage.Errors.NotFound) {
+				latestJob, latestErr := s.store.GetLiveActivityJob(ctx, job.ID)
+				if latestErr != nil {
+					if errors.Is(latestErr, storage.Errors.NotFound) {
+						return nil, storage.Errors.NotFound
+					}
+					return nil, latestErr
+				}
+				if latestJob.ClosedAt != "" || isLiveActivityExpired(latestJob.ExpiresAt) || latestJob.Status == model.LiveActivityJobStatusClosed || latestJob.Status == model.LiveActivityJobStatusFailed {
+					return nil, storage.Errors.NotFound
+				}
+				return nil, fmt.Errorf("live activity job is not active")
+			}
+			return nil, err
+		}
 		job.LatestPayload = req.Payload
 		job.Options = req.Options
 		job.UpdatedAt = now
-		if err := s.store.UpdateLiveActivityJob(ctx, job); err != nil {
-			return nil, err
-		}
 
 	case model.LiveActivityActionEnd:
-		if job == nil || isLiveActivityExpired(job.ExpiresAt) {
+		if req.ActivityID == "" {
+			if req.ActivityType == "" {
+				return nil, fmt.Errorf("activityType is required")
+			}
+			if req.UserID == "" && req.TopicID == "" {
+				return nil, fmt.Errorf("either userId or topicId is required")
+			}
+			if req.UserID != "" && req.TopicID != "" {
+				return nil, fmt.Errorf("provide either userId or topicId, not both")
+			}
+		}
+
+		var err error
+		job, err = loadJob()
+		if err != nil {
+			if errors.Is(err, storage.Errors.NotFound) {
+				return nil, storage.Errors.NotFound
+			}
+			return nil, err
+		}
+		if job == nil || job.ClosedAt != "" || isLiveActivityExpired(job.ExpiresAt) {
 			return nil, storage.Errors.NotFound
 		}
-		if job.Status == model.LiveActivityJobStatusClosed || job.Status == model.LiveActivityJobStatusExpired || job.Status == model.LiveActivityJobStatusFailed {
+		if job.Status == model.LiveActivityJobStatusClosed || job.Status == model.LiveActivityJobStatusFailed {
 			return nil, storage.Errors.NotFound
 		}
 		if job.Status == model.LiveActivityJobStatusClosing {
@@ -290,15 +362,37 @@ func (s *PushboyService) CreateLiveActivityDispatch(ctx context.Context, req Liv
 			}, nil
 		}
 
+		payloadToStore := json.RawMessage(nil)
+		if len(req.Payload) > 0 {
+			payloadToStore = req.Payload
+		}
+		if err := s.store.MarkLiveActivityJobClosingIfActive(ctx, job.ID, payloadToStore, req.Options, now); err != nil {
+			if errors.Is(err, storage.Errors.NotFound) {
+				latestJob, latestErr := s.store.GetLiveActivityJob(ctx, job.ID)
+				if latestErr != nil {
+					if errors.Is(latestErr, storage.Errors.NotFound) {
+						return nil, storage.Errors.NotFound
+					}
+					return nil, latestErr
+				}
+				if latestJob.ClosedAt != "" || isLiveActivityExpired(latestJob.ExpiresAt) || latestJob.Status == model.LiveActivityJobStatusClosed || latestJob.Status == model.LiveActivityJobStatusFailed {
+					return nil, storage.Errors.NotFound
+				}
+				if latestJob.Status == model.LiveActivityJobStatusClosing {
+					return &LiveActivityDispatchResult{
+						Job:    latestJob,
+						Status: "closing",
+					}, nil
+				}
+			}
+			return nil, err
+		}
 		job.Status = model.LiveActivityJobStatusClosing
 		if len(req.Payload) > 0 {
 			job.LatestPayload = req.Payload
 		}
 		job.Options = req.Options
 		job.UpdatedAt = now
-		if err := s.store.UpdateLiveActivityJob(ctx, job); err != nil {
-			return nil, err
-		}
 
 	default:
 		return nil, fmt.Errorf("unsupported action: %s", req.Action)

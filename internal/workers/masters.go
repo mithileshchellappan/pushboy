@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
@@ -60,24 +59,14 @@ func (m *MasterWorker) recoverLiveActivityJobAfterDispatchFailure(ctx context.Co
 		return
 	}
 
-	liveActivityJob, err := m.store.GetLiveActivityJob(ctx, job.LAJobID)
-	if err != nil {
-		log.Printf("Error loading live activity job %s after dispatch failure: %v", job.LAJobID, err)
-		return
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
+	var err error
 	switch job.LAAction {
 	case model.LiveActivityActionStart:
-		liveActivityJob.Status = model.LiveActivityJobStatusFailed
-		liveActivityJob.ClosedAt = now
+		err = m.store.MarkLiveActivityJobFailedIfActive(ctx, job.LAJobID)
 	case model.LiveActivityActionEnd:
-		liveActivityJob.Status = model.LiveActivityJobStatusActive
-		liveActivityJob.ClosedAt = ""
+		err = m.store.ReopenLiveActivityJobIfClosing(ctx, job.LAJobID)
 	}
-	liveActivityJob.UpdatedAt = now
-
-	if err := m.store.UpdateLiveActivityJob(ctx, liveActivityJob); err != nil {
+	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
 		log.Printf("Error recovering live activity job %s after dispatch failure: %v", job.LAJobID, err)
 	}
 }
