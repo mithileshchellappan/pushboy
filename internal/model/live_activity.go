@@ -41,19 +41,9 @@ func ParseLiveActivityAction(s string) (LiveActivityAction, error) {
 type LiveActivityJobStatus string
 
 const (
-	LiveActivityJobStatusActive  LiveActivityJobStatus = "active"
-	LiveActivityJobStatusClosing LiveActivityJobStatus = "closing"
-	LiveActivityJobStatusClosed  LiveActivityJobStatus = "closed"
-	LiveActivityJobStatusFailed  LiveActivityJobStatus = "failed"
-)
-
-type LiveActivityClosedReason string
-
-const (
-	LiveActivityClosedReasonEnded      LiveActivityClosedReason = "ended"
-	LiveActivityClosedReasonSuperseded LiveActivityClosedReason = "superseded"
-	LiveActivityClosedReasonExpired    LiveActivityClosedReason = "expired"
-	LiveActivityClosedReasonFailed     LiveActivityClosedReason = "failed"
+	LiveActivityJobStatusActive LiveActivityJobStatus = "ACTIVE"
+	LiveActivityJobStatusClosed LiveActivityJobStatus = "CLOSED"
+	LiveActivityJobStatusFailed LiveActivityJobStatus = "FAILED"
 )
 
 type LiveActivityPayload = json.RawMessage

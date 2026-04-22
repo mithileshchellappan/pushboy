@@ -89,7 +89,6 @@ type LiveActivityJob struct {
 	UserID        string
 	TopicID       string
 	Status        model.LiveActivityJobStatus
-	ClosedReason  model.LiveActivityClosedReason
 	LatestPayload json.RawMessage
 	Options       json.RawMessage
 	CreatedAt     string
@@ -170,23 +169,21 @@ type Store interface {
 	// Live Activity operations
 	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
 	InvalidateLiveActivityToken(ctx context.Context, tokenID string) error
-	SubscribeUserToLiveActivityTopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
-	CreateOrGetLiveActivityStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
-	GetLiveActivityJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
-	GetLiveActivityJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
-	FindLiveActivityJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
-	FindLiveActivityJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
-	UpdateLiveActivityJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
-	MarkLiveActivityJobClosingIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
-	MarkLiveActivityJobClosedIfClosing(ctx context.Context, jobID string, reason model.LiveActivityClosedReason) error
-	MarkLiveActivityJobFailedIfActive(ctx context.Context, jobID string) error
-	ReopenLiveActivityJobIfClosing(ctx context.Context, jobID string) error
-	CreateLiveActivityDispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
-	UpdateLiveActivityDispatchStatus(ctx context.Context, dispatchID string, status string) error
-	GetLiveActivityTokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
-	FinalizeLiveActivityDispatch(ctx context.Context, dispatchID string, totalCount int) error
-	ApplyLiveActivityOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
-	InvalidateExpiredLiveActivityUpdateTokens(ctx context.Context, limit int) (int, error)
+	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
+	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
+	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
+	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
+	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
+	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
+	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error
+	FailLAJobIfActive(ctx context.Context, jobID string) error
+	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
+	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
+	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	FinalizeLADispatch(ctx context.Context, dispatchID string, totalCount int) error
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle
 	Close() error

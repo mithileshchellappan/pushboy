@@ -47,7 +47,7 @@ func (s *SenderWorker) Start(ctx context.Context) {
 
 		task := delivery.Get()
 		if task.Job.JobType == model.JobTypeLA {
-			s.sendLiveActivityTask(ctx, task)
+			s.sendLATask(ctx, task)
 			continue
 		}
 
@@ -85,7 +85,7 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 	return
 }
 
-func (s *SenderWorker) sendLiveActivityTask(ctx context.Context, task model.SendTask) {
+func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 	dispatcher, ok := s.dispatchers[task.Target.Platform]
 	receipt := model.DeliveryReceipt{
 		ID:           uuid.New().String(),

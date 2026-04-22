@@ -41,7 +41,7 @@ func (m *MasterWorker) Start(ctx context.Context) {
 
 		job := delivery.Get()
 		if job.JobType == model.JobTypeLA {
-			m.fetchAndPushLiveActivityTokens(ctx, job)
+			m.fetchAndPushLATokens(ctx, job)
 			continue
 		}
 
@@ -54,20 +54,14 @@ func (m *MasterWorker) Stop() {
 
 }
 
-func (m *MasterWorker) recoverLiveActivityJobAfterDispatchFailure(ctx context.Context, job model.JobItem) {
-	if job.LAAction != model.LiveActivityActionStart && job.LAAction != model.LiveActivityActionEnd {
+func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
+	if job.LAAction != model.LiveActivityActionStart {
 		return
 	}
 
-	var err error
-	switch job.LAAction {
-	case model.LiveActivityActionStart:
-		err = m.store.MarkLiveActivityJobFailedIfActive(ctx, job.LAJobID)
-	case model.LiveActivityActionEnd:
-		err = m.store.ReopenLiveActivityJobIfClosing(ctx, job.LAJobID)
-	}
+	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
 	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
-		log.Printf("Error recovering live activity job %s after dispatch failure: %v", job.LAJobID, err)
+		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
 	}
 }
 
@@ -126,8 +120,8 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem
 	return nil
 }
 
-func (m *MasterWorker) fetchAndPushLiveActivityTokens(ctx context.Context, job model.JobItem) error {
-	if err := m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "IN_PROGRESS"); err != nil {
+func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobItem) error {
+	if err := m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "IN_PROGRESS"); err != nil {
 		return fmt.Errorf("error marking live activity dispatch in progress: %w", err)
 	}
 
@@ -135,10 +129,10 @@ func (m *MasterWorker) fetchAndPushLiveActivityTokens(ctx context.Context, job m
 	tokens := make([]storage.LiveActivityToken, 0, m.batchSize)
 
 	for {
-		batch, err := m.store.GetLiveActivityTokenBatchForDispatch(ctx, job.LADispatchID, cursor, m.batchSize)
+		batch, err := m.store.GetLATokenBatchForDispatch(ctx, job.LADispatchID, cursor, m.batchSize)
 		if err != nil {
-			_ = m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "FAILED")
-			m.recoverLiveActivityJobAfterDispatchFailure(ctx, job)
+			_ = m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "FAILED")
+			m.failLAStartAfterDispatchFailure(ctx, job)
 			return fmt.Errorf("error fetching live activity tokens: %w", err)
 		}
 
@@ -151,9 +145,9 @@ func (m *MasterWorker) fetchAndPushLiveActivityTokens(ctx context.Context, job m
 	}
 
 	totalTokenCount := len(tokens)
-	if err := m.store.FinalizeLiveActivityDispatch(ctx, job.LADispatchID, totalTokenCount); err != nil {
-		_ = m.store.UpdateLiveActivityDispatchStatus(ctx, job.LADispatchID, "FAILED")
-		m.recoverLiveActivityJobAfterDispatchFailure(ctx, job)
+	if err := m.store.FinalizeLADispatch(ctx, job.LADispatchID, totalTokenCount); err != nil {
+		_ = m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "FAILED")
+		m.failLAStartAfterDispatchFailure(ctx, job)
 		return fmt.Errorf("error finalizing live activity dispatch: %w", err)
 	}
 

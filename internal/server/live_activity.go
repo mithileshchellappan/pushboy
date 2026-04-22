@@ -34,7 +34,7 @@ type createLiveActivityJobRequest struct {
 	ExpiresAt    string          `json:"expiresAt,omitempty"`
 }
 
-func (s *Server) enqueueImmediateLiveActivityDispatch(job *storage.LiveActivityJob, dispatch *storage.LiveActivityDispatch, jobItem model.JobItem) error {
+func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispatch *storage.LiveActivityDispatch, jobItem model.JobItem) error {
 	enqueueCtx, cancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 	defer cancel()
 
@@ -42,11 +42,13 @@ func (s *Server) enqueueImmediateLiveActivityDispatch(job *storage.LiveActivityJ
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 
-		if updateErr := s.service.UpdateLiveActivityDispatchStatus(statusCtx, dispatch.ID, "FAILED"); updateErr != nil {
+		if updateErr := s.service.UpdateLADispatchStatus(statusCtx, dispatch.ID, "FAILED"); updateErr != nil {
 			log.Printf("Failed to mark live activity dispatch %s as FAILED after enqueue error: %v", dispatch.ID, updateErr)
 		}
-		if recoverErr := s.service.RecoverLiveActivityJobAfterDispatchFailure(statusCtx, job.ID, dispatch.Action); recoverErr != nil {
-			log.Printf("Failed to recover live activity job %s after enqueue error on dispatch %s: %v", job.ID, dispatch.ID, recoverErr)
+		if dispatch.Action == model.LiveActivityActionStart {
+			if failErr := s.service.FailLAJobIfActive(statusCtx, job.ID); failErr != nil {
+				log.Printf("Failed to fail LA job %s after enqueue error on dispatch %s: %v", job.ID, dispatch.ID, failErr)
+			}
 		}
 		return err
 	}
@@ -54,7 +56,7 @@ func (s *Server) enqueueImmediateLiveActivityDispatch(job *storage.LiveActivityJ
 	return nil
 }
 
-func (s *Server) handleRegisterLiveActivityToken(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRegisterLAToken(w http.ResponseWriter, r *http.Request) {
 	var req registerLiveActivityTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
@@ -73,7 +75,7 @@ func (s *Server) handleRegisterLiveActivityToken(w http.ResponseWriter, r *http.
 		return
 	}
 
-	token, user, err := s.service.RegisterLiveActivityToken(
+	token, user, err := s.service.RegisterLAToken(
 		r.Context(),
 		req.UserID,
 		platform,
@@ -99,7 +101,7 @@ func (s *Server) handleRegisterLiveActivityToken(w http.ResponseWriter, r *http.
 	}, http.StatusCreated)
 }
 
-func (s *Server) handleRegisterUserToLiveActivityTopic(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleRegisterUserToLATopic(w http.ResponseWriter, r *http.Request) {
 	userID := chi.URLParam(r, "userID")
 	topicID := chi.URLParam(r, "topicID")
 	if userID == "" || topicID == "" {
@@ -107,7 +109,7 @@ func (s *Server) handleRegisterUserToLiveActivityTopic(w http.ResponseWriter, r 
 		return
 	}
 
-	sub, err := s.service.RegisterUserToLiveActivityTopic(r.Context(), userID, topicID)
+	sub, err := s.service.RegisterUserToLATopic(r.Context(), userID, topicID)
 	if err != nil {
 		switch {
 		case errors.Is(err, storage.Errors.NotFound):
@@ -122,7 +124,7 @@ func (s *Server) handleRegisterUserToLiveActivityTopic(w http.ResponseWriter, r 
 	s.respond(w, r, sub, http.StatusCreated)
 }
 
-func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 	var req createLiveActivityJobRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
@@ -135,7 +137,7 @@ func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := s.service.CreateLiveActivityDispatch(r.Context(), service.LiveActivityDispatchRequest{
+	result, err := s.service.CreateLADispatch(r.Context(), service.LADispatchRequest{
 		Action:       action,
 		ActivityID:   req.ActivityID,
 		ActivityType: req.ActivityType,
@@ -170,7 +172,7 @@ func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Requ
 			LAOptions:    result.Dispatch.Options,
 		}
 
-		if err := s.enqueueImmediateLiveActivityDispatch(result.Job, result.Dispatch, jobItem); err != nil {
+		if err := s.enqueueImmediateLADispatch(result.Job, result.Dispatch, jobItem); err != nil {
 			log.Printf("Error enqueueing live activity dispatch %s: %v", result.Dispatch.ID, err)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
 				http.Error(w, "Job queue unavailable", http.StatusServiceUnavailable)
@@ -188,7 +190,7 @@ func (s *Server) handleCreateLiveActivityJob(w http.ResponseWriter, r *http.Requ
 	if result.Dispatch != nil {
 		response["dispatchId"] = result.Dispatch.ID
 	}
-	if result.Status == "already_started" || result.Status == "closing" {
+	if result.Status == "already_started" || result.Status == "closed" {
 		s.respond(w, r, response, http.StatusOK)
 		return
 	}

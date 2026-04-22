@@ -78,7 +78,7 @@ func (s *Scheduler) processScheduledJobs(ctx context.Context) {
 }
 
 func (s *Scheduler) sweepLiveActivityState(ctx context.Context) {
-	if err := s.runLiveActivitySweep(ctx, s.store.InvalidateExpiredLiveActivityUpdateTokens); err != nil {
+	if err := s.runLiveActivitySweep(ctx, s.store.InvalidateExpiredLAUpdateTokens); err != nil {
 		log.Printf("Error invalidating expired live activity update tokens: %v", err)
 	}
 }

@@ -15,9 +15,9 @@ CREATE INDEX IF NOT EXISTS idx_live_activity_tokens_user_type_active
     ON live_activity_tokens(user_id, token_type)
     WHERE invalidated_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_live_activity_tokens_expires_at
+CREATE INDEX IF NOT EXISTS idx_live_activity_tokens_update_expires_at
     ON live_activity_tokens(expires_at)
-    WHERE expires_at IS NOT NULL AND invalidated_at IS NULL;
+    WHERE token_type = 'update' AND expires_at IS NOT NULL AND invalidated_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS live_activity_user_topic_subscriptions (
     id TEXT PRIMARY KEY,
@@ -35,10 +35,11 @@ CREATE INDEX IF NOT EXISTS idx_live_activity_user_topic_subscriptions_topic_id
 
 CREATE TABLE IF NOT EXISTS live_activity_jobs (
     id TEXT PRIMARY KEY,
+    activity_id TEXT NOT NULL UNIQUE,
     activity_type TEXT NOT NULL,
     user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
     topic_id TEXT REFERENCES topics(id) ON DELETE CASCADE,
-    status TEXT NOT NULL CHECK (status IN ('active', 'closing', 'closed', 'expired', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'CLOSED', 'FAILED')),
     latest_payload JSONB NOT NULL,
     options JSONB,
     created_at TIMESTAMPTZ NOT NULL,
@@ -53,11 +54,11 @@ CREATE TABLE IF NOT EXISTS live_activity_jobs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_live_activity_jobs_active_user
     ON live_activity_jobs(activity_type, user_id)
-    WHERE topic_id IS NULL AND status IN ('active', 'closing');
+    WHERE topic_id IS NULL AND closed_at IS NULL AND status = 'ACTIVE';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_live_activity_jobs_active_topic
     ON live_activity_jobs(activity_type, topic_id)
-    WHERE user_id IS NULL AND status IN ('active', 'closing');
+    WHERE user_id IS NULL AND closed_at IS NULL AND status = 'ACTIVE';
 
 CREATE TABLE IF NOT EXISTS live_activity_dispatches (
     id TEXT PRIMARY KEY,
@@ -75,19 +76,3 @@ CREATE TABLE IF NOT EXISTS live_activity_dispatches (
 
 CREATE INDEX IF NOT EXISTS idx_live_activity_dispatches_job_id
     ON live_activity_dispatches(live_activity_job_id);
-
-CREATE TABLE IF NOT EXISTS live_activity_dispatch_attempts (
-    id TEXT PRIMARY KEY,
-    dispatch_id TEXT NOT NULL REFERENCES live_activity_dispatches(id) ON DELETE CASCADE,
-    live_activity_token_id TEXT NOT NULL REFERENCES live_activity_tokens(id) ON DELETE CASCADE,
-    platform TEXT NOT NULL CHECK (platform IN ('apns', 'fcm')),
-    status TEXT NOT NULL,
-    reason TEXT,
-    sent_at TIMESTAMPTZ NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_live_activity_dispatch_attempts_dispatch_id
-    ON live_activity_dispatch_attempts(dispatch_id);
-
-CREATE INDEX IF NOT EXISTS idx_live_activity_dispatch_attempts_token_id
-    ON live_activity_dispatch_attempts(live_activity_token_id);
