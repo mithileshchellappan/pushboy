@@ -51,6 +51,10 @@ func (s *SQLiteStore) UpdateLAJobPayloadIfActive(ctx context.Context, jobID stri
 	return errLiveActivitySQLiteUnsupported
 }
 
+func (s *SQLiteStore) RollbackLAStartJob(ctx context.Context, jobID string) error {
+	return errLiveActivitySQLiteUnsupported
+}
+
 func (s *SQLiteStore) CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error {
 	return errLiveActivitySQLiteUnsupported
 }

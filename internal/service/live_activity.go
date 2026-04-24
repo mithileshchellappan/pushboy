@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,7 +187,8 @@ func (s *PushboyService) CreateLADispatch(ctx context.Context, req LADispatchReq
 	if req.ActivityID != "" && (req.UserID != "" || req.TopicID != "") && req.Action != model.LiveActivityActionStart {
 		return nil, fmt.Errorf("provide either activityId or userId/topicId, not both")
 	}
-	if req.Action != model.LiveActivityActionEnd && len(req.Payload) == 0 {
+	payloadText := strings.TrimSpace(string(req.Payload))
+	if req.Action != model.LiveActivityActionEnd && (payloadText == "" || payloadText == "null") {
 		return nil, fmt.Errorf("payload is required")
 	}
 
@@ -262,6 +264,9 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 
 	dispatch, err := s.createLADispatchRow(ctx, storedJob, req.Action, req.Payload, req.Options, now)
 	if err != nil {
+		if rollbackErr := s.store.RollbackLAStartJob(ctx, storedJob.ID); rollbackErr != nil {
+			return nil, fmt.Errorf("failed to create LA dispatch: %w (rollback failed: %v)", err, rollbackErr)
+		}
 		return nil, err
 	}
 
@@ -362,10 +367,12 @@ func (s *PushboyService) createLAEnd(ctx context.Context, req LADispatchRequest,
 
 func (s *PushboyService) createLADispatchRow(ctx context.Context, job *storage.LiveActivityJob, action model.LiveActivityAction, payload json.RawMessage, options json.RawMessage, now time.Time) (*storage.LiveActivityDispatch, error) {
 	dispatchPayload := payload
-	if len(dispatchPayload) == 0 {
+	dispatchPayloadText := strings.TrimSpace(string(dispatchPayload))
+	if dispatchPayloadText == "" || dispatchPayloadText == "null" {
 		dispatchPayload = job.LatestPayload
+		dispatchPayloadText = strings.TrimSpace(string(dispatchPayload))
 	}
-	if len(dispatchPayload) == 0 {
+	if dispatchPayloadText == "" || dispatchPayloadText == "null" {
 		dispatchPayload = json.RawMessage(`{}`)
 	}
 

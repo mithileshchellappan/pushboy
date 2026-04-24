@@ -176,6 +176,7 @@ type Store interface {
 	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
 	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
 	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
+	RollbackLAStartJob(ctx context.Context, jobID string) error
 	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error
 	FailLAJobIfActive(ctx context.Context, jobID string) error
 	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)

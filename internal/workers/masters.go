@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
@@ -151,6 +152,7 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 		return fmt.Errorf("error finalizing live activity dispatch: %w", err)
 	}
 
+	failedOutcomes := make([]model.SendOutcome, 0)
 	for _, token := range tokens {
 		task := model.SendTask{
 			Target: model.SendTarget{
@@ -161,7 +163,23 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 			Job: &job,
 		}
 		if err := m.taskPipeline.Submit(ctx, task); err != nil {
-			fmt.Printf("error adding live activity task to pipeline %v", err)
+			log.Printf("Error adding LA task to pipeline for dispatch %s token %s: %v", job.LADispatchID, token.ID, err)
+			failedOutcomes = append(failedOutcomes, model.SendOutcome{
+				Task: task,
+				Receipt: model.DeliveryReceipt{
+					JobID:        job.LADispatchID,
+					TokenID:      token.ID,
+					Status:       string(model.Failed),
+					StatusReason: "task enqueue failed",
+					DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
+	}
+
+	if len(failedOutcomes) > 0 {
+		if err := m.store.ApplyLAOutcomeBatch(ctx, failedOutcomes); err != nil {
+			return fmt.Errorf("error applying LA enqueue failures: %w", err)
 		}
 	}
 

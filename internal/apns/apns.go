@@ -34,7 +34,7 @@ type Client struct {
 	httpClient *http.Client
 	keyID      string
 	teamID     string
-	topicID    string
+	bundleID   string
 	signingKey []byte
 	endpoint   string
 
@@ -64,7 +64,7 @@ type ApsPayload struct {
 // Custom data fields are added at the top level alongside "aps"
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, useSandbox bool) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool) *Client {
 	var endpoint string
 	if useSandbox {
 		endpoint = DevelopmentEndpoint
@@ -88,7 +88,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, u
 		},
 		keyID:      keyID,
 		teamID:     teamID,
-		topicID:    topicID,
+		bundleID:   bundleID,
 		signingKey: p8KeyBytes,
 		endpoint:   endpoint,
 	}
@@ -210,10 +210,43 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 
 	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token)
 
-	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, payload)
+	headers := map[string]string{
+		"apns-topic": c.bundleID,
+	}
+
+	if payload.Silent {
+		headers["apns-push-type"] = "background"
+	} else {
+		headers["apns-push-type"] = "alert"
+	}
+
+	if payload.Silent {
+		if payload.Priority == "high" {
+			log.Printf("Warning: Silent notification requested with high priority - forcing priority 5 per APNs requirements")
+		}
+		headers["apns-priority"] = "5"
+	} else if payload.Priority == "normal" {
+		headers["apns-priority"] = "5"
+	} else {
+		headers["apns-priority"] = "10"
+	}
+
+	if payload.CollapseID != "" {
+		headers["apns-collapse-id"] = payload.CollapseID
+	}
+
+	if payload.TTL > 0 {
+		expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
+		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+	} else if payload.Silent {
+		expiration := time.Now().Add(1 * time.Hour).Unix()
+		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+	}
+
+	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, headers)
 }
 
-func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, payload *model.NotificationPayload) error {
+func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, headers map[string]string) error {
 	backoff := initialBackoff
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -224,35 +257,10 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwtToken))
-		req.Header.Set("apns-topic", c.topicID)
-
-		if payload.Silent {
-			req.Header.Set("apns-push-type", "background")
-		} else {
-			req.Header.Set("apns-push-type", "alert")
-		}
-
-		if payload.Silent {
-			if payload.Priority == "high" {
-				log.Printf("Warning: Silent notification requested with high priority - forcing priority 5 per APNs requirements")
+		for key, value := range headers {
+			if value != "" {
+				req.Header.Set(key, value)
 			}
-			req.Header.Set("apns-priority", "5")
-		} else if payload.Priority == "normal" {
-			req.Header.Set("apns-priority", "5")
-		} else {
-			req.Header.Set("apns-priority", "10")
-		}
-
-		if payload.CollapseID != "" {
-			req.Header.Set("apns-collapse-id", payload.CollapseID)
-		}
-
-		if payload.TTL > 0 {
-			expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
-			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
-		} else if payload.Silent {
-			expiration := time.Now().Add(1 * time.Hour).Unix()
-			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
 		}
 
 		resp, err := c.httpClient.Do(req)

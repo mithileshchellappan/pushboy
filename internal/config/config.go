@@ -21,10 +21,10 @@ type Config struct {
 	DatabaseDriver string
 	DatabaseURL    string
 
-	APNSKeyID   string
-	APNSTeamID  string
-	APNSTopicID string
-	APNSKeyPath string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSKeyID    string
+	APNSTeamID   string
+	APNSBundleID string
+	APNSKeyPath  string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
 
 	FCMProjectID      string
 	FCMServiceAccount string
@@ -46,7 +46,7 @@ func Load() *Config {
 		DatabaseURL:          getEnv("DATABASE_URL", "./pushboy.db"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
 		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
-		APNSTopicID:          getEnv("APNS_TOPIC_ID", ""),
+		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),

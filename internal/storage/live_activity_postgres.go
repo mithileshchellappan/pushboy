@@ -20,6 +20,14 @@ func nullableString(value string) any {
 	return value
 }
 
+func nullableJSONRawMessage(value json.RawMessage) any {
+	trimmed := strings.TrimSpace(string(value))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	return []byte(trimmed)
+}
+
 func formatTimePtr(t sql.NullTime) string {
 	if !t.Valid {
 		return ""
@@ -278,8 +286,8 @@ func (s *PostgresStore) CreateOrGetLAStartJob(ctx context.Context, job *LiveActi
 		nullableString(job.UserID),
 		nullableString(job.TopicID),
 		job.Status,
-		job.LatestPayload,
-		job.Options,
+		nullableJSONRawMessage(job.LatestPayload),
+		nullableJSONRawMessage(job.Options),
 		job.CreatedAt,
 		job.UpdatedAt,
 		nullableString(job.ExpiresAt),
@@ -409,8 +417,8 @@ func (s *PostgresStore) UpdateLAJobPayloadIfActive(ctx context.Context, jobID st
 		   AND status = 'ACTIVE'
 		   AND closed_at IS NULL
 		   AND (expires_at IS NULL OR expires_at > NOW())`,
-		payload,
-		options,
+		nullableJSONRawMessage(payload),
+		nullableJSONRawMessage(options),
 		updatedAt,
 		jobID,
 	)
@@ -421,6 +429,25 @@ func (s *PostgresStore) UpdateLAJobPayloadIfActive(ctx context.Context, jobID st
 	rowsAffected, _ := result.RowsAffected()
 	if rowsAffected == 0 {
 		return Errors.NotFound
+	}
+	return nil
+}
+
+func (s *PostgresStore) RollbackLAStartJob(ctx context.Context, jobID string) error {
+	if _, err := s.db.ExecContext(
+		ctx,
+		`DELETE FROM live_activity_jobs
+		 WHERE id = $1
+		   AND status = 'ACTIVE'
+		   AND closed_at IS NULL
+		   AND NOT EXISTS (
+			SELECT 1
+			FROM live_activity_dispatches
+			WHERE live_activity_job_id = $1
+		   )`,
+		jobID,
+	); err != nil {
+		return fmt.Errorf("error rolling back LA start job: %w", err)
 	}
 	return nil
 }
@@ -482,8 +509,8 @@ func (s *PostgresStore) CreateLADispatch(ctx context.Context, dispatch *LiveActi
 		dispatch.ID,
 		dispatch.LiveActivityJobID,
 		dispatch.Action,
-		dispatch.Payload,
-		dispatch.Options,
+		nullableJSONRawMessage(dispatch.Payload),
+		nullableJSONRawMessage(dispatch.Options),
 		dispatch.Status,
 		dispatch.TotalCount,
 		dispatch.SuccessCount,
