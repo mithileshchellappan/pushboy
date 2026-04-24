@@ -55,17 +55,6 @@ func (m *MasterWorker) Stop() {
 
 }
 
-func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
-	if job.LAAction != model.LiveActivityActionStart {
-		return
-	}
-
-	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
-	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
-		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
-	}
-}
-
 func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem) error {
 	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
@@ -184,4 +173,15 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 	}
 
 	return nil
+}
+
+func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
+	if job.LAAction != model.LiveActivityActionStart {
+		return
+	}
+
+	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
+	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
+		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
+	}
 }

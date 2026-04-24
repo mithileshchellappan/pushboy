@@ -552,9 +552,13 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		 FROM live_activity_dispatches lad
 		 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
 		 JOIN live_activity_tokens lat
-		   ON lat.token_type = CASE WHEN lad.action = 'start' THEN 'start' ELSE 'update' END
-		  AND lat.invalidated_at IS NULL
+		   ON lat.invalidated_at IS NULL
 		  AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+		  AND (
+			(lat.platform = 'apns' AND lat.token_type = CASE WHEN lad.action = 'start' THEN 'start' ELSE 'update' END)
+			OR
+			(lat.platform = 'fcm' AND lat.token_type = 'update')
+		  )
 		 WHERE lad.id = $1
 		   AND lat.id > $2
 		   AND (
@@ -760,7 +764,8 @@ func (s *PostgresStore) InvalidateExpiredLAUpdateTokens(ctx context.Context, lim
 		`WITH candidates AS (
 			SELECT id
 			FROM live_activity_tokens
-			WHERE token_type = 'update'
+			WHERE platform = 'apns'
+			  AND token_type = 'update'
 			  AND invalidated_at IS NULL
 			  AND expires_at IS NOT NULL
 			  AND expires_at <= NOW()

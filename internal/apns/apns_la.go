@@ -13,25 +13,6 @@ import (
 
 const laTopicSuffix = ".push-type.liveactivity"
 
-type laAlert struct {
-	Title string `json:"title,omitempty"`
-	Body  string `json:"body,omitempty"`
-	Sound string `json:"sound,omitempty"`
-}
-
-type laOptions struct {
-	Alert          *laAlert        `json:"alert,omitempty"`
-	AttributesType string          `json:"attributesType,omitempty"`
-	Attributes     json.RawMessage `json:"attributes,omitempty"`
-	Timestamp      any             `json:"timestamp,omitempty"`
-	StaleDate      any             `json:"staleDate,omitempty"`
-	DismissalDate  any             `json:"dismissalDate,omitempty"`
-	Expiration     any             `json:"expiration,omitempty"`
-	Priority       int             `json:"priority,omitempty"`
-	CollapseID     string          `json:"collapseId,omitempty"`
-	RelevanceScore *float64        `json:"relevanceScore,omitempty"`
-}
-
 func (c *Client) SendLiveActivity(ctx context.Context, token string, request *model.LiveActivityRequest) error {
 	if token == "" {
 		return fmt.Errorf("apns live activity token is required")
@@ -45,7 +26,7 @@ func (c *Client) SendLiveActivity(ctx context.Context, token string, request *mo
 		return fmt.Errorf("failed to get JWT: %w", err)
 	}
 
-	options, err := parseLAOptions(request.Options)
+	options, err := model.ParseLiveActivityOptions(request.Options)
 	if err != nil {
 		return err
 	}
@@ -59,7 +40,7 @@ func (c *Client) SendLiveActivity(ctx context.Context, token string, request *mo
 	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, headers)
 }
 
-func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options laOptions) ([]byte, map[string]string, error) {
+func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options model.ParsedLiveActivityOptions) ([]byte, map[string]string, error) {
 	if c.bundleID == "" {
 		return nil, nil, fmt.Errorf("apns bundle id is not configured")
 	}
@@ -86,7 +67,11 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options laOp
 		aps["content-state"] = contentState
 	}
 
-	if request.Action == model.LiveActivityActionStart {
+	switch request.Action {
+	case model.LiveActivityActionStart:
+		if options.Alert == nil {
+			return nil, nil, fmt.Errorf("apns live activity start requires options.alert")
+		}
 		if options.AttributesType == "" {
 			return nil, nil, fmt.Errorf("apns live activity start requires options.attributesType")
 		}
@@ -99,7 +84,8 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options laOp
 		}
 		aps["attributes-type"] = options.AttributesType
 		aps["attributes"] = attributes
-	} else if request.Action != model.LiveActivityActionUpdate && request.Action != model.LiveActivityActionEnd {
+	case model.LiveActivityActionUpdate, model.LiveActivityActionEnd:
+	default:
 		return nil, nil, fmt.Errorf("unsupported live activity action: %s", request.Action)
 	}
 
@@ -131,19 +117,31 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options laOp
 		"apns-priority":   "10",
 		"apns-expiration": "0",
 	}
-	if options.Priority != 0 {
-		if options.Priority != 5 && options.Priority != 10 {
-			return nil, nil, fmt.Errorf("live activity options.priority must be 5 or 10")
-		}
-		headers["apns-priority"] = strconv.Itoa(options.Priority)
+	switch options.Priority {
+	case "normal":
+		headers["apns-priority"] = "5"
+	case "high":
+		headers["apns-priority"] = "10"
 	}
 	if expiration, ok, err := parseLATime(options.Expiration); err != nil {
 		return nil, nil, fmt.Errorf("invalid la options.expiration: %w", err)
-	} else if ok {
-		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+	} else {
+		switch {
+		case ok:
+			headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+		case options.TTL < 0:
+			return nil, nil, fmt.Errorf("live activity options.ttl must be >= 0")
+		case options.TTL > 0:
+			expiration = now.Add(time.Duration(options.TTL) * time.Second).Unix()
+			headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+		}
 	}
-	if options.CollapseID != "" {
-		headers["apns-collapse-id"] = options.CollapseID
+	collapseID := options.CollapseID
+	if collapseID == "" {
+		collapseID = request.ActivityID
+	}
+	if collapseID != "" {
+		headers["apns-collapse-id"] = collapseID
 	}
 
 	return body, headers, nil
@@ -157,18 +155,6 @@ func (c *Client) laTopic() string {
 		return c.bundleID
 	}
 	return c.bundleID + laTopicSuffix
-}
-
-func parseLAOptions(raw json.RawMessage) (laOptions, error) {
-	var options laOptions
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" {
-		return options, nil
-	}
-	if err := json.Unmarshal([]byte(trimmed), &options); err != nil {
-		return laOptions{}, fmt.Errorf("invalid live activity options: %w", err)
-	}
-	return options, nil
 }
 
 func decodeOptionalJSON(raw json.RawMessage) (any, error) {

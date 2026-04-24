@@ -43,13 +43,11 @@ type Client struct {
 	jwtExpiry time.Time
 }
 
-// Alert represents the visible notification content
 type Alert struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
 }
 
-// ApsPayload is the APNs-specific payload structure
 type ApsPayload struct {
 	Alert            *Alert `json:"alert,omitempty"`
 	Sound            string `json:"sound,omitempty"`
@@ -60,8 +58,6 @@ type ApsPayload struct {
 	Category         string `json:"category,omitempty"`
 }
 
-// ApnsRequest is the full request body sent to APNs
-// Custom data fields are added at the top level alongside "aps"
 type ApnsRequest map[string]interface{}
 
 func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool) *Client {
@@ -148,10 +144,8 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 		return fmt.Errorf("failed to get JWT: %w", err)
 	}
 
-	// Build the APS payload
 	aps := ApsPayload{}
 
-	// For silent notifications, don't include alert
 	if !payload.Silent {
 		aps.Alert = &Alert{
 			Title: payload.Title,
@@ -167,38 +161,30 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 		aps.Badge = payload.Badge
 	}
 
-	// Silent/background notification
 	if payload.Silent {
 		aps.ContentAvailable = 1
 	}
 
-	// Mutable content for rich notifications (images, etc.)
-	// Enable if image_url is provided so app's Notification Service Extension can fetch it
 	if payload.ImageURL != "" {
 		aps.MutableContent = 1
 	}
 
-	// Thread ID for grouping
 	if payload.ThreadID != "" {
 		aps.ThreadID = payload.ThreadID
 	}
 
-	// Category for actionable notifications
 	if payload.Category != "" {
 		aps.Category = payload.Category
 	}
 
-	// Build full request with custom data
 	apnsRequest := ApnsRequest{
 		"aps": aps,
 	}
 
-	// Add custom data at top level (outside aps)
 	for key, value := range payload.Data {
 		apnsRequest[key] = value
 	}
 
-	// Pass image URL in custom data for Service Extension to fetch
 	if payload.ImageURL != "" {
 		apnsRequest["image_url"] = payload.ImageURL
 	}
@@ -265,7 +251,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			// Retry on connection errors (GOAWAY, connection reset, etc.)
 			if attempt < maxRetries && isRetryableError(err) {
 				select {
 				case <-ctx.Done():
@@ -288,13 +273,11 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return nil
 		}
 
-		// Parse APNs error response for better debugging
 		var apnsError struct {
 			Reason    string `json:"reason"`
 			Timestamp int64  `json:"timestamp,omitempty"`
 		}
 		if err := json.Unmarshal(body, &apnsError); err == nil && apnsError.Reason != "" {
-			// Log specific error for debugging
 			log.Printf("APNs error for device: %s (reason: %s)", resp.Status, apnsError.Reason)
 		}
 
@@ -321,7 +304,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return fmt.Errorf("rate limited after %d retries: %s", maxRetries, resp.Status)
 		}
 
-		// Include APNs reason in error if available
 		var apnsReason struct {
 			Reason string `json:"reason"`
 		}
@@ -334,7 +316,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	return fmt.Errorf("max retries exceeded")
 }
 
-// isRetryableError checks if an error is a transient connection issue worth retrying
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false

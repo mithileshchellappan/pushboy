@@ -167,6 +167,7 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 			LAAction:     result.Dispatch.Action,
 			LAJobID:      result.Job.ID,
 			LADispatchID: result.Dispatch.ID,
+			LAActivityID: result.Job.ActivityID,
 			LAActivity:   result.Job.ActivityType,
 			LAPayload:    result.Dispatch.Payload,
 			LAOptions:    result.Dispatch.Options,

@@ -40,6 +40,7 @@ type JobItem struct {
 	LAAction     LiveActivityAction
 	LAJobID      string
 	LADispatchID string
+	LAActivityID string
 	LAActivity   string
 	LAPayload    json.RawMessage
 	LAOptions    json.RawMessage

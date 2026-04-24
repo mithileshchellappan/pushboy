@@ -72,7 +72,15 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 		return
 	}
 
-	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
+	pushDispatcher, ok := dispatcher.(dispatch.Dispatcher)
+	if !ok {
+		receipt.Status = string(model.Failed)
+		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
+		s.pushToDLQ(ctx, receipt, task)
+		return
+	}
+
+	err := pushDispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = string(model.Failed)
@@ -110,6 +118,7 @@ func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 
 	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, &model.LiveActivityRequest{
 		Action:       task.Job.LAAction,
+		ActivityID:   task.Job.LAActivityID,
 		ActivityType: task.Job.LAActivity,
 		Payload:      task.Job.LAPayload,
 		Options:      task.Job.LAOptions,

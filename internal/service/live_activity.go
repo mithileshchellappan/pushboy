@@ -32,19 +32,20 @@ type LADispatchResult struct {
 
 const defaultLAJobLifetime = 8 * time.Hour
 
-func parseLAExpiry(expiresAt string, now time.Time) (string, error) {
+func parseLAExpiry(expiresAt string, now time.Time) (*time.Time, error) {
 	if expiresAt == "" {
-		return "", nil
+		return nil, nil
 	}
 
 	t, err := time.Parse(time.RFC3339, expiresAt)
 	if err != nil {
-		return "", fmt.Errorf("invalid expiresAt format, must be RFC3339: %w", err)
+		return nil, fmt.Errorf("invalid expiresAt format, must be RFC3339: %w", err)
 	}
 	if !t.After(now) {
-		return "", fmt.Errorf("expiresAt must be in the future")
+		return nil, fmt.Errorf("expiresAt must be in the future")
 	}
-	return t.UTC().Format(time.RFC3339), nil
+	t = t.UTC()
+	return &t, nil
 }
 
 func laExpired(expiresAt string, now time.Time) bool {
@@ -68,23 +69,26 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 	}
 
 	now := time.Now().UTC()
-	normalizedExpiresAt, err := parseLAExpiry(expiresAt, now)
+	expiryTime, err := parseLAExpiry(expiresAt, now)
 	if err != nil {
 		return nil, nil, err
 	}
-	if tokenType == model.LiveActivityTokenTypeUpdate {
-		maxExpiry := now.Add(defaultLAJobLifetime)
-		if normalizedExpiresAt == "" {
-			normalizedExpiresAt = maxExpiry.Format(time.RFC3339)
-		} else {
-			expiryTime, parseErr := time.Parse(time.RFC3339, normalizedExpiresAt)
-			if parseErr != nil {
-				return nil, nil, parseErr
-			}
-			if expiryTime.After(maxExpiry) {
-				normalizedExpiresAt = maxExpiry.Format(time.RFC3339)
+
+	switch platform {
+	case model.FCM:
+		tokenType = model.LiveActivityTokenTypeUpdate
+	case model.APNS:
+		if tokenType == model.LiveActivityTokenTypeUpdate {
+			maxExpiry := now.Add(defaultLAJobLifetime)
+			if expiryTime == nil || expiryTime.After(maxExpiry) {
+				expiryTime = &maxExpiry
 			}
 		}
+	}
+
+	expiresAt = ""
+	if expiryTime != nil {
+		expiresAt = expiryTime.Format(time.RFC3339)
 	}
 
 	user, err := s.ensureUser(ctx, userID)
@@ -113,7 +117,7 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 		Platform:   platform,
 		TokenType:  tokenType,
 		Token:      tokenValue,
-		ExpiresAt:  normalizedExpiresAt,
+		ExpiresAt:  expiresAt,
 		CreatedAt:  now.Format(time.RFC3339),
 		LastSeenAt: now.Format(time.RFC3339),
 	}
@@ -228,13 +232,18 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 			return nil, fmt.Errorf("topic not found: %w", err)
 		}
 	}
-
-	expiresAt, err := parseLAExpiry(req.ExpiresAt, now)
+	_, err := model.ParseLiveActivityOptions(req.Options)
 	if err != nil {
 		return nil, err
 	}
-	if expiresAt == "" {
-		expiresAt = now.Add(defaultLAJobLifetime).Format(time.RFC3339)
+
+	expiryTime, err := parseLAExpiry(req.ExpiresAt, now)
+	if err != nil {
+		return nil, err
+	}
+	if expiryTime == nil {
+		defaultExpiry := now.Add(defaultLAJobLifetime)
+		expiryTime = &defaultExpiry
 	}
 
 	job := &storage.LiveActivityJob{
@@ -248,7 +257,7 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		Options:       req.Options,
 		CreatedAt:     now.Format(time.RFC3339),
 		UpdatedAt:     now.Format(time.RFC3339),
-		ExpiresAt:     expiresAt,
+		ExpiresAt:     expiryTime.Format(time.RFC3339),
 	}
 
 	storedJob, created, err := s.store.CreateOrGetLAStartJob(ctx, job)
