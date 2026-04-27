@@ -116,8 +116,8 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 	}
 
 	cursor := ""
-	tokens := make([]storage.LiveActivityToken, 0, m.batchSize)
-
+	totalTokenCount := 0
+	totalFailedOutcomes := make([]model.SendOutcome, 0)
 	for {
 		batch, err := m.store.GetLATokenBatchForDispatch(ctx, job.LADispatchID, cursor, m.batchSize)
 		if err != nil {
@@ -126,21 +126,44 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 			return fmt.Errorf("error fetching live activity tokens: %w", err)
 		}
 
-		tokens = append(tokens, batch.Tokens...)
+		outcomes := m.pushLATokensToPipeline(ctx, batch, &job)
+		totalFailedOutcomes = append(totalFailedOutcomes, outcomes...)
 
+		totalTokenCount += len(batch.Tokens)
 		if !batch.HasMore {
 			break
 		}
 		cursor = batch.NextCursor
 	}
 
-	totalTokenCount := len(tokens)
-	if err := m.store.FinalizeLADispatch(ctx, job.LADispatchID, totalTokenCount); err != nil {
+	if err := m.store.CompleteLADispatchEnqueue(ctx, job.LADispatchID, totalTokenCount); err != nil {
 		_ = m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "FAILED")
 		m.failLAStartAfterDispatchFailure(ctx, job)
-		return fmt.Errorf("error finalizing live activity dispatch: %w", err)
+		return fmt.Errorf("error completing live activity dispatch enqueue: %w", err)
 	}
 
+	if len(totalFailedOutcomes) > 0 {
+		if err := m.store.RecordLAOutcomes(ctx, totalFailedOutcomes); err != nil {
+			return fmt.Errorf("error recording LA enqueue failures: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
+	if job.LAAction != model.LiveActivityActionStart {
+		return
+	}
+
+	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
+	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
+		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
+	}
+}
+
+func (m *MasterWorker) pushLATokensToPipeline(ctx context.Context, batch *storage.LiveActivityTokenBatch, job *model.JobItem) []model.SendOutcome {
+	tokens := batch.Tokens
 	failedOutcomes := make([]model.SendOutcome, 0)
 	for _, token := range tokens {
 		task := model.SendTask{
@@ -149,7 +172,7 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 				Token:    token.Token,
 				Platform: token.Platform,
 			},
-			Job: &job,
+			Job: job,
 		}
 		if err := m.taskPipeline.Submit(ctx, task); err != nil {
 			log.Printf("Error adding LA task to pipeline for dispatch %s token %s: %v", job.LADispatchID, token.ID, err)
@@ -166,22 +189,5 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 		}
 	}
 
-	if len(failedOutcomes) > 0 {
-		if err := m.store.ApplyLAOutcomeBatch(ctx, failedOutcomes); err != nil {
-			return fmt.Errorf("error applying LA enqueue failures: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
-	if job.LAAction != model.LiveActivityActionStart {
-		return
-	}
-
-	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
-	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
-		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
-	}
+	return failedOutcomes
 }

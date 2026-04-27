@@ -127,8 +127,8 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		// }
 	}
 	if len(liveActivityOutcomeBatch) > 0 {
-		if err := o.store.ApplyLAOutcomeBatch(ctx, liveActivityOutcomeBatch); err != nil {
-			log.Printf("Error applying live activity outcome batch %v", err.Error())
+		if err := o.store.RecordLAOutcomes(ctx, liveActivityOutcomeBatch); err != nil {
+			log.Printf("Error recording live activity outcomes %v", err.Error())
 			return err
 		}
 	}

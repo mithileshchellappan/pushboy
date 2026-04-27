@@ -182,8 +182,8 @@ type Store interface {
 	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
 	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
-	FinalizeLADispatch(ctx context.Context, dispatchID string, totalCount int) error
-	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
+	RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error
 	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle

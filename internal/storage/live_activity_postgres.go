@@ -604,39 +604,23 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 	return batch, nil
 }
 
-func (s *PostgresStore) FinalizeLADispatch(ctx context.Context, dispatchID string, totalCount int) error {
-	if totalCount == 0 {
-		var action string
-		var jobID string
-		err := s.db.QueryRowContext(
-			ctx,
-			`UPDATE live_activity_dispatches
-			 SET total_count = $1,
-			     status = 'COMPLETED',
-			     completed_at = NOW()
-			 WHERE id = $2
-			 RETURNING action, live_activity_job_id`,
-			totalCount,
-			dispatchID,
-		).Scan(&action, &jobID)
-		if err != nil {
-			return fmt.Errorf("error finalizing empty LA dispatch: %w", err)
-		}
+type laOutcomeDelta struct {
+	success int
+	failure int
+}
 
-		switch action {
-		case string(model.LiveActivityActionStart):
-			if err := s.FailLAJobIfActive(ctx, jobID); err != nil && !errors.Is(err, Errors.NotFound) {
-				return fmt.Errorf("error failing empty LA start job: %w", err)
-			}
-		case string(model.LiveActivityActionEnd):
-			if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC().Format(time.RFC3339)); err != nil && !errors.Is(err, Errors.NotFound) {
-				return fmt.Errorf("error closing empty LA end job: %w", err)
-			}
-		}
-		return nil
+func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
+	if totalCount == 0 {
+		return s.completeEmptyLADispatch(ctx, dispatchID)
 	}
 
-	if _, err := s.db.ExecContext(
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting LA dispatch enqueue completion transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(
 		ctx,
 		`UPDATE live_activity_dispatches
 		 SET total_count = $1,
@@ -645,19 +629,22 @@ func (s *PostgresStore) FinalizeLADispatch(ctx context.Context, dispatchID strin
 		totalCount,
 		dispatchID,
 	); err != nil {
-		return fmt.Errorf("error finalizing LA dispatch: %w", err)
+		return fmt.Errorf("error completing LA dispatch enqueue: %w", err)
+	}
+
+	if err := completeLADispatchIfReadyTx(ctx, tx, dispatchID); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing LA dispatch enqueue completion: %w", err)
 	}
 	return nil
 }
 
-func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error {
+func (s *PostgresStore) RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error {
 	if len(outcomes) == 0 {
 		return nil
-	}
-
-	type counterDelta struct {
-		success int
-		failure int
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -666,44 +653,96 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 	}
 	defer tx.Rollback()
 
-	deltas := make(map[string]*counterDelta)
+	deltas, invalidTokenIDs := summarizeLAOutcomes(outcomes)
+	if err := invalidateLATokensTx(ctx, tx, invalidTokenIDs); err != nil {
+		return err
+	}
+
+	if err := applyLAOutcomeDeltasTx(ctx, tx, deltas); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing LA outcome transaction: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID string) error {
+	var action string
+	var jobID string
+	err := s.db.QueryRowContext(
+		ctx,
+		`UPDATE live_activity_dispatches
+		 SET total_count = 0,
+		     status = 'COMPLETED',
+		     completed_at = NOW()
+		 WHERE id = $1
+		 RETURNING action, live_activity_job_id`,
+		dispatchID,
+	).Scan(&action, &jobID)
+	if err != nil {
+		return fmt.Errorf("error completing empty LA dispatch: %w", err)
+	}
+
+	switch action {
+	case string(model.LiveActivityActionStart):
+		if err := s.FailLAJobIfActive(ctx, jobID); err != nil && !errors.Is(err, Errors.NotFound) {
+			return fmt.Errorf("error failing empty LA start job: %w", err)
+		}
+	case string(model.LiveActivityActionEnd):
+		if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC().Format(time.RFC3339)); err != nil && !errors.Is(err, Errors.NotFound) {
+			return fmt.Errorf("error closing empty LA end job: %w", err)
+		}
+	}
+	return nil
+}
+
+func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelta, map[string]struct{}) {
+	deltas := make(map[string]laOutcomeDelta)
 	invalidTokenIDs := make(map[string]struct{})
 
 	for _, outcome := range outcomes {
 		dispatchID := outcome.Receipt.JobID
-		if _, ok := deltas[dispatchID]; !ok {
-			deltas[dispatchID] = &counterDelta{}
-		}
-
+		delta := deltas[dispatchID]
 		switch outcome.Receipt.Status {
 		case string(model.Success):
-			deltas[dispatchID].success++
+			delta.success++
 		case string(model.Failed):
-			deltas[dispatchID].failure++
+			delta.failure++
+			if isLAInvalidToken(outcome.Receipt.StatusReason) {
+				invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}
+			}
 		}
-
-		if outcome.Receipt.Status == string(model.Failed) && isLAInvalidToken(outcome.Receipt.StatusReason) {
-			invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}
-		}
+		deltas[dispatchID] = delta
 	}
 
-	if len(invalidTokenIDs) > 0 {
-		tokenIDs := make([]string, 0, len(invalidTokenIDs))
-		for tokenID := range invalidTokenIDs {
-			tokenIDs = append(tokenIDs, tokenID)
-		}
-		if _, err := tx.ExecContext(
-			ctx,
-			`UPDATE live_activity_tokens
-			 SET invalidated_at = NOW()
-			 WHERE id = ANY($1)
-			   AND invalidated_at IS NULL`,
-			pq.Array(tokenIDs),
-		); err != nil {
-			return fmt.Errorf("error invalidating LA tokens: %w", err)
-		}
+	return deltas, invalidTokenIDs
+}
+
+func invalidateLATokensTx(ctx context.Context, tx *sql.Tx, invalidTokenIDs map[string]struct{}) error {
+	if len(invalidTokenIDs) == 0 {
+		return nil
 	}
 
+	tokenIDs := make([]string, 0, len(invalidTokenIDs))
+	for tokenID := range invalidTokenIDs {
+		tokenIDs = append(tokenIDs, tokenID)
+	}
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE live_activity_tokens
+		 SET invalidated_at = NOW()
+		 WHERE id = ANY($1)
+		   AND invalidated_at IS NULL`,
+		pq.Array(tokenIDs),
+	); err != nil {
+		return fmt.Errorf("error invalidating LA tokens: %w", err)
+	}
+	return nil
+}
+
+func applyLAOutcomeDeltasTx(ctx context.Context, tx *sql.Tx, deltas map[string]laOutcomeDelta) error {
 	for dispatchID, delta := range deltas {
 		if _, err := tx.ExecContext(
 			ctx,
@@ -718,42 +757,53 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 			return fmt.Errorf("error updating LA dispatch counters: %w", err)
 		}
 
-		var action string
-		var jobID string
-		err := tx.QueryRowContext(
-			ctx,
-			`UPDATE live_activity_dispatches
-			 SET status = 'COMPLETED',
-			     completed_at = NOW()
-			 WHERE id = $1
-			   AND status = 'DISPATCHED'
-			   AND success_count + failure_count >= total_count
-			 RETURNING action, live_activity_job_id`,
-			dispatchID,
-		).Scan(&action, &jobID)
-		if err != nil && err != sql.ErrNoRows {
-			return fmt.Errorf("error completing LA dispatch: %w", err)
-		}
-
-		if err == nil && action == string(model.LiveActivityActionEnd) {
-			if _, err := tx.ExecContext(
-				ctx,
-				`UPDATE live_activity_jobs
-				 SET status = 'CLOSED',
-				     closed_at = COALESCE(closed_at, NOW()),
-				     updated_at = NOW()
-				 WHERE id = $1
-				   AND status = 'ACTIVE'
-				   AND closed_at IS NULL`,
-				jobID,
-			); err != nil {
-				return fmt.Errorf("error closing LA job after end dispatch: %w", err)
-			}
+		if err := completeLADispatchIfReadyTx(ctx, tx, dispatchID); err != nil {
+			return err
 		}
 	}
+	return nil
+}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("error committing LA outcome transaction: %w", err)
+func completeLADispatchIfReadyTx(ctx context.Context, tx *sql.Tx, dispatchID string) error {
+	var action string
+	var jobID string
+	err := tx.QueryRowContext(
+		ctx,
+		`UPDATE live_activity_dispatches
+		 SET status = 'COMPLETED',
+		     completed_at = NOW()
+		 WHERE id = $1
+		   AND status = 'DISPATCHED'
+		   AND success_count + failure_count >= total_count
+		 RETURNING action, live_activity_job_id`,
+		dispatchID,
+	).Scan(&action, &jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("error completing LA dispatch: %w", err)
+	}
+
+	if action == string(model.LiveActivityActionEnd) {
+		return closeLAJobAfterEndDispatchTx(ctx, tx, jobID)
+	}
+	return nil
+}
+
+func closeLAJobAfterEndDispatchTx(ctx context.Context, tx *sql.Tx, jobID string) error {
+	if _, err := tx.ExecContext(
+		ctx,
+		`UPDATE live_activity_jobs
+		 SET status = 'CLOSED',
+		     closed_at = COALESCE(closed_at, NOW()),
+		     updated_at = NOW()
+		 WHERE id = $1
+		   AND status = 'ACTIVE'
+		   AND closed_at IS NULL`,
+		jobID,
+	); err != nil {
+		return fmt.Errorf("error closing LA job after end dispatch: %w", err)
 	}
 	return nil
 }
