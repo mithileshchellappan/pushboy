@@ -14,13 +14,18 @@ type Config struct {
 	JobQueueSize int // Size of the job queue buffer
 	BatchSize    int // Number of tokens to fetch per batch from DB
 
+	//Retry
+	MaxRetryNotification int
+	//TODO: LA Add separate retry count for LA
+
 	DatabaseDriver string
 	DatabaseURL    string
 
-	APNSKeyID   string
-	APNSTeamID  string
-	APNSTopicID string
-	APNSKeyPath string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSKeyID      string
+	APNSTeamID     string
+	APNSBundleID   string
+	APNSKeyPath    string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSUseSandbox bool
 
 	FCMProjectID      string
 	FCMServiceAccount string
@@ -32,21 +37,23 @@ type Config struct {
 
 func Load() *Config {
 	return &Config{
-		ServerPort:         getEnv("SERVER_PORT", ":8080"),
-		WorkerCount:        getIntEnv("WORKER_COUNT", 10),
-		SenderCount:        getIntEnv("SENDER_COUNT", 200),
-		JobQueueSize:       getIntEnv("JOB_QUEUE_SIZE", 1000),
-		BatchSize:          getIntEnv("BATCH_SIZE", 5000),
-		DatabaseDriver:     getEnv("DATABASE_DRIVER", "postgres"),
-		DatabaseURL:        getEnv("DATABASE_URL", "./pushboy.db"),
-		APNSKeyID:          getEnv("APNS_KEY_ID", ""),
-		APNSTeamID:         getEnv("APNS_TEAM_ID", ""),
-		APNSTopicID:        getEnv("APNS_TOPIC_ID", ""),
-		APNSKeyPath:        getEnv("APNS_KEY_PATH", ""),
-		FCMProjectID:       getEnv("FCM_PROJECT_ID", ""),
-		FCMServiceAccount:  getEnv("FCM_SERVICE_ACCOUNT", ""),
-		FCMKeyPath:         getEnv("FCM_KEY_PATH", "keys/service-account.json"),
-		BroadcastTopicName: getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
+		ServerPort:           getEnv("SERVER_PORT", ":8080"),
+		WorkerCount:          getIntEnv("WORKER_COUNT", 10),
+		SenderCount:          getIntEnv("SENDER_COUNT", 200),
+		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
+		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
+		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
+		DatabaseDriver:       getEnv("DATABASE_DRIVER", "postgres"),
+		DatabaseURL:          getEnv("DATABASE_URL", "./pushboy.db"),
+		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
+		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
+		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
+		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
+		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
+		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
+		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
+		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
+		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
 	}
 }
 
@@ -60,6 +67,14 @@ func getEnv(key, defaultVal string) string {
 func getIntEnv(key string, defaultVal int) int {
 	valueStr := getEnv(key, "")
 	if value, err := strconv.Atoi(valueStr); err == nil {
+		return value
+	}
+	return defaultVal
+}
+
+func getBoolEnv(key string, defaultVal bool) bool {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.ParseBool(valueStr); err == nil {
 		return value
 	}
 	return defaultVal

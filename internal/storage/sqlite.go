@@ -13,6 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 type SQLiteStore struct {
@@ -127,7 +128,7 @@ func (s *SQLiteStore) CreateToken(ctx context.Context, token *Token) (*Token, er
 }
 
 func (s *SQLiteStore) GetTokensByUserID(ctx context.Context, userID string) ([]Token, error) {
-	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = ?`
+	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = ? AND is_deleted = FALSE`
 	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting tokens: %w", err)
@@ -161,10 +162,57 @@ func (s *SQLiteStore) DeleteToken(ctx context.Context, tokenID string) error {
 	return nil
 }
 
+func (s *SQLiteStore) SoftDeleteToken(ctx context.Context, tokenID string) error {
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = ? AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("error soft deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *SQLiteStore) BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error {
+	if len(tokenIDs) == 0 {
+		return nil
+	}
+
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(tokenIDs)), ",")
+	args := make([]any, 0, len(tokenIDs))
+	for _, tokenID := range tokenIDs {
+		args = append(args, tokenID)
+	}
+
+	query := fmt.Sprintf(
+		`UPDATE tokens SET is_deleted = TRUE WHERE id IN (%s) AND is_deleted = FALSE`,
+		placeholders,
+	)
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("error bulk soft deleting tokens: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
 // Topic operations
 
 func (s *SQLiteStore) CreateTopic(ctx context.Context, topic *Topic) error {
-	topic.ID = fmt.Sprintf("topic:%s", strings.ToLower(topic.Name))
+	topic.ID = strings.TrimSpace(topic.ID)
+	topic.Name = strings.TrimSpace(topic.Name)
+	if topic.ID == "" || topic.Name == "" {
+		return fmt.Errorf("topic id and name are required")
+	}
 
 	query := `INSERT INTO topics(id, name) VALUES(?, ?)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)
@@ -266,6 +314,21 @@ func (s *SQLiteStore) GetTokenBatchForTopic(ctx context.Context, topicID string,
 	return nil, fmt.Errorf("not implemented")
 }
 
+func (s *SQLiteStore) GetTokenCountForTopic(ctx context.Context, topicID string) (int, error) {
+	var count int
+	query := `
+		SELECT COUNT(*)
+		FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = ?
+		)
+		AND t.is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, topicID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting topic tokens: %w", err)
+	}
+	return count, nil
+}
+
 func (s *SQLiteStore) GetUserSubscriptions(ctx context.Context, userID string) ([]UserTopicSubscription, error) {
 	query := `SELECT id, user_id, topic_id, created_at FROM user_topic_subscriptions WHERE user_id = ?`
 	rows, err := s.db.QueryContext(ctx, query, userID)
@@ -321,19 +384,6 @@ func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID strin
 // Publish job operations
 
 func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	// Count tokens for this topic (not subscribers, since one user can have multiple tokens)
-	var totalCount int
-	countQuery := `
-		SELECT COUNT(*) FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = ?
-		)`
-	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
-	if err := row.Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("error counting tokens: %w", err)
-	}
-	job.TotalCount = totalCount
-
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
 	if err != nil {
@@ -360,14 +410,6 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 	if !userExists {
 		return nil, Errors.NotFound
 	}
-
-	// Count user's tokens for total_count
-	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = ?`, job.UserID).Scan(&totalCount)
-	if err != nil {
-		return nil, fmt.Errorf("error counting user tokens: %w", err)
-	}
-	job.TotalCount = totalCount
 
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
@@ -405,7 +447,7 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}
@@ -428,6 +470,32 @@ func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status 
 	return err
 }
 
+func (s *SQLiteStore) FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error {
+	if totalCount == 0 {
+		_, err := s.db.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET total_count = ?, status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+			totalCount,
+			jobID,
+		)
+		if err != nil {
+			return fmt.Errorf("error finalizing empty dispatch: %w", err)
+		}
+		return nil
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs SET total_count = ?, status = 'DISPATCHED' WHERE id = ?`,
+		totalCount,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error finalizing dispatch: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
 	query := `
 		SELECT 
@@ -437,14 +505,12 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 			pj.payload, 
 			pj.status, 
 			pj.total_count, 
-			COALESCE(SUM(CASE WHEN dr.status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success_count,
-			COALESCE(SUM(CASE WHEN dr.status = 'FAILED' THEN 1 ELSE 0 END), 0) as failure_count,
+			pj.success_count,
+			pj.failure_count,
 			pj.created_at,
 			COALESCE(pj.completed_at, '')
 		FROM publish_jobs pj
-		LEFT JOIN delivery_receipts dr ON pj.id = dr.job_id
-		WHERE pj.id = ?
-		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at, pj.completed_at`
+		WHERE pj.id = ?`
 
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
@@ -460,7 +526,7 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {
-		var payload NotificationPayload
+		var payload model.NotificationPayload
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			return nil, fmt.Errorf("error deserializing payload: %w", err)
 		}
@@ -470,21 +536,111 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 	return &job, nil
 }
 
+func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	type counterDelta struct {
+		success int
+		failure int
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting outcome transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	deltas := make(map[string]*counterDelta)
+
+	for _, receipt := range receipts {
+		if _, ok := deltas[receipt.JobID]; !ok {
+			deltas[receipt.JobID] = &counterDelta{}
+		}
+
+		switch receipt.Status {
+		case string(model.Success):
+			deltas[receipt.JobID].success++
+		case string(model.Failed):
+			deltas[receipt.JobID].failure++
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`,
+				receipt.ID,
+				receipt.JobID,
+				receipt.TokenID,
+				receipt.Status,
+				receipt.StatusReason,
+				receipt.DispatchedAt,
+			); err != nil {
+				return fmt.Errorf("error recording failure receipt for job %s token %s: %w", receipt.JobID, receipt.TokenID, err)
+			}
+		}
+	}
+
+	for jobID, delta := range deltas {
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?`,
+			delta.success,
+			delta.failure,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error updating counters for job %s: %w", jobID, err)
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs
+			SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+			AND status = 'DISPATCHED'
+			AND success_count + failure_count >= total_count`,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error completing job %s: %w", jobID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing outcome transaction: %w", err)
+	}
+
+	return nil
+}
+
 func (s *SQLiteStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
 	query := `UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
 }
 
+func (s *SQLiteStore) CompleteJobIfDone(ctx context.Context, jobID string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs
+		SET status = 'COMPLETED', completed_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+		AND status = 'DISPATCHED'
+		AND success_count + failure_count >= total_count`,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error completing job: %w", err)
+	}
+	return nil
+}
+
 // Delivery receipt operations
 
-func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 
-func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}
@@ -514,6 +670,15 @@ func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []Deliver
 
 func (s *SQLiteStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
 	return nil, fmt.Errorf("not implemented")
+}
+
+func (s *SQLiteStore) GetTokenCountForUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM tokens WHERE user_id = ? AND is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting user tokens: %w", err)
+	}
+	return count, nil
 }
 
 func (s *SQLiteStore) Close() error {

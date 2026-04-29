@@ -15,8 +15,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 const (
@@ -35,7 +34,7 @@ type Client struct {
 	httpClient *http.Client
 	keyID      string
 	teamID     string
-	topicID    string
+	bundleID   string
 	signingKey []byte
 	endpoint   string
 
@@ -44,13 +43,11 @@ type Client struct {
 	jwtExpiry time.Time
 }
 
-// Alert represents the visible notification content
 type Alert struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
 }
 
-// ApsPayload is the APNs-specific payload structure
 type ApsPayload struct {
 	Alert            *Alert `json:"alert,omitempty"`
 	Sound            string `json:"sound,omitempty"`
@@ -61,11 +58,9 @@ type ApsPayload struct {
 	Category         string `json:"category,omitempty"`
 }
 
-// ApnsRequest is the full request body sent to APNs
-// Custom data fields are added at the top level alongside "aps"
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, useSandbox bool) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool) *Client {
 	var endpoint string
 	if useSandbox {
 		endpoint = DevelopmentEndpoint
@@ -89,7 +84,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, topicID string, u
 		},
 		keyID:      keyID,
 		teamID:     teamID,
-		topicID:    topicID,
+		bundleID:   bundleID,
 		signingKey: p8KeyBytes,
 		endpoint:   endpoint,
 	}
@@ -143,16 +138,14 @@ func (c *Client) generateJWT() (string, error) {
 	return tokenString, nil
 }
 
-func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
 	jwtToken, err := c.getJWT()
 	if err != nil {
 		return fmt.Errorf("failed to get JWT: %w", err)
 	}
 
-	// Build the APS payload
 	aps := ApsPayload{}
 
-	// For silent notifications, don't include alert
 	if !payload.Silent {
 		aps.Alert = &Alert{
 			Title: payload.Title,
@@ -168,38 +161,30 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		aps.Badge = payload.Badge
 	}
 
-	// Silent/background notification
 	if payload.Silent {
 		aps.ContentAvailable = 1
 	}
 
-	// Mutable content for rich notifications (images, etc.)
-	// Enable if image_url is provided so app's Notification Service Extension can fetch it
 	if payload.ImageURL != "" {
 		aps.MutableContent = 1
 	}
 
-	// Thread ID for grouping
 	if payload.ThreadID != "" {
 		aps.ThreadID = payload.ThreadID
 	}
 
-	// Category for actionable notifications
 	if payload.Category != "" {
 		aps.Category = payload.Category
 	}
 
-	// Build full request with custom data
 	apnsRequest := ApnsRequest{
 		"aps": aps,
 	}
 
-	// Add custom data at top level (outside aps)
 	for key, value := range payload.Data {
 		apnsRequest[key] = value
 	}
 
-	// Pass image URL in custom data for Service Extension to fetch
 	if payload.ImageURL != "" {
 		apnsRequest["image_url"] = payload.ImageURL
 	}
@@ -209,12 +194,45 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		return err
 	}
 
-	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token.Token)
+	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token)
 
-	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, payload)
+	headers := map[string]string{
+		"apns-topic": c.bundleID,
+	}
+
+	if payload.Silent {
+		headers["apns-push-type"] = "background"
+	} else {
+		headers["apns-push-type"] = "alert"
+	}
+
+	if payload.Silent {
+		if payload.Priority == "high" {
+			log.Printf("Warning: Silent notification requested with high priority - forcing priority 5 per APNs requirements")
+		}
+		headers["apns-priority"] = "5"
+	} else if payload.Priority == "normal" {
+		headers["apns-priority"] = "5"
+	} else {
+		headers["apns-priority"] = "10"
+	}
+
+	if payload.CollapseID != "" {
+		headers["apns-collapse-id"] = payload.CollapseID
+	}
+
+	if payload.TTL > 0 {
+		expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
+		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+	} else if payload.Silent {
+		expiration := time.Now().Add(1 * time.Hour).Unix()
+		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
+	}
+
+	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, headers)
 }
 
-func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, payload *dispatch.NotificationPayload) error {
+func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, headers map[string]string) error {
 	backoff := initialBackoff
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -225,40 +243,14 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwtToken))
-		req.Header.Set("apns-topic", c.topicID)
-
-		if payload.Silent {
-			req.Header.Set("apns-push-type", "background")
-		} else {
-			req.Header.Set("apns-push-type", "alert")
-		}
-
-		if payload.Silent {
-			if payload.Priority == "high" {
-				log.Printf("Warning: Silent notification requested with high priority - forcing priority 5 per APNs requirements")
+		for key, value := range headers {
+			if value != "" {
+				req.Header.Set(key, value)
 			}
-			req.Header.Set("apns-priority", "5")
-		} else if payload.Priority == "normal" {
-			req.Header.Set("apns-priority", "5")
-		} else {
-			req.Header.Set("apns-priority", "10")
-		}
-
-		if payload.CollapseID != "" {
-			req.Header.Set("apns-collapse-id", payload.CollapseID)
-		}
-
-		if payload.TTL > 0 {
-			expiration := time.Now().Add(time.Duration(payload.TTL) * time.Second).Unix()
-			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
-		} else if payload.Silent {
-			expiration := time.Now().Add(1 * time.Hour).Unix()
-			req.Header.Set("apns-expiration", strconv.FormatInt(expiration, 10))
 		}
 
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			// Retry on connection errors (GOAWAY, connection reset, etc.)
 			if attempt < maxRetries && isRetryableError(err) {
 				select {
 				case <-ctx.Done():
@@ -281,13 +273,11 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return nil
 		}
 
-		// Parse APNs error response for better debugging
 		var apnsError struct {
 			Reason    string `json:"reason"`
 			Timestamp int64  `json:"timestamp,omitempty"`
 		}
 		if err := json.Unmarshal(body, &apnsError); err == nil && apnsError.Reason != "" {
-			// Log specific error for debugging
 			log.Printf("APNs error for device: %s (reason: %s)", resp.Status, apnsError.Reason)
 		}
 
@@ -314,7 +304,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			return fmt.Errorf("rate limited after %d retries: %s", maxRetries, resp.Status)
 		}
 
-		// Include APNs reason in error if available
 		var apnsReason struct {
 			Reason string `json:"reason"`
 		}
@@ -327,7 +316,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	return fmt.Errorf("max retries exceeded")
 }
 
-// isRetryableError checks if an error is a transient connection issue worth retrying
 func isRetryableError(err error) bool {
 	if err == nil {
 		return false

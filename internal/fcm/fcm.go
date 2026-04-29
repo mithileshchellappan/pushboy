@@ -8,10 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -26,39 +26,34 @@ type Client struct {
 	projectID  string
 }
 
-// FcmRequest is the top-level FCM HTTP v1 request
 type FcmRequest struct {
 	Message FcmMessage `json:"message"`
 }
 
-// FcmMessage represents the FCM message structure
 type FcmMessage struct {
 	Token        string            `json:"token"`
-	Notification *Notification     `json:"notification,omitempty"` // nil for silent/data-only messages
+	Notification *Notification     `json:"notification,omitempty"`
 	Data         map[string]string `json:"data,omitempty"`
 	Android      *AndroidConfig    `json:"android,omitempty"`
 }
 
-// Notification is the visible notification content
 type Notification struct {
 	Title string `json:"title,omitempty"`
 	Body  string `json:"body,omitempty"`
-	Image string `json:"image,omitempty"` // FCM supports image URLs natively
+	Image string `json:"image,omitempty"`
 }
 
-// AndroidConfig contains Android-specific options
 type AndroidConfig struct {
 	CollapseKey  string               `json:"collapse_key,omitempty"`
-	Priority     string               `json:"priority,omitempty"` // "HIGH" or "NORMAL"
-	TTL          string               `json:"ttl,omitempty"`      // Duration string like "3600s"
+	Priority     string               `json:"priority,omitempty"`
+	TTL          string               `json:"ttl,omitempty"`
 	Notification *AndroidNotification `json:"notification,omitempty"`
 }
 
-// AndroidNotification contains Android notification options
 type AndroidNotification struct {
 	Sound       string `json:"sound,omitempty"`
-	Tag         string `json:"tag,omitempty"`          // Groups notifications (like thread-id)
-	ClickAction string `json:"click_action,omitempty"` // Maps to category
+	Tag         string `json:"tag,omitempty"`
+	ClickAction string `json:"click_action,omitempty"`
 }
 
 func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) {
@@ -80,26 +75,22 @@ func NewClient(ctx context.Context, serviceAccountJson []byte) (*Client, error) 
 	return &Client{httpClient: httpClient, projectID: projectID}, nil
 }
 
-func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispatch.NotificationPayload) error {
+func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
 	message := FcmMessage{
-		Token: token.Token,
+		Token: token,
 	}
 
-	// For silent notifications, omit the notification block entirely
-	// The app will receive it as a data-only message
 	if !payload.Silent {
 		notification := &Notification{
 			Title: payload.Title,
 			Body:  payload.Body,
 		}
-		// FCM supports image URLs natively
 		if payload.ImageURL != "" {
 			notification.Image = payload.ImageURL
 		}
 		message.Notification = notification
 	}
 
-	// Custom data payload
 	if len(payload.Data) > 0 {
 		message.Data = payload.Data
 	}
@@ -108,11 +99,9 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		log.Printf("Warning: Silent notification sent without data payload")
 	}
 
-	// Android-specific configuration
 	android := &AndroidConfig{}
 	hasAndroidConfig := false
 
-	// Collapse key for coalescing notifications
 	if payload.CollapseID != "" {
 		android.CollapseKey = payload.CollapseID
 		hasAndroidConfig = true
@@ -132,7 +121,6 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		hasAndroidConfig = true
 	}
 
-	// TTL (time-to-live) in seconds -> FCM wants duration string like "3600s"
 	if payload.TTL > 0 {
 		android.TTL = fmt.Sprintf("%ds", payload.TTL)
 		hasAndroidConfig = true
@@ -147,13 +135,11 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 			hasAndroidNotif = true
 		}
 
-		// Thread ID -> Android tag (groups notifications)
 		if payload.ThreadID != "" {
 			androidNotif.Tag = payload.ThreadID
 			hasAndroidNotif = true
 		}
 
-		// Category -> click_action
 		if payload.Category != "" {
 			androidNotif.ClickAction = payload.Category
 			hasAndroidNotif = true
@@ -169,9 +155,11 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 		message.Android = android
 	}
 
-	request := FcmRequest{Message: message}
+	return c.sendMessage(ctx, message)
+}
 
-	payloadBytes, err := json.Marshal(request)
+func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
+	payloadBytes, err := json.Marshal(FcmRequest{Message: message})
 	if err != nil {
 		log.Printf("Error marshalling message: %v", err)
 		return err
@@ -195,19 +183,33 @@ func (c *Client) Send(ctx context.Context, token *storage.Token, payload *dispat
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		// Parse FCM error response for better debugging
-		var fcmError struct {
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-				Status  string `json:"status"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(body, &fcmError); err == nil && fcmError.Error.Message != "" {
-			return fmt.Errorf("FCM error: %s (status: %s, code: %d)", fcmError.Error.Message, fcmError.Error.Status, fcmError.Error.Code)
-		}
-		return fmt.Errorf("failed to send notification: %s", resp.Status)
+		return parseFCMError(body, resp.Status)
 	}
 
 	return nil
+}
+
+func parseFCMError(body []byte, fallbackStatus string) error {
+	var fcmError struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Status  string `json:"status"`
+			Details []struct {
+				Type      string `json:"@type"`
+				ErrorCode string `json:"errorCode"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &fcmError); err == nil {
+		for _, detail := range fcmError.Error.Details {
+			if strings.EqualFold(detail.ErrorCode, "UNREGISTERED") {
+				return fmt.Errorf("FCM error: registration-token-not-registered")
+			}
+		}
+		if fcmError.Error.Message != "" {
+			return fmt.Errorf("FCM error: %s (status: %s, code: %d)", fcmError.Error.Message, fcmError.Error.Status, fcmError.Error.Code)
+		}
+	}
+	return fmt.Errorf("failed to send notification: %s", fallbackStatus)
 }

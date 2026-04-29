@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 // User represents a user in the system
@@ -15,7 +18,7 @@ type User struct {
 type Token struct {
 	ID        string
 	UserID    string
-	Platform  string // apns or fcm
+	Platform  model.Platform // apns or fcm
 	Token     string
 	CreatedAt string
 }
@@ -36,27 +39,13 @@ type UserTopicSubscription struct {
 
 // NotificationPayload stores the full notification content as JSON
 // This is separate from dispatch.NotificationPayload to avoid circular imports
-type NotificationPayload struct {
-	Title      string            `json:"title"`
-	Body       string            `json:"body"`
-	ImageURL   string            `json:"image_url,omitempty"`
-	Sound      string            `json:"sound,omitempty"`
-	Badge      *int              `json:"badge,omitempty"`
-	Data       map[string]string `json:"data,omitempty"`
-	Silent     bool              `json:"silent,omitempty"`
-	CollapseID string            `json:"collapse_id,omitempty"`
-	Priority   string            `json:"priority,omitempty"`
-	TTL        int               `json:"ttl,omitempty"`
-	ThreadID   string            `json:"thread_id,omitempty"`
-	Category   string            `json:"category,omitempty"`
-}
 
 // PublishJob represents a job to publish notifications to a topic or user
 type PublishJob struct {
 	ID           string
 	TopicID      string
 	UserID       string
-	Payload      *NotificationPayload // Full notification content
+	Payload      *model.NotificationPayload // Full notification content
 	Status       string
 	TotalCount   int
 	SuccessCount int
@@ -67,17 +56,63 @@ type PublishJob struct {
 }
 
 // DeliveryReceipt tracks the delivery status of a notification
-type DeliveryReceipt struct {
-	ID           string
-	JobID        string
-	TokenID      string
-	Status       string
-	StatusReason string
-	DispatchedAt string
-}
 
 type TokenBatch struct {
 	Tokens     []Token
+	NextCursor string
+	HasMore    bool
+}
+
+type LiveActivityToken struct {
+	ID            string
+	UserID        string
+	Platform      model.Platform
+	TokenType     model.LiveActivityTokenType
+	Token         string
+	CreatedAt     string
+	LastSeenAt    string
+	ExpiresAt     string
+	InvalidatedAt string
+}
+
+type LiveActivityUserTopicSubscription struct {
+	ID        string
+	UserID    string
+	TopicID   string
+	CreatedAt string
+}
+
+type LiveActivityJob struct {
+	ID            string
+	ActivityID    string
+	ActivityType  string
+	UserID        string
+	TopicID       string
+	Status        model.LiveActivityJobStatus
+	LatestPayload json.RawMessage
+	Options       json.RawMessage
+	CreatedAt     string
+	UpdatedAt     string
+	ExpiresAt     string
+	ClosedAt      string
+}
+
+type LiveActivityDispatch struct {
+	ID                string
+	LiveActivityJobID string
+	Action            model.LiveActivityAction
+	Payload           json.RawMessage
+	Options           json.RawMessage
+	Status            string
+	TotalCount        int
+	SuccessCount      int
+	FailureCount      int
+	CreatedAt         string
+	CompletedAt       string
+}
+
+type LiveActivityTokenBatch struct {
+	Tokens     []LiveActivityToken
 	NextCursor string
 	HasMore    bool
 }
@@ -93,6 +128,8 @@ type Store interface {
 	CreateToken(ctx context.Context, token *Token) (*Token, error)
 	GetTokensByUserID(ctx context.Context, userID string) ([]Token, error)
 	DeleteToken(ctx context.Context, tokenID string) error
+	SoftDeleteToken(ctx context.Context, tokenID string) error
+	BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error
 
 	// Topic operations
 	CreateTopic(ctx context.Context, topic *Topic) error
@@ -112,17 +149,42 @@ type Store interface {
 	CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
+	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
+	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
+	CompleteJobIfDone(ctx context.Context, jobID string) error
 	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)
 	GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error)
+	GetTokenCountForTopic(ctx context.Context, topicID string) (int, error)
+	GetTokenCountForUser(ctx context.Context, userID string) (int, error)
 
 	// Delivery receipt operations
-	RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error
-	BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error
+	RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error
+	BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error
 
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
+
+	// Live Activity operations
+	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
+	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
+	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
+	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
+	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
+	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
+	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
+	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
+	RollbackLAStartJob(ctx context.Context, jobID string) error
+	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error
+	FailLAJobIfActive(ctx context.Context, jobID string) error
+	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
+	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
+	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle
 	Close() error

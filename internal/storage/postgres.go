@@ -13,6 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	pq "github.com/lib/pq"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 type PostgresStore struct {
@@ -131,7 +132,7 @@ func (s *PostgresStore) CreateToken(ctx context.Context, token *Token) (*Token, 
 }
 
 func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([]Token, error) {
-	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = $1`
+	query := `SELECT id, user_id, platform, token, created_at FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`
 	rows, err := s.db.QueryContext(ctx, query, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting tokens: %w", err)
@@ -157,6 +158,7 @@ func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID strin
 		WHERE t.user_id IN (
 			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
 		) 
+		AND t.is_deleted = FALSE
 		AND t.id > $2 
 		ORDER BY t.id 
 		LIMIT $3`
@@ -192,7 +194,7 @@ func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID strin
 }
 
 func (s *PostgresStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {
-	query := `SELECT id, token, platform FROM tokens WHERE tokens.user_id = $1 AND tokens.id > $2 ORDER BY tokens.id LIMIT $3 `
+	query := `SELECT id, token, platform FROM tokens WHERE tokens.user_id = $1 AND tokens.is_deleted = FALSE AND tokens.id > $2 ORDER BY tokens.id LIMIT $3 `
 	rows, err := s.db.QueryContext(ctx, query, userID, cursor, batchSize+1)
 	if err != nil {
 		return nil, fmt.Errorf("error getting token batch for topic: %w", err)
@@ -224,6 +226,30 @@ func (s *PostgresStore) GetTokenBatchForUser(ctx context.Context, userID string,
 	return batch, nil
 }
 
+func (s *PostgresStore) GetTokenCountForTopic(ctx context.Context, topicID string) (int, error) {
+	var count int
+	query := `
+		SELECT COUNT(*)
+		FROM tokens t
+		WHERE t.user_id IN (
+			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
+		)
+		AND t.is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, topicID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting topic tokens: %w", err)
+	}
+	return count, nil
+}
+
+func (s *PostgresStore) GetTokenCountForUser(ctx context.Context, userID string) (int, error) {
+	var count int
+	query := `SELECT COUNT(*) FROM tokens WHERE user_id = $1 AND is_deleted = FALSE`
+	if err := s.db.QueryRowContext(ctx, query, userID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("error counting user tokens: %w", err)
+	}
+	return count, nil
+}
+
 func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 	query := `DELETE FROM tokens WHERE id = $1`
 	result, err := s.db.ExecContext(ctx, query, tokenID)
@@ -239,9 +265,48 @@ func (s *PostgresStore) DeleteToken(ctx context.Context, tokenID string) error {
 	return nil
 }
 
+func (s *PostgresStore) SoftDeleteToken(ctx context.Context, tokenID string) error {
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = $1 AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, tokenID)
+	if err != nil {
+		return fmt.Errorf("error soft deleting token: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
+func (s *PostgresStore) BulkSoftDeleteToken(ctx context.Context, tokenIDs []string) error {
+	if len(tokenIDs) == 0 {
+		return nil
+	}
+
+	query := `UPDATE tokens SET is_deleted = TRUE WHERE id = ANY($1) AND is_deleted = FALSE`
+	result, err := s.db.ExecContext(ctx, query, pq.Array(tokenIDs))
+	if err != nil {
+		return fmt.Errorf("error bulk soft deleting tokens: %w", err)
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		return Errors.NotFound
+	}
+
+	return nil
+}
+
 // Topic operations
 
 func (s *PostgresStore) CreateTopic(ctx context.Context, topic *Topic) error {
+	topic.ID = strings.TrimSpace(topic.ID)
+	topic.Name = strings.TrimSpace(topic.Name)
+	if topic.ID == "" || topic.Name == "" {
+		return fmt.Errorf("topic id and name are required")
+	}
 
 	query := `INSERT INTO topics(id, name) VALUES($1, $2)`
 	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.Name)
@@ -394,19 +459,6 @@ func (s *PostgresStore) GetTopicSubscriberCount(ctx context.Context, topicID str
 // Publish job operations
 
 func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error) {
-	// Count tokens for this topic (not subscribers, since one user can have multiple tokens)
-	var totalCount int
-	countQuery := `
-		SELECT COUNT(*) FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
-		)`
-	row := s.db.QueryRowContext(ctx, countQuery, job.TopicID)
-	if err := row.Scan(&totalCount); err != nil {
-		return nil, fmt.Errorf("error counting tokens: %w", err)
-	}
-	job.TotalCount = totalCount
-
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
 	if err != nil {
@@ -440,14 +492,6 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 	if !userExists {
 		return nil, Errors.NotFound
 	}
-
-	// Count user's tokens for total_count
-	var totalCount int
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM tokens WHERE user_id = $1`, job.UserID).Scan(&totalCount)
-	if err != nil {
-		return nil, fmt.Errorf("error counting user tokens: %w", err)
-	}
-	job.TotalCount = totalCount
 
 	// Serialize payload to JSON
 	payloadJSON, err := json.Marshal(job.Payload)
@@ -492,7 +536,7 @@ func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publ
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}
@@ -515,6 +559,32 @@ func (s *PostgresStore) UpdateJobStatus(ctx context.Context, jobID string, statu
 	return err
 }
 
+func (s *PostgresStore) FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error {
+	if totalCount == 0 {
+		_, err := s.db.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET total_count = $1, status = 'COMPLETED', completed_at = NOW() WHERE id = $2`,
+			totalCount,
+			jobID,
+		)
+		if err != nil {
+			return fmt.Errorf("error finalizing empty dispatch: %w", err)
+		}
+		return nil
+	}
+
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs SET total_count = $1, status = 'DISPATCHED' WHERE id = $2`,
+		totalCount,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error finalizing dispatch: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
 	query := `
 		SELECT 
@@ -524,14 +594,12 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 			pj.payload, 
 			pj.status, 
 			pj.total_count, 
-			COALESCE(SUM(CASE WHEN dr.status = 'SUCCESS' THEN 1 ELSE 0 END), 0) as success_count,
-			COALESCE(SUM(CASE WHEN dr.status = 'FAILED' THEN 1 ELSE 0 END), 0) as failure_count,
+			pj.success_count,
+			pj.failure_count,
 			pj.created_at,
 			pj.completed_at
 		FROM publish_jobs pj
-		LEFT JOIN delivery_receipts dr ON pj.id = dr.job_id
-		WHERE pj.id = $1
-		GROUP BY pj.id, pj.topic_id, pj.user_id, pj.payload, pj.status, pj.total_count, pj.created_at, pj.completed_at`
+		WHERE pj.id = $1`
 
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
@@ -547,12 +615,12 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 	}
 
 	if completedAt.Valid {
-		job.CompletedAt = completedAt.Time.Format(time.RFC3339)
+		job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
 	}
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {
-		var payload NotificationPayload
+		var payload model.NotificationPayload
 		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 			return nil, fmt.Errorf("error deserializing payload: %w", err)
 		}
@@ -562,21 +630,111 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 	return &job, nil
 }
 
+func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	type counterDelta struct {
+		success int
+		failure int
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting outcome transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	deltas := make(map[string]*counterDelta)
+
+	for _, receipt := range receipts {
+		if _, ok := deltas[receipt.JobID]; !ok {
+			deltas[receipt.JobID] = &counterDelta{}
+		}
+
+		switch receipt.Status {
+		case string(model.Success):
+			deltas[receipt.JobID].success++
+		case string(model.Failed):
+			deltas[receipt.JobID].failure++
+			if _, err := tx.ExecContext(
+				ctx,
+				`INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`,
+				receipt.ID,
+				receipt.JobID,
+				receipt.TokenID,
+				receipt.Status,
+				receipt.StatusReason,
+				receipt.DispatchedAt,
+			); err != nil {
+				return fmt.Errorf("error recording failure receipt for job %s token %s: %w", receipt.JobID, receipt.TokenID, err)
+			}
+		}
+	}
+
+	for jobID, delta := range deltas {
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`,
+			delta.success,
+			delta.failure,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error updating counters for job %s: %w", jobID, err)
+		}
+
+		if _, err := tx.ExecContext(
+			ctx,
+			`UPDATE publish_jobs
+			SET status = 'COMPLETED', completed_at = NOW()
+			WHERE id = $1
+			AND status = 'DISPATCHED'
+			AND success_count + failure_count >= total_count`,
+			jobID,
+		); err != nil {
+			return fmt.Errorf("error completing job %s: %w", jobID, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing outcome transaction: %w", err)
+	}
+
+	return nil
+}
+
 func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
 	query := `UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
 }
 
+func (s *PostgresStore) CompleteJobIfDone(ctx context.Context, jobID string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE publish_jobs
+		SET status = 'COMPLETED', completed_at = NOW()
+		WHERE id = $1
+		AND status = 'DISPATCHED'
+		AND success_count + failure_count >= total_count`,
+		jobID,
+	)
+	if err != nil {
+		return fmt.Errorf("error completing job: %w", err)
+	}
+	return nil
+}
+
 // Delivery receipt operations
 
-func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *DeliveryReceipt) error {
+func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 
-func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []DeliveryReceipt) error {
+func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}
@@ -608,7 +766,7 @@ func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []Deliv
 }
 
 func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
-	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, COALESCE(completed_at::text, ''), COALESCE(scheduled_at::text, '')`
+	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at`
 
 	rows, err := s.db.QueryContext(ctx, query)
 
@@ -621,13 +779,20 @@ func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, err
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
-		var completedAt sql.NullString
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &job.ScheduledAt); err != nil {
+		var completedAt sql.NullTime
+		var scheduledAt sql.NullTime
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &scheduledAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
+		}
+		if completedAt.Valid {
+			job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if scheduledAt.Valid {
+			job.ScheduledAt = scheduledAt.Time.UTC().Format(time.RFC3339)
 		}
 		// Deserialize payload from JSON
 		if len(payloadJSON) > 0 {
-			var payload NotificationPayload
+			var payload model.NotificationPayload
 			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
 				return nil, fmt.Errorf("error deserializing payload: %w", err)
 			}

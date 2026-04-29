@@ -7,23 +7,27 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
-	"github.com/mithileshchellappan/pushboy/internal/worker"
 )
 
 type Server struct {
-	service    *service.PushboyService
-	workerPool *worker.Pool
-	httpServer *http.Server
-	router     chi.Router
+	service     *service.PushboyService
+	jobPipeline pipeline.Pipeline[model.JobItem]
+	httpServer  *http.Server
+	router      chi.Router
 }
 
-func New(s *service.PushboyService, pool *worker.Pool) *Server {
-	return &Server{service: s, workerPool: pool}
+const immediateEnqueueTimeout = 2 * time.Second
+
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -79,6 +83,13 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
 		})
+
+		r.Route("/live-activity", func(r chi.Router) {
+			r.Post("/tokens", s.handleRegisterLAToken)
+			r.Delete("/tokens", s.handleDeleteLAToken)
+			r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLATopic)
+			r.Post("/jobs", s.handleCreateLAJob)
+		})
 	})
 
 	return r
@@ -86,6 +97,23 @@ func (s *Server) setupRouter() chi.Router {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error {
+	enqueueCtx, cancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+	defer cancel()
+
+	if err := s.jobPipeline.Submit(enqueueCtx, jobItem); err != nil {
+		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+		defer statusCancel()
+
+		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, "FAILED"); updateErr != nil {
+			log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobID, updateErr)
+		}
+		return err
+	}
+
+	return nil
 }
 
 // Health check
@@ -175,17 +203,18 @@ func (s *Server) handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Platform != "apns" && req.Platform != "fcm" {
-		http.Error(w, "Invalid platform (must be 'apns' or 'fcm')", http.StatusBadRequest)
-		return
-	}
-
 	if req.Token == "" {
 		http.Error(w, "token is required", http.StatusBadRequest)
 		return
 	}
 
-	token, user, err := s.service.RegisterToken(r.Context(), req.ID, req.Platform, req.Token)
+	platform, err := model.ParsePlatform(req.Platform)
+	if err != nil {
+		http.Error(w, "Invalid platform (must be 'apns' or 'fcm')", http.StatusBadRequest)
+		return
+	}
+
+	token, user, err := s.service.RegisterToken(r.Context(), req.ID, platform, req.Token)
 	if err != nil {
 		if errors.Is(err, storage.Errors.AlreadyExists) {
 			http.Error(w, "Token already registered", http.StatusConflict)
@@ -325,7 +354,7 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 // Send to user handler
 
 type SendNotificationRequest struct {
-	storage.NotificationPayload
+	model.NotificationPayload
 	ScheduledAt string `json:"scheduled_at,omitempty"`
 }
 
@@ -349,7 +378,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := &storage.NotificationPayload{
+	payload := &model.NotificationPayload{
 		Title:      req.Title,
 		Body:       req.Body,
 		ImageURL:   req.ImageURL,
@@ -374,8 +403,25 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error sending notification to user: %v", err)
 		return
 	}
+
+	jobItem := model.JobItem{
+		ID:       job.ID,
+		JobType:  model.JobTypePush,
+		MaxRetry: 3,
+		Payload:  payload,
+		UserID:   userID,
+	}
+
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
+			log.Printf("Error enqueueing immediate user job %s: %v", job.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
+				http.Error(w, "Job queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "Error queueing notification", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
@@ -509,7 +555,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload := &storage.NotificationPayload{
+	payload := &model.NotificationPayload{
 		Title:      req.Title,
 		Body:       req.Body,
 		ImageURL:   req.ImageURL,
@@ -526,12 +572,36 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 
 	job, err := s.service.CreatePublishJob(r.Context(), topicID, payload, req.ScheduledAt)
 	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		if strings.Contains(err.Error(), "scheduledAt") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Error creating publish job", http.StatusInternalServerError)
 		log.Printf("Error creating publish job: %v", err)
 		return
 	}
+
+	jobItem := model.JobItem{
+		ID:      job.ID,
+		JobType: model.JobTypePush,
+		Payload: payload,
+		TopicID: topicID,
+	}
+
 	if job.ScheduledAt == "" {
-		s.workerPool.Submit(job)
+		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
+			log.Printf("Error enqueueing immediate topic job %s: %v", job.ID, err)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
+				http.Error(w, "Job queue unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			http.Error(w, "Error queueing publish job", http.StatusInternalServerError)
+			return
+		}
 	}
 	s.respond(w, r, map[string]string{"status": "queued", "job_id": job.ID}, http.StatusAccepted)
 }

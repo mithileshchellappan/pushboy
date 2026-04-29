@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -17,11 +18,13 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/config"
 	"github.com/mithileshchellappan/pushboy/internal/dispatch"
 	"github.com/mithileshchellappan/pushboy/internal/fcm"
+	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/scheduler"
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
-	"github.com/mithileshchellappan/pushboy/internal/worker"
+	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
 
 func main() {
@@ -29,6 +32,11 @@ func main() {
 
 	var store storage.Store
 	var err error
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	workerCtx, workerStop := context.WithCancel(context.Background())
+	defer workerStop()
 
 	switch cfg.DatabaseDriver {
 	// case "sqlite":
@@ -47,7 +55,7 @@ func main() {
 	}
 
 	// Initialize dispatchers - only add successfully created clients
-	dispatchers := make(map[string]dispatch.Dispatcher)
+	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -59,8 +67,8 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
-			dispatchers["apns"] = apnsClient
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox)
+			dispatchers[model.APNS] = apnsClient
 			log.Println("APNS dispatcher initialized")
 		}
 	} else {
@@ -72,11 +80,11 @@ func main() {
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
-		fcmClient, err := fcm.NewClient(context.Background(), serviceAccountBytes)
+		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
-			dispatchers["fcm"] = fcmClient
+			dispatchers[model.FCM] = fcmClient
 			log.Println("FCM dispatcher initialized")
 		}
 	}
@@ -87,32 +95,78 @@ func main() {
 
 	// Ensure broadcast topic exists
 	var broadcastTopicID string
-	if cfg.BroadcastTopicName != "" {
-		broadcastTopicID = strings.ToLower(cfg.BroadcastTopicName)
-		topic := &storage.Topic{Name: cfg.BroadcastTopicName}
-		if err := store.CreateTopic(context.Background(), topic); err != nil {
-			if errors.Is(err, storage.Errors.AlreadyExists) {
-				log.Printf("Broadcast topic '%s' already exists (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
-			} else {
+	broadcastTopicName := strings.TrimSpace(cfg.BroadcastTopicName)
+	if broadcastTopicName != "" {
+		broadcastTopicID = strings.ToLower(broadcastTopicName)
+
+		if _, err := store.GetTopicByID(ctx, broadcastTopicID); err != nil {
+			if !errors.Is(err, storage.Errors.NotFound) {
+				log.Fatalf("Failed to check broadcast topic: %v", err)
+			}
+
+			topic := &storage.Topic{
+				ID:   broadcastTopicID,
+				Name: broadcastTopicName,
+			}
+			if err := store.CreateTopic(ctx, topic); err != nil {
+				if errors.Is(err, storage.Errors.AlreadyExists) {
+					log.Fatalf("Broadcast topic '%s' exists with a conflicting id. Clean the bad row from topics and restart.", broadcastTopicName)
+				}
 				log.Fatalf("Failed to create broadcast topic: %v", err)
 			}
+
+			log.Printf("Created broadcast topic '%s' (id: %s)", broadcastTopicName, broadcastTopicID)
 		} else {
-			log.Printf("Created broadcast topic '%s' (id: %s)", cfg.BroadcastTopicName, broadcastTopicID)
+			log.Printf("Broadcast topic '%s' already exists (id: %s)", broadcastTopicName, broadcastTopicID)
 		}
 	}
 
-	pushboyService := service.NewPushBoyService(store, dispatchers, broadcastTopicID)
+	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
-	workerPool := worker.NewPool(store, dispatchers, cfg.WorkerCount, cfg.SenderCount, cfg.JobQueueSize, cfg.BatchSize)
-	workerPool.Start()
+	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
+	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
+	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
-	scheduler := scheduler.New(store, workerPool, 10)
-	scheduler.Start()
+	scheduler := scheduler.New(store, jobPipeline, 10)
+	scheduler.Start(workerCtx)
 
-	httpServer := server.New(pushboyService, workerPool)
+	var masterWg sync.WaitGroup
+	var masters = make(map[int]workers.MasterWorker)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	var senderWg sync.WaitGroup
+	var senders = make(map[int]workers.SenderWorker)
+
+	for i := range cfg.WorkerCount {
+		masterWg.Add(1)
+		master := workers.NewMaster(store, jobPipeline, taskPipeline, cfg.BatchSize)
+		masters[i] = master
+		go func(m workers.MasterWorker) {
+			defer masterWg.Done()
+			m.Start(workerCtx)
+		}(master)
+
+	}
+
+	for i := range cfg.SenderCount {
+		senderWg.Add(1)
+		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, cfg.BatchSize)
+		senders[i] = sender
+		go func(m workers.SenderWorker) {
+			defer senderWg.Done()
+			m.Start(workerCtx)
+		}(sender)
+	}
+
+	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
+	var outcomeWg sync.WaitGroup
+	//If required more DLQ outcome workers change it into a looped go routines
+	outcomeWg.Add(1)
+	go func(o workers.OutcomeWorker) {
+		defer outcomeWg.Done()
+		o.Start(workerCtx)
+	}(outcomeWorker)
+
+	httpServer := server.New(pushboyService, jobPipeline)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
@@ -131,11 +185,33 @@ func main() {
 	}
 
 	scheduler.Stop()
-	workerPool.Stop()
+	gracefulDone := make(chan struct{})
+	go func() {
+		defer close(gracefulDone)
+		if err := jobPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("Job pipeline shutdown error: %v", err)
+		}
+		masterWg.Wait()
+		if err := taskPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("Task pipeline shutdown error: %v", err)
+		}
+		senderWg.Wait()
+		if err := dlqPipeline.Close(shutdownCtx); err != nil {
+			log.Printf("DLQ pipeline shutdown error: %v", err)
+		}
+		outcomeWg.Wait()
+		if err := store.Close(); err != nil {
+			log.Printf("Error closing database: %v", err)
+		}
+	}()
 
-	if err := store.Close(); err != nil {
-		log.Printf("Error closing database: %v", err)
+	select {
+	case <-gracefulDone:
+		log.Printf("Gracefully Shutdown all workers.")
+	case <-shutdownCtx.Done():
+		log.Printf("Timed out waiting for outcome worker shutdown: %v", shutdownCtx.Err())
+		workerStop()
 	}
 
-	log.Println("Server exiting")
+	log.Println("Pushboy exiting. See ya!")
 }

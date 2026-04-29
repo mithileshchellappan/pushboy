@@ -5,21 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mithileshchellappan/pushboy/internal/dispatch"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type PushboyService struct {
 	store            storage.Store
-	dispatchers      map[string]dispatch.Dispatcher
 	broadcastTopicID string // ID of the broadcast topic (all users auto-subscribe)
 }
 
-func NewPushBoyService(s storage.Store, dispatchers map[string]dispatch.Dispatcher, broadcastTopicID string) *PushboyService {
-	return &PushboyService{store: s, dispatchers: dispatchers, broadcastTopicID: broadcastTopicID}
+func NewPushBoyService(s storage.Store, broadcastTopicID string) *PushboyService {
+	return &PushboyService{store: s, broadcastTopicID: broadcastTopicID}
 }
 
 // validateScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future
@@ -74,13 +74,25 @@ func (s *PushboyService) GetUser(ctx context.Context, userID string) (*storage.U
 	return s.store.GetUser(ctx, userID)
 }
 
+func (s *PushboyService) ensureUser(ctx context.Context, userID string) (*storage.User, error) {
+	user, err := s.store.GetUser(ctx, userID)
+	if err == nil {
+		return user, nil
+	}
+	if !errors.Is(err, storage.Errors.NotFound) {
+		return nil, err
+	}
+
+	return s.CreateUser(ctx, userID)
+}
+
 func (s *PushboyService) DeleteUser(ctx context.Context, userID string) error {
 	return s.store.DeleteUser(ctx, userID)
 }
 
 // Token operations
 
-func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platform string, tokenValue string) (*storage.Token, *storage.User, error) {
+func (s *PushboyService) RegisterToken(ctx context.Context, userID string, platform model.Platform, tokenValue string) (*storage.Token, *storage.User, error) {
 	if platform != "apns" && platform != "fcm" {
 		return nil, nil, fmt.Errorf("invalid platform: must be 'apns' or 'fcm'")
 	}
@@ -139,6 +151,12 @@ func (s *PushboyService) DeleteToken(ctx context.Context, tokenID string) error 
 // Topic operations
 
 func (s *PushboyService) CreateTopic(ctx context.Context, ID string, name string) (*storage.Topic, error) {
+	ID = strings.TrimSpace(ID)
+	name = strings.TrimSpace(name)
+	if ID == "" || name == "" {
+		return nil, fmt.Errorf("topic id and name are required")
+	}
+
 	topic := &storage.Topic{ID: ID, Name: name}
 
 	err := s.store.CreateTopic(ctx, topic)
@@ -198,7 +216,7 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 
 // Send to user operations
 
-func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
 	// Validate scheduledAt format
 	if err := validateScheduledAt(scheduledAt); err != nil {
 		return nil, err
@@ -227,7 +245,11 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 
 // Publish job operations
 
-func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *storage.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
+	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		return nil, err
+	}
+
 	// Validate scheduledAt format
 	if err := validateScheduledAt(scheduledAt); err != nil {
 		return nil, err
@@ -257,4 +279,8 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 
 func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {
 	return s.store.GetJobStatus(ctx, jobID)
+}
+
+func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+	return s.store.UpdateJobStatus(ctx, jobID, status)
 }
