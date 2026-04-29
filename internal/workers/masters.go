@@ -42,11 +42,17 @@ func (m *MasterWorker) Start(ctx context.Context) {
 
 		job := delivery.Get()
 		if job.JobType == model.JobTypeLA {
-			m.fetchAndPushLATokens(ctx, job)
+			if err := m.fetchAndPushLATokens(ctx, job); err != nil {
+				log.Printf("Error processing LA dispatch %s: %v", job.LADispatchID, err)
+			}
+
 			continue
 		}
 
-		m.fetchAndPushTokens(ctx, job)
+		if err := m.fetchAndPushTokens(ctx, job); err != nil {
+			log.Printf("Error processing Push dispatch %s: %v", job.ID, err)
+
+		}
 		continue
 	}
 }
