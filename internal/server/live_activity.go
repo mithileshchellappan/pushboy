@@ -23,6 +23,11 @@ type registerLiveActivityTokenRequest struct {
 	ExpiresAt string `json:"expiresAt,omitempty"`
 }
 
+type deleteLiveActivityTokenRequest struct {
+	UserID string `json:"userId"`
+	Token  string `json:"token"`
+}
+
 type createLiveActivityJobRequest struct {
 	Action       string          `json:"action"`
 	ActivityID   string          `json:"activityId,omitempty"`
@@ -99,6 +104,27 @@ func (s *Server) handleRegisterLAToken(w http.ResponseWriter, r *http.Request) {
 		"user":  user,
 		"token": token,
 	}, http.StatusCreated)
+}
+
+func (s *Server) handleDeleteLAToken(w http.ResponseWriter, r *http.Request) {
+	var req deleteLiveActivityTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.service.DeleteLAToken(r.Context(), req.UserID, req.Token); err != nil {
+		switch {
+		case errors.Is(err, storage.Errors.NotFound):
+			http.Error(w, "Live activity token not found", http.StatusNotFound)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
+		log.Printf("Error deleting live activity token: %v", err)
+		return
+	}
+
+	s.respond(w, r, nil, http.StatusNoContent)
 }
 
 func (s *Server) handleRegisterUserToLATopic(w http.ResponseWriter, r *http.Request) {

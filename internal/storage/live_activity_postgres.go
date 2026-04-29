@@ -170,14 +170,16 @@ func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *Live
 	return &stored, nil
 }
 
-func (s *PostgresStore) InvalidateLiveActivityToken(ctx context.Context, tokenID string) error {
+func (s *PostgresStore) InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error {
 	result, err := s.db.ExecContext(
 		ctx,
 		`UPDATE live_activity_tokens
 		 SET invalidated_at = NOW()
-		 WHERE id = $1
+		 WHERE user_id = $1
+		   AND token = $2
 		   AND invalidated_at IS NULL`,
-		tokenID,
+		userID,
+		tokenValue,
 	)
 	if err != nil {
 		return fmt.Errorf("error invalidating LA token: %w", err)

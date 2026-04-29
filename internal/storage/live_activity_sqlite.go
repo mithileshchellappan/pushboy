@@ -19,7 +19,7 @@ func (s *SQLiteStore) UpsertLiveActivityToken(ctx context.Context, token *LiveAc
 	return nil, errLiveActivitySQLiteUnsupported
 }
 
-func (s *SQLiteStore) InvalidateLiveActivityToken(ctx context.Context, tokenID string) error {
+func (s *SQLiteStore) InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error {
 	return errLiveActivitySQLiteUnsupported
 }
 

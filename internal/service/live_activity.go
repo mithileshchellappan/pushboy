@@ -129,6 +129,17 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 	return stored, user, nil
 }
 
+func (s *PushboyService) DeleteLAToken(ctx context.Context, userID string, tokenValue string) error {
+	if userID == "" {
+		return fmt.Errorf("userId is required")
+	}
+	if tokenValue == "" {
+		return fmt.Errorf("token is required")
+	}
+
+	return s.store.InvalidateLiveActivityToken(ctx, userID, tokenValue)
+}
+
 func (s *PushboyService) RegisterUserToLATopic(ctx context.Context, userID string, topicID string) (*storage.LiveActivityUserTopicSubscription, error) {
 	if userID == "" || topicID == "" {
 		return nil, fmt.Errorf("userId and topicId are required")

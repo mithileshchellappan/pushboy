@@ -168,7 +168,7 @@ type Store interface {
 
 	// Live Activity operations
 	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
-	InvalidateLiveActivityToken(ctx context.Context, tokenID string) error
+	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
 	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
 	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
 	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)

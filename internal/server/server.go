@@ -86,6 +86,7 @@ func (s *Server) setupRouter() chi.Router {
 
 		r.Route("/live-activity", func(r chi.Router) {
 			r.Post("/tokens", s.handleRegisterLAToken)
+			r.Delete("/tokens", s.handleDeleteLAToken)
 			r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLATopic)
 			r.Post("/jobs", s.handleCreateLAJob)
 		})
