@@ -630,7 +630,7 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 	return &job, nil
 }
 
-func (s *PostgresStore) ApplyOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
+func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}

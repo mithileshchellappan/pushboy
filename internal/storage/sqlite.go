@@ -536,7 +536,7 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 	return &job, nil
 }
 
-func (s *SQLiteStore) ApplyOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
+func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
 	}

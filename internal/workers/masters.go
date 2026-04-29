@@ -149,7 +149,7 @@ func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobIt
 	}
 
 	if len(totalFailedOutcomes) > 0 {
-		if err := m.store.RecordLAOutcomes(ctx, totalFailedOutcomes); err != nil {
+		if err := m.store.ApplyLAOutcomeBatch(ctx, totalFailedOutcomes); err != nil {
 			return fmt.Errorf("error recording LA enqueue failures: %w", err)
 		}
 	}

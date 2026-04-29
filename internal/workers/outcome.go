@@ -12,8 +12,13 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
+type outcomeWriter interface {
+	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+}
+
 type OutcomeWorker struct {
-	store          storage.Store
+	store          outcomeWriter
 	dlqPipeline    pipeline.Pipeline[model.SendOutcome]
 	queueSize      int
 	queueFlushTime int
@@ -64,8 +69,11 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 		}
 		defer cancel()
 
-		if err := o.processOutcome(flushCtx, outcomeBatch); err != nil {
-			log.Printf("Error processing outcome :%v", err)
+		retryDeliveries, err := o.processOutcome(flushCtx, outcomeBatch)
+		if err != nil {
+			log.Printf("Error processing outcome: %v", err)
+			clear(outcomeBatch)
+			outcomeBatch = retryDeliveries
 		} else {
 			clear(outcomeBatch)
 			outcomeBatch = outcomeBatch[:0]
@@ -94,31 +102,42 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 	}
 }
 
-func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.Delivery[model.SendOutcome]) error {
+func (o *OutcomeWorker) processOutcome(ctx context.Context, deliveries []pipeline.Delivery[model.SendOutcome]) ([]pipeline.Delivery[model.SendOutcome], error) {
 	//TODO: handle retry with maxRetries and retryExp (check apple docs)
-	deliveryReceiptBatch := make([]model.DeliveryReceipt, 0, len(outcomes))
+	pushOutcomeDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0, len(deliveries))
+	pushReceiptBatch := make([]model.DeliveryReceipt, 0, len(deliveries))
+	liveActivityOutcomeDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0)
 	liveActivityOutcomeBatch := make([]model.SendOutcome, 0)
 	softDeleteTokenBatch := make([]string, 0)
 
-	for i := range len(outcomes) {
-		outcome := outcomes[i].Get()
+	for i := range len(deliveries) {
+		delivery := deliveries[i]
+		outcome := delivery.Get()
 		if outcome.Task.Job.JobType == model.JobTypeLA {
+			liveActivityOutcomeDeliveries = append(liveActivityOutcomeDeliveries, delivery)
 			liveActivityOutcomeBatch = append(liveActivityOutcomeBatch, outcome)
 			continue
 		}
 
+		pushOutcomeDeliveries = append(pushOutcomeDeliveries, delivery)
 		reason := outcome.Receipt.StatusReason
 
 		if strings.Contains(reason, "BadDeviceToken") {
 			softDeleteTokenBatch = append(softDeleteTokenBatch, outcome.Receipt.TokenID)
 		}
 
-		deliveryReceiptBatch = append(deliveryReceiptBatch, outcome.Receipt)
+		pushReceiptBatch = append(pushReceiptBatch, outcome.Receipt)
 	}
 
-	if err := o.store.ApplyOutcomeBatch(ctx, deliveryReceiptBatch); err != nil {
-		log.Printf("Error applying outcome batch %v", err.Error())
-		return err
+	retryDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0)
+	errs := make([]error, 0, 2)
+
+	if len(pushReceiptBatch) > 0 {
+		if err := o.store.ApplyPushOutcomeBatch(ctx, pushReceiptBatch); err != nil {
+			log.Printf("Error applying push outcome batch %v", err.Error())
+			retryDeliveries = append(retryDeliveries, pushOutcomeDeliveries...)
+			errs = append(errs, err)
+		}
 	}
 	if len(softDeleteTokenBatch) > 0 {
 		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
@@ -127,11 +146,12 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		// }
 	}
 	if len(liveActivityOutcomeBatch) > 0 {
-		if err := o.store.RecordLAOutcomes(ctx, liveActivityOutcomeBatch); err != nil {
-			log.Printf("Error recording live activity outcomes %v", err.Error())
-			return err
+		if err := o.store.ApplyLAOutcomeBatch(ctx, liveActivityOutcomeBatch); err != nil {
+			log.Printf("Error applying live activity outcome batch %v", err.Error())
+			retryDeliveries = append(retryDeliveries, liveActivityOutcomeDeliveries...)
+			errs = append(errs, err)
 		}
 	}
 
-	return nil
+	return retryDeliveries, errors.Join(errs...)
 }

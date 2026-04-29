@@ -151,7 +151,7 @@ type Store interface {
 	UpdateJobStatus(ctx context.Context, jobID string, status string) error
 	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
-	ApplyOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
+	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
 	CompleteJobIfDone(ctx context.Context, jobID string) error
 	GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error)
@@ -183,7 +183,7 @@ type Store interface {
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
 	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
 	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
-	RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
 	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle

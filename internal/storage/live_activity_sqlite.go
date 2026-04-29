@@ -79,7 +79,7 @@ func (s *SQLiteStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchID 
 	return errLiveActivitySQLiteUnsupported
 }
 
-func (s *SQLiteStore) RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error {
+func (s *SQLiteStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error {
 	return errLiveActivitySQLiteUnsupported
 }
 

@@ -644,7 +644,7 @@ func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchI
 	return nil
 }
 
-func (s *PostgresStore) RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error {
+func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error {
 	if len(outcomes) == 0 {
 		return nil
 	}
