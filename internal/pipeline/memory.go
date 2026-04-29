@@ -8,8 +8,8 @@ import (
 
 type MemoryPipeline[T any] struct {
 	channel chan T
-	mu      sync.RWMutex
-	closed  bool
+	done    chan struct{}
+	once    sync.Once
 }
 
 func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
@@ -18,21 +18,25 @@ func NewMemoryPipeline[T any](bufferSize int) *MemoryPipeline[T] {
 	}
 	return &MemoryPipeline[T]{
 		channel: make(chan T, bufferSize),
+		done:    make(chan struct{}),
 	}
 }
 
 func (p *MemoryPipeline[T]) Submit(ctx context.Context, item T) error {
-	p.mu.RLock()
-	if p.closed {
-		p.mu.RUnlock()
+
+	select {
+	case <-p.done:
 		return ErrClosed
+	default:
 	}
-	defer p.mu.RUnlock()
+
 	select {
 	case p.channel <- item:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-p.done:
+		return ErrClosed
 	}
 }
 
@@ -40,6 +44,8 @@ func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 	for {
 		select {
 		case <-ctx.Done():
+			return nil, ErrClosed
+		case <-p.done:
 			return nil, ErrClosed
 		case item, ok := <-p.channel:
 			if !ok {
@@ -52,15 +58,9 @@ func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
 }
 
 func (p *MemoryPipeline[T]) Close(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.closed {
-		return nil
-	}
-
-	p.closed = true
-	close(p.channel)
+	p.once.Do(func() {
+		close(p.done)
+	})
 
 	return nil
 }
