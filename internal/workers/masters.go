@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
@@ -38,7 +39,14 @@ func (m *MasterWorker) Start(ctx context.Context) {
 			log.Printf("Master receive error: %v", err)
 			continue
 		}
-		m.fetchAndPushTokens(ctx, delivery)
+
+		job := delivery.Get()
+		if job.JobType == model.JobTypeLA {
+			m.fetchAndPushLATokens(ctx, job)
+			continue
+		}
+
+		m.fetchAndPushTokens(ctx, job)
 		continue
 	}
 }
@@ -47,8 +55,7 @@ func (m *MasterWorker) Stop() {
 
 }
 
-func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline.Delivery[model.JobItem]) error {
-	job := delivery.Get()
+func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem) error {
 	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
 	cursor := ""
 	totalTokenCount := 0
@@ -101,4 +108,86 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, delivery pipeline
 		return fmt.Errorf("error rechechking job completion %v", err)
 	}
 	return nil
+}
+
+func (m *MasterWorker) fetchAndPushLATokens(ctx context.Context, job model.JobItem) error {
+	if err := m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "IN_PROGRESS"); err != nil {
+		return fmt.Errorf("error marking live activity dispatch in progress: %w", err)
+	}
+
+	cursor := ""
+	totalTokenCount := 0
+	totalFailedOutcomes := make([]model.SendOutcome, 0)
+	for {
+		batch, err := m.store.GetLATokenBatchForDispatch(ctx, job.LADispatchID, cursor, m.batchSize)
+		if err != nil {
+			_ = m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "FAILED")
+			m.failLAStartAfterDispatchFailure(ctx, job)
+			return fmt.Errorf("error fetching live activity tokens: %w", err)
+		}
+
+		outcomes := m.pushLATokensToPipeline(ctx, batch, &job)
+		totalFailedOutcomes = append(totalFailedOutcomes, outcomes...)
+
+		totalTokenCount += len(batch.Tokens)
+		if !batch.HasMore {
+			break
+		}
+		cursor = batch.NextCursor
+	}
+
+	if err := m.store.CompleteLADispatchEnqueue(ctx, job.LADispatchID, totalTokenCount); err != nil {
+		_ = m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "FAILED")
+		m.failLAStartAfterDispatchFailure(ctx, job)
+		return fmt.Errorf("error completing live activity dispatch enqueue: %w", err)
+	}
+
+	if len(totalFailedOutcomes) > 0 {
+		if err := m.store.RecordLAOutcomes(ctx, totalFailedOutcomes); err != nil {
+			return fmt.Errorf("error recording LA enqueue failures: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (m *MasterWorker) failLAStartAfterDispatchFailure(ctx context.Context, job model.JobItem) {
+	if job.LAAction != model.LiveActivityActionStart {
+		return
+	}
+
+	err := m.store.FailLAJobIfActive(ctx, job.LAJobID)
+	if err != nil && !errors.Is(err, storage.Errors.NotFound) {
+		log.Printf("Error failing LA job %s after dispatch failure: %v", job.LAJobID, err)
+	}
+}
+
+func (m *MasterWorker) pushLATokensToPipeline(ctx context.Context, batch *storage.LiveActivityTokenBatch, job *model.JobItem) []model.SendOutcome {
+	tokens := batch.Tokens
+	failedOutcomes := make([]model.SendOutcome, 0)
+	for _, token := range tokens {
+		task := model.SendTask{
+			Target: model.SendTarget{
+				TokenID:  token.ID,
+				Token:    token.Token,
+				Platform: token.Platform,
+			},
+			Job: job,
+		}
+		if err := m.taskPipeline.Submit(ctx, task); err != nil {
+			log.Printf("Error adding LA task to pipeline for dispatch %s token %s: %v", job.LADispatchID, token.ID, err)
+			failedOutcomes = append(failedOutcomes, model.SendOutcome{
+				Task: task,
+				Receipt: model.DeliveryReceipt{
+					JobID:        job.LADispatchID,
+					TokenID:      token.ID,
+					Status:       string(model.Failed),
+					StatusReason: "task enqueue failed",
+					DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
+	}
+
+	return failedOutcomes
 }

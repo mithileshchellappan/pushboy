@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
@@ -62,6 +63,60 @@ type TokenBatch struct {
 	HasMore    bool
 }
 
+type LiveActivityToken struct {
+	ID            string
+	UserID        string
+	Platform      model.Platform
+	TokenType     model.LiveActivityTokenType
+	Token         string
+	CreatedAt     string
+	LastSeenAt    string
+	ExpiresAt     string
+	InvalidatedAt string
+}
+
+type LiveActivityUserTopicSubscription struct {
+	ID        string
+	UserID    string
+	TopicID   string
+	CreatedAt string
+}
+
+type LiveActivityJob struct {
+	ID            string
+	ActivityID    string
+	ActivityType  string
+	UserID        string
+	TopicID       string
+	Status        model.LiveActivityJobStatus
+	LatestPayload json.RawMessage
+	Options       json.RawMessage
+	CreatedAt     string
+	UpdatedAt     string
+	ExpiresAt     string
+	ClosedAt      string
+}
+
+type LiveActivityDispatch struct {
+	ID                string
+	LiveActivityJobID string
+	Action            model.LiveActivityAction
+	Payload           json.RawMessage
+	Options           json.RawMessage
+	Status            string
+	TotalCount        int
+	SuccessCount      int
+	FailureCount      int
+	CreatedAt         string
+	CompletedAt       string
+}
+
+type LiveActivityTokenBatch struct {
+	Tokens     []LiveActivityToken
+	NextCursor string
+	HasMore    bool
+}
+
 // Store defines the interface for data persistence
 type Store interface {
 	// User operations
@@ -110,6 +165,26 @@ type Store interface {
 
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
+
+	// Live Activity operations
+	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
+	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
+	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
+	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
+	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
+	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
+	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
+	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
+	RollbackLAStartJob(ctx context.Context, jobID string) error
+	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error
+	FailLAJobIfActive(ctx context.Context, jobID string) error
+	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
+	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
+	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
+	RecordLAOutcomes(ctx context.Context, outcomes []model.SendOutcome) error
+	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle
 	Close() error

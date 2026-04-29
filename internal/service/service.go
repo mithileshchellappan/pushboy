@@ -74,6 +74,18 @@ func (s *PushboyService) GetUser(ctx context.Context, userID string) (*storage.U
 	return s.store.GetUser(ctx, userID)
 }
 
+func (s *PushboyService) ensureUser(ctx context.Context, userID string) (*storage.User, error) {
+	user, err := s.store.GetUser(ctx, userID)
+	if err == nil {
+		return user, nil
+	}
+	if !errors.Is(err, storage.Errors.NotFound) {
+		return nil, err
+	}
+
+	return s.CreateUser(ctx, userID)
+}
+
 func (s *PushboyService) DeleteUser(ctx context.Context, userID string) error {
 	return s.store.DeleteUser(ctx, userID)
 }

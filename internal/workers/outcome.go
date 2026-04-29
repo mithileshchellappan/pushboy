@@ -97,10 +97,15 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.Delivery[model.SendOutcome]) error {
 	//TODO: handle retry with maxRetries and retryExp (check apple docs)
 	deliveryReceiptBatch := make([]model.DeliveryReceipt, 0, len(outcomes))
+	liveActivityOutcomeBatch := make([]model.SendOutcome, 0)
 	softDeleteTokenBatch := make([]string, 0)
 
 	for i := range len(outcomes) {
 		outcome := outcomes[i].Get()
+		if outcome.Task.Job.JobType == model.JobTypeLA {
+			liveActivityOutcomeBatch = append(liveActivityOutcomeBatch, outcome)
+			continue
+		}
 
 		reason := outcome.Receipt.StatusReason
 
@@ -120,6 +125,12 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, outcomes []pipeline.
 		// if err != nil {
 		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
 		// }
+	}
+	if len(liveActivityOutcomeBatch) > 0 {
+		if err := o.store.RecordLAOutcomes(ctx, liveActivityOutcomeBatch); err != nil {
+			log.Printf("Error recording live activity outcomes %v", err.Error())
+			return err
+		}
 	}
 
 	return nil

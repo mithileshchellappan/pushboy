@@ -67,7 +67,7 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSTopicID, false)
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox)
 			dispatchers[model.APNS] = apnsClient
 			log.Println("APNS dispatcher initialized")
 		}

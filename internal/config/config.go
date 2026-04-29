@@ -21,10 +21,11 @@ type Config struct {
 	DatabaseDriver string
 	DatabaseURL    string
 
-	APNSKeyID   string
-	APNSTeamID  string
-	APNSTopicID string
-	APNSKeyPath string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSKeyID      string
+	APNSTeamID     string
+	APNSBundleID   string
+	APNSKeyPath    string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSUseSandbox bool
 
 	FCMProjectID      string
 	FCMServiceAccount string
@@ -46,8 +47,9 @@ func Load() *Config {
 		DatabaseURL:          getEnv("DATABASE_URL", "./pushboy.db"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
 		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
-		APNSTopicID:          getEnv("APNS_TOPIC_ID", ""),
+		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
+		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
 		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
@@ -65,6 +67,14 @@ func getEnv(key, defaultVal string) string {
 func getIntEnv(key string, defaultVal int) int {
 	valueStr := getEnv(key, "")
 	if value, err := strconv.Atoi(valueStr); err == nil {
+		return value
+	}
+	return defaultVal
+}
+
+func getBoolEnv(key string, defaultVal bool) bool {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.ParseBool(valueStr); err == nil {
 		return value
 	}
 	return defaultVal
