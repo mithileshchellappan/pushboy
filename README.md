@@ -57,6 +57,22 @@ Requirements:
 - Postgres
 - APNS `.p8` credentials and/or Firebase service-account JSON if you want real sends
 
+Fast Docker setup:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
+cd ~/pushboy
+docker compose up --build
+```
+
+To pin a specific release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | PUSHBOY_VERSION=v0.0.0 sh
+```
+
+Manual local setup:
+
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
 cd pushboy

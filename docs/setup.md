@@ -18,6 +18,16 @@ APNS and FCM credentials are optional for local API setup. If neither provider i
 
 Docker Compose is the fastest way to try Pushboy with Postgres.
 
+Use the setup script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
+cd ~/pushboy
+docker compose up --build
+```
+
+Or clone the repository manually:
+
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
 cd pushboy
