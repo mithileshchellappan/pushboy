@@ -33,15 +33,15 @@ echo "Installing Pushboy ${VERSION} into ${INSTALL_DIR}"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   require_cmd git
-  git -C "$INSTALL_DIR" fetch --tags --depth 1 origin "$VERSION"
-  git -C "$INSTALL_DIR" checkout --quiet "$VERSION"
+  git -C "$INSTALL_DIR" fetch --quiet --tags --depth 1 origin "$VERSION"
+  git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout --quiet "$VERSION"
 elif [ -e "$INSTALL_DIR" ] && [ "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
   echo "error: ${INSTALL_DIR} already exists and is not empty" >&2
   echo "Set PUSHBOY_HOME to a different directory or clear the existing path." >&2
   exit 1
 elif command -v git >/dev/null 2>&1; then
   mkdir -p "$(dirname "$INSTALL_DIR")"
-  git clone --depth 1 --branch "$VERSION" "$REPO_URL" "$INSTALL_DIR"
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$VERSION" "$REPO_URL" "$INSTALL_DIR"
 else
   require_cmd curl
   require_cmd tar
