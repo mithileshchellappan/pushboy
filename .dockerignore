@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+.air.toml
+.DS_Store
+.env
+*.env
+keys
+*.p8
+service-account.json
+tmp
+.gocache
+db.sqlite
+*.db
+migrate-pushboy
+pushboy
+learnings

@@ -1,0 +1,89 @@
+name: Bug report
+description: Report a reproducible Pushboy bug.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include real device tokens, APNS keys, Firebase service-account JSON, production payloads, or database credentials.
+
+        Security vulnerabilities should be reported privately. See SECURITY.md.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest reproducible flow.
+      placeholder: |
+        1. Start Pushboy with ...
+        2. Call ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - HTTP API
+        - APNS
+        - FCM
+        - Live Activities
+        - Worker pipeline
+        - Postgres storage
+        - Docker/deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Commit SHA, branch, or tag.
+      placeholder: main @ abc123
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Redact secrets and user data before pasting logs.
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Go version, Docker version, Postgres version, deployment shape.
+      placeholder: macOS 15, Go 1.24, Docker Desktop, Postgres 16
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I have not included real secrets, device tokens, database URLs, or production payloads.
+          required: true
+        - label: This is not a security vulnerability report.
+          required: true

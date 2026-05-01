@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - cleanup
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check module files
+        run: go mod tidy -diff
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race test
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./cmd/pushboy
+
+  docs:
+    name: Docs and templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse YAML files
+        run: |
+          ruby -e "require 'yaml'; Dir['docs/openapi.yaml', '.github/ISSUE_TEMPLATE/*.yml', '.github/workflows/*.yml'].each { |f| YAML.load_file(f); puts \"ok #{f}\" }"
+
+      - name: Check whitespace
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            git diff --check "FETCH_HEAD...HEAD"
+          elif git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            git diff --check "$BEFORE_SHA" "$HEAD_SHA"
+          else
+            git diff-tree --check --root --no-commit-id -r "$HEAD_SHA"
+          fi
+
+      - name: Check non-ASCII in curated docs
+        run: |
+          ! LC_ALL=C grep -RIn '[^ -~]' \
+            README.md \
+            SECURITY.md \
+            CONTRIBUTING.md \
+            CODE_OF_CONDUCT.md \
+            CHANGELOG.md \
+            .github
+
+  docker:
+    name: Docker build and smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t pushboy:ci .
+
+      - name: Start Compose stack
+        run: docker compose -p pushboy-ci up -d --build
+
+      - name: Wait for Pushboy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8080/v1/ping; then
+              exit 0
+            fi
+            docker compose -p pushboy-ci ps
+            sleep 2
+          done
+          docker compose -p pushboy-ci logs
+          exit 1
+
+      - name: Smoke API
+        run: |
+          curl -fsS -X POST http://localhost:8080/v1/users/ \
+            -H 'Content-Type: application/json' \
+            -d '{"id":"ci-smoke-user"}'
+          curl -fsS http://localhost:8080/v1/topics/
+
+      - name: Show logs
+        if: always()
+        run: docker compose -p pushboy-ci logs --tail=120
+
+      - name: Tear down Compose stack
+        if: always()
+        run: docker compose -p pushboy-ci down -v
