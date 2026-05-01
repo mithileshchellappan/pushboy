@@ -1,0 +1,46 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pushboy
+      POSTGRES_PASSWORD: pushboy
+      POSTGRES_DB: pushboy
+    ports:
+      - "5432:5432"
+    volumes:
+      - pushboy-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pushboy -d pushboy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pushboy:
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: ":8080"
+      DATABASE_DRIVER: postgres
+      DATABASE_URL: postgres://pushboy:pushboy@postgres:5432/pushboy?sslmode=disable
+      WORKER_COUNT: "10"
+      SENDER_COUNT: "200"
+      JOB_QUEUE_SIZE: "1000"
+      BATCH_SIZE: "5000"
+      MAX_RETRY_NOTIFICATION: "3"
+      APNS_KEY_ID: ""
+      APNS_TEAM_ID: ""
+      APNS_BUNDLE_ID: ""
+      APNS_KEY_PATH: /app/keys/AuthKey_YOUR_KEY_ID.p8
+      APNS_USE_SANDBOX: "true"
+      FCM_KEY_PATH: /app/keys/service-account.json
+      BROADCAST_TOPIC_NAME: broadcast
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keys:/app/keys:ro
+
+volumes:
+  pushboy-postgres:

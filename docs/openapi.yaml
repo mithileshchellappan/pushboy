@@ -1,0 +1,985 @@
+openapi: 3.1.0
+info:
+  title: Pushboy API
+  version: 0.1.0
+  summary: Self-hosted APNS, FCM, and Live Activity delivery API.
+  license:
+    name: MIT
+    url: https://opensource.org/license/mit/
+  description: |
+    Pushboy exposes a small HTTP API for users, device tokens, topics,
+    notification jobs, and Live Activity dispatches. The current API does not
+    include built-in authentication; deploy it behind a trusted network,
+    gateway, or reverse proxy until first-party API auth is added.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Health
+  - name: Users
+  - name: Tokens
+  - name: Topics
+  - name: Subscriptions
+  - name: Notifications
+  - name: LiveActivity
+security: []
+paths:
+  /v1/ping:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      responses:
+        "200":
+          description: The process is alive.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: pong
+
+  /v1/users/:
+    post:
+      tags: [Users]
+      summary: Create a user
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Users]
+      summary: Get a user
+      responses:
+        "200":
+          description: User found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [Users]
+      summary: Delete a user
+      responses:
+        "204":
+          description: User deleted.
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/tokens:
+    post:
+      tags: [Tokens]
+      summary: Register a push token
+      description: Creates the user if the provided id does not exist. Generates a user id if id is omitted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterTokenRequest"
+      responses:
+        "201":
+          description: Token registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, token]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+                  token:
+                    $ref: "#/components/schemas/Token"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}/tokens:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Tokens]
+      summary: List a user's push tokens
+      responses:
+        "200":
+          description: Tokens for the user. Unknown users currently return an empty list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Token"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}/tokens/{tokenID}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/TokenID"
+    delete:
+      tags: [Tokens]
+      summary: Delete a push token
+      description: The current handler deletes by tokenID; userID is part of the route but is not used for authorization.
+      responses:
+        "204":
+          description: Token deleted.
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}/subscriptions/{topicID}:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+      - $ref: "#/components/parameters/TopicID"
+    post:
+      tags: [Subscriptions]
+      summary: Subscribe a user to a topic
+      responses:
+        "201":
+          description: Subscription created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserTopicSubscription"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [Subscriptions]
+      summary: Unsubscribe a user from a topic
+      responses:
+        "204":
+          description: Subscription deleted.
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}/subscriptions:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Subscriptions]
+      summary: List a user's topic subscriptions
+      responses:
+        "200":
+          description: Subscriptions for the user. Unknown users currently return an empty list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UserTopicSubscription"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/users/{userID}/send:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    post:
+      tags: [Notifications]
+      summary: Send or schedule a notification to one user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendNotificationRequest"
+      responses:
+        "202":
+          description: Job queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJobResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/:
+    get:
+      tags: [Topics]
+      summary: List topics
+      responses:
+        "200":
+          description: Topics.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Topic"
+        "500":
+          $ref: "#/components/responses/TextError"
+    post:
+      tags: [Topics]
+      summary: Create a topic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTopicRequest"
+      responses:
+        "201":
+          description: Topic created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/{topicID}:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+    get:
+      tags: [Topics]
+      summary: Get a topic
+      responses:
+        "200":
+          description: Topic found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Topic"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [Topics]
+      summary: Delete a topic
+      responses:
+        "204":
+          description: Topic deleted.
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/{topicID}/count:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+    get:
+      tags: [Topics]
+      summary: Count topic subscribers
+      responses:
+        "200":
+          description: Subscriber count. Missing topics currently can return 0.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count:
+                    type: integer
+                    example: 42
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/{topicID}/publish:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+    post:
+      tags: [Notifications]
+      summary: Send or schedule a notification to a topic
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendNotificationRequest"
+      responses:
+        "202":
+          description: Job queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueuedJobResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/{topicID}/publish/{jobID}:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+      - $ref: "#/components/parameters/JobID"
+    get:
+      tags: [Notifications]
+      summary: Get publish job status
+      description: The current handler looks up by jobID; topicID is not used for filtering.
+      responses:
+        "200":
+          description: Job status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublishJob"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/live-activity/tokens:
+    post:
+      tags: [LiveActivity]
+      summary: Register a Live Activity token
+      description: FCM tokens are stored as update tokens. APNS update tokens are capped to the default Live Activity lifetime if no sooner expiry is provided.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterLiveActivityTokenRequest"
+      responses:
+        "201":
+          description: Token registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user, token]
+                properties:
+                  user:
+                    $ref: "#/components/schemas/User"
+                  token:
+                    $ref: "#/components/schemas/LiveActivityToken"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [LiveActivity]
+      summary: Invalidate a Live Activity token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteLiveActivityTokenRequest"
+      responses:
+        "204":
+          description: Token invalidated.
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+
+  /v1/live-activity/topics/{topicID}/users/{userID}:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+      - $ref: "#/components/parameters/UserID"
+    post:
+      tags: [LiveActivity]
+      summary: Subscribe a user to a Live Activity topic
+      responses:
+        "201":
+          description: Live Activity topic subscription created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityUserTopicSubscription"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+
+  /v1/live-activity/jobs:
+    post:
+      tags: [LiveActivity]
+      summary: Start, update, or end a Live Activity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLiveActivityJobRequest"
+            examples:
+              start:
+                value:
+                  action: start
+                  activityId: order-123
+                  activityType: OrderDeliveryActivity
+                  userId: user-123
+                  payload:
+                    status: driver_assigned
+                    etaMinutes: 18
+                  options:
+                    alert:
+                      title: Order update
+                      body: Your driver is on the way.
+                    attributesType: OrderDeliveryAttributes
+                    attributes:
+                      orderId: order-123
+                    priority: high
+              update:
+                value:
+                  action: update
+                  activityId: order-123
+                  payload:
+                    status: arriving
+                    etaMinutes: 3
+                  options:
+                    collapse_id: order-123
+      responses:
+        "200":
+          description: Existing Live Activity was already started or closed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityJobResponse"
+        "202":
+          description: Live Activity dispatch queued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityJobResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+
+components:
+  parameters:
+    UserID:
+      name: userID
+      in: path
+      required: true
+      schema:
+        type: string
+      example: user-123
+    TokenID:
+      name: tokenID
+      in: path
+      required: true
+      schema:
+        type: string
+      example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+    TopicID:
+      name: topicID
+      in: path
+      required: true
+      schema:
+        type: string
+      example: broadcast
+    JobID:
+      name: jobID
+      in: path
+      required: true
+      schema:
+        type: string
+      example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+
+  responses:
+    TextError:
+      description: Plain text error response.
+      content:
+        text/plain:
+          schema:
+            type: string
+            example: Bad request
+
+  schemas:
+    Platform:
+      type: string
+      enum: [apns, fcm]
+
+    CreateUserRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Optional caller-provided user id. A UUID is generated when omitted.
+          example: user-123
+
+    RegisterTokenRequest:
+      type: object
+      required: [platform, token]
+      properties:
+        id:
+          type: string
+          description: Optional user id. A UUID is generated when omitted.
+          example: user-123
+        platform:
+          $ref: "#/components/schemas/Platform"
+        token:
+          type: string
+          example: device-token
+
+    CreateTopicRequest:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          example: broadcast
+        name:
+          type: string
+          example: Broadcast
+
+    NotificationPayload:
+      type: object
+      properties:
+        title:
+          type: string
+          example: New message
+        body:
+          type: string
+          example: You have a new message.
+        image_url:
+          type: string
+          format: uri
+        sound:
+          type: string
+          example: default
+        badge:
+          oneOf:
+            - type: integer
+            - type: "null"
+          example: 1
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          example:
+            conversationId: c_123
+        silent:
+          type: boolean
+          default: false
+        collapse_id:
+          type: string
+          example: conversation-c_123
+        priority:
+          type: string
+          enum: [high, normal]
+        ttl:
+          type: integer
+          minimum: 0
+          description: Seconds until expiration.
+        thread_id:
+          type: string
+        category:
+          type: string
+
+    SendNotificationRequest:
+      allOf:
+        - $ref: "#/components/schemas/NotificationPayload"
+        - type: object
+          properties:
+            scheduled_at:
+              type: string
+              format: date-time
+              description: Optional future RFC3339 timestamp.
+        - anyOf:
+            - required: [title]
+              properties:
+                title:
+                  type: string
+                  minLength: 1
+            - required: [body]
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+            - required: [silent]
+              properties:
+                silent:
+                  const: true
+
+    QueuedJobResponse:
+      type: object
+      required: [status, job_id]
+      properties:
+        status:
+          type: string
+          example: queued
+        job_id:
+          type: string
+          example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+
+    User:
+      type: object
+      required: [ID, CreatedAt]
+      properties:
+        ID:
+          type: string
+          example: user-123
+        CreatedAt:
+          type: string
+          example: "2026-05-01T10:30:00Z"
+
+    Token:
+      type: object
+      required: [ID, UserID, Platform, Token, CreatedAt]
+      properties:
+        ID:
+          type: string
+        UserID:
+          type: string
+        Platform:
+          $ref: "#/components/schemas/Platform"
+        Token:
+          type: string
+        CreatedAt:
+          type: string
+
+    Topic:
+      type: object
+      required: [ID, Name]
+      properties:
+        ID:
+          type: string
+          example: broadcast
+        Name:
+          type: string
+          example: Broadcast
+
+    UserTopicSubscription:
+      type: object
+      required: [ID, UserID, TopicID, CreatedAt]
+      properties:
+        ID:
+          type: string
+        UserID:
+          type: string
+        TopicID:
+          type: string
+        CreatedAt:
+          type: string
+
+    PublishJob:
+      type: object
+      required: [ID, Status, TotalCount, SuccessCount, FailureCount, CreatedAt]
+      properties:
+        ID:
+          type: string
+        TopicID:
+          type: string
+        UserID:
+          type: string
+        Payload:
+          $ref: "#/components/schemas/NotificationPayload"
+        Status:
+          type: string
+          enum: [QUEUED, SCHEDULED, IN_PROGRESS, COMPLETED, FAILED]
+        TotalCount:
+          type: integer
+        SuccessCount:
+          type: integer
+        FailureCount:
+          type: integer
+        CreatedAt:
+          type: string
+        CompletedAt:
+          type: string
+        ScheduledAt:
+          type: string
+
+    LiveActivityTokenType:
+      type: string
+      enum: [start, update]
+
+    LiveActivityAction:
+      type: string
+      enum: [start, update, end]
+
+    RegisterLiveActivityTokenRequest:
+      type: object
+      required: [userId, platform, tokenType, token]
+      properties:
+        userId:
+          type: string
+          example: user-123
+        topicId:
+          type: string
+          example: live-orders
+        platform:
+          $ref: "#/components/schemas/Platform"
+        tokenType:
+          $ref: "#/components/schemas/LiveActivityTokenType"
+        token:
+          type: string
+          example: live-activity-token
+        expiresAt:
+          type: string
+          format: date-time
+
+    DeleteLiveActivityTokenRequest:
+      type: object
+      required: [userId, token]
+      properties:
+        userId:
+          type: string
+        token:
+          type: string
+
+    LiveActivityOptions:
+      type: object
+      additionalProperties: true
+      properties:
+        alert:
+          type: object
+          properties:
+            title:
+              type: string
+            body:
+              type: string
+            sound:
+              type: string
+        attributesType:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+        timestamp:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+        staleDate:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+        dismissalDate:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+        expiration:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+        priority:
+          oneOf:
+            - type: string
+              enum: [high, normal, "5", "10"]
+            - type: integer
+              enum: [5, 10]
+        ttl:
+          type: integer
+          minimum: 0
+        collapse_id:
+          type: string
+        relevanceScore:
+          type: number
+
+    CreateLiveActivityJobRequest:
+      oneOf:
+        - $ref: "#/components/schemas/LiveActivityStartJobRequest"
+        - $ref: "#/components/schemas/LiveActivityUpdateJobRequest"
+        - $ref: "#/components/schemas/LiveActivityEndJobRequest"
+
+    LiveActivityJobTarget:
+      type: object
+      properties:
+        action:
+          $ref: "#/components/schemas/LiveActivityAction"
+        activityId:
+          type: string
+        activityType:
+          type: string
+        userId:
+          type: string
+        topicId:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        options:
+          $ref: "#/components/schemas/LiveActivityOptions"
+        expiresAt:
+          type: string
+          format: date-time
+
+    LiveActivityUserScope:
+      type: object
+      properties:
+        userId:
+          type: string
+        topicId:
+          type: string
+      required: [userId]
+      not:
+        required: [topicId]
+
+    LiveActivityTopicScope:
+      type: object
+      properties:
+        userId:
+          type: string
+        topicId:
+          type: string
+      required: [topicId]
+      not:
+        required: [userId]
+
+    LiveActivityActivityIdScope:
+      type: object
+      properties:
+        activityId:
+          type: string
+        userId:
+          type: string
+        topicId:
+          type: string
+      required: [activityId]
+      not:
+        anyOf:
+          - required: [userId]
+          - required: [topicId]
+
+    LiveActivityScopedLookup:
+      type: object
+      properties:
+        activityId:
+          type: string
+        activityType:
+          type: string
+      required: [activityType]
+      oneOf:
+        - $ref: "#/components/schemas/LiveActivityUserScope"
+        - $ref: "#/components/schemas/LiveActivityTopicScope"
+      not:
+        required: [activityId]
+
+    LiveActivityStartJobRequest:
+      allOf:
+        - $ref: "#/components/schemas/LiveActivityJobTarget"
+        - type: object
+          required: [action, activityId, activityType, payload]
+          properties:
+            action:
+              const: start
+            payload:
+              type: object
+              additionalProperties: true
+        - oneOf:
+            - $ref: "#/components/schemas/LiveActivityUserScope"
+            - $ref: "#/components/schemas/LiveActivityTopicScope"
+
+    LiveActivityUpdateJobRequest:
+      allOf:
+        - $ref: "#/components/schemas/LiveActivityJobTarget"
+        - type: object
+          required: [action, payload]
+          properties:
+            action:
+              const: update
+            payload:
+              type: object
+              additionalProperties: true
+        - oneOf:
+            - $ref: "#/components/schemas/LiveActivityActivityIdScope"
+            - $ref: "#/components/schemas/LiveActivityScopedLookup"
+
+    LiveActivityEndJobRequest:
+      allOf:
+        - $ref: "#/components/schemas/LiveActivityJobTarget"
+        - type: object
+          required: [action]
+          properties:
+            action:
+              const: end
+        - oneOf:
+            - $ref: "#/components/schemas/LiveActivityActivityIdScope"
+            - $ref: "#/components/schemas/LiveActivityScopedLookup"
+
+    LiveActivityJobResponse:
+      type: object
+      required: [activityId, status]
+      properties:
+        activityId:
+          type: string
+        status:
+          type: string
+          enum: [started, updated, ended, already_started, closed]
+        dispatchId:
+          type: string
+
+    LiveActivityToken:
+      type: object
+      required: [ID, UserID, Platform, TokenType, Token, CreatedAt, LastSeenAt]
+      properties:
+        ID:
+          type: string
+        UserID:
+          type: string
+        Platform:
+          $ref: "#/components/schemas/Platform"
+        TokenType:
+          $ref: "#/components/schemas/LiveActivityTokenType"
+        Token:
+          type: string
+        CreatedAt:
+          type: string
+        LastSeenAt:
+          type: string
+        ExpiresAt:
+          type: string
+        InvalidatedAt:
+          type: string
+
+    LiveActivityUserTopicSubscription:
+      type: object
+      required: [ID, UserID, TopicID, CreatedAt]
+      properties:
+        ID:
+          type: string
+        UserID:
+          type: string
+        TopicID:
+          type: string
+        CreatedAt:
+          type: string

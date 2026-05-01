@@ -1,0 +1,51 @@
+name: Feature request
+description: Suggest an improvement or new capability.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for product, API, deployment, observability, and architecture ideas. Keep the request concrete and tied to a real workflow.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like Pushboy to do?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - API auth/security
+        - APNS
+        - FCM
+        - Live Activities
+        - Worker pipeline
+        - Storage
+        - Docker/deployment
+        - Observability
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you consider?
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Links, examples, prior art, or constraints.
