@@ -307,10 +307,10 @@ APNS and FCM are still the device transports; Pushboy is the self-hosted orchest
 | Topic fanout | App-owned topic table | FCM topics and conditions | Audiences/segments/tags | SNS topics with mobile endpoints | No persisted app topic model |
 | User-token-topic ownership | Built in | You build it | Platform-owned | You build app user mapping on top | You supply tokens per request |
 | Persisted jobs and receipts | Built in | Provider message ids and Firebase tooling | Platform analytics | CloudWatch/SNS delivery status options | Stats/metrics focus |
-| Live Activity orchestration | Token, job, dispatch, and receipt state built in | HTTP v1 transport supports send, update, and end; app state is yours | Live Activity APIs and SDK support | APNS payload/header transport; app state is yours | No first-class lifecycle model |
+| Live Activities | Yes, with unified activity sends | Yes | Yes | Yes | No |
 | SDK dependency | None required for server callers | Client SDK and Admin SDK are the normal path; HTTP v1 also exists | SDK-centered for identity, delivery tracking, and Live Activities; REST API for sends | AWS SDK/API centered | REST API and CLI |
 
-Pushboy owns the application layer above APNS and FCM: users, device tokens, app topics, jobs, receipts, and Live Activity dispatch state.
+Pushboy owns the application layer above APNS and FCM: users, device tokens, app topics, jobs, receipts, and unified Live Activity dispatch state.
 
 Public docs checked for this comparison: [FCM Live Activities](https://firebase.google.com/docs/cloud-messaging/customize-messages/live-activity), [OneSignal Live Activities](https://documentation.onesignal.com/docs/en/live-activities-developer-setup), [AWS SNS mobile push](https://docs.aws.amazon.com/sns/latest/dg/sns-mobile-application-as-subscriber.html), and [Gorush](https://github.com/appleboy/gorush).
 
