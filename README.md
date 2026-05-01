@@ -1,7 +1,6 @@
 # Pushboy
 
 [![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![CI](https://github.com/mithileshchellappan/pushboy/actions/workflows/ci.yml/badge.svg)](https://github.com/mithileshchellappan/pushboy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-6BA539.svg)](docs/openapi.yaml)
 
@@ -15,12 +14,14 @@ Pushboy started as a Go learning project and grew into a focused notification se
 - [What It Does](#what-it-does) - APNS, FCM, topics, scheduling, receipts, and Live Activities
 - [Current Status](#current-status) - what is ready and what is not yet production-safe
 - [Quick Start](#quick-start) - run the service locally
+- [Setup Guide](docs/setup.md) - detailed Docker, Postgres, APNS, and FCM setup
 - [Docker](#docker) - build and run the container
 - [Configuration](#configuration) - environment variables
 - [API Examples](#api-examples) - common curl flows
 - [Architecture](#architecture) - shared worker pool and storage boundaries
 - [Live Activity Support](#live-activity-support) - APNS and FCM behavior
 - [Comparison](#comparison) - Firebase, OneSignal, AWS SNS, and Gorush
+- [Cost Model](#cost-model) - how self-hosting compares to hosted pricing
 - [OpenAPI](#openapi) - machine-readable API spec
 - [Production Checklist](#production-checklist) - remaining hardening work
 - [Documentation](#documentation) - supporting project docs
@@ -288,12 +289,31 @@ This is positioning, not a benchmark. APNS and FCM are still the device transpor
 | Persisted jobs and receipts | Built in | Provider message ids and Firebase tooling | Platform analytics | CloudWatch/SNS delivery status options | Stats/metrics focus |
 | Live Activities | APNS ActivityKit plus FCM-style Android updates | iOS Live Activities through FCM HTTP v1 | Live Activity APIs and SDK support | Not a focused Live Activity layer | No first-class Live Activity layer |
 | SDK dependency | None required for server callers | Client SDK and Admin SDK are the normal path; HTTP v1 also exists | SDK-centered for identity, delivery tracking, and Live Activities; REST API for sends | AWS SDK/API centered | REST API and CLI |
+| Cost model | Your infrastructure cost | FCM itself is listed as no-cost | Priced by mobile MAU on paid plans | Free tier, then request and delivery pricing | Your infrastructure cost |
 | Best fit | Apps that want a small owned push backend | Teams already standardized on Firebase | Teams that want a managed messaging product | AWS-heavy systems needing managed fanout | Teams that need a mature push gateway |
 | Main tradeoff | Auth, durable queues, and metrics are still maturing | Not self-hosted; app user model remains outside FCM | Paid hosted dependency and broad product surface | Needs another app layer for user-token-topic ownership | Less opinionated about app users, topics, jobs, receipts, and Live Activities |
 
 The practical difference: Pushboy is not trying to replace APNS or FCM. It owns the application layer those transports do not: users, device tokens, app topics, jobs, receipts, and Live Activity dispatch state.
 
-Public docs checked for this comparison: [FCM Live Activities](https://firebase.google.com/docs/cloud-messaging/ios/live-activity), [OneSignal Live Activities](https://documentation.onesignal.com/docs/en/live-activities-developer-setup), [AWS SNS mobile push](https://docs.aws.amazon.com/sns/latest/dg/sns-mobile-application-as-subscriber.html), and [Gorush](https://github.com/appleboy/gorush).
+Public docs checked for this comparison: [FCM Live Activities](https://firebase.google.com/docs/cloud-messaging/customize-messages/live-activity), [OneSignal Live Activities](https://documentation.onesignal.com/docs/en/live-activities-developer-setup), [AWS SNS mobile push](https://docs.aws.amazon.com/sns/latest/dg/sns-mobile-application-as-subscriber.html), and [Gorush](https://github.com/appleboy/gorush).
+
+## Cost Model
+
+Pushboy does not add a per-notification software fee. Your cost is the infrastructure you choose to run: a VM or container host, Postgres, backups, monitoring, logs, and network egress.
+
+The important comparison is total system cost, not only provider send price. Firebase Cloud Messaging and AWS SNS can be inexpensive at the transport layer, but they still leave user ownership, token storage, topic membership, scheduling, receipts, and Live Activity dispatch state in your application. OneSignal gives you more of that product layer, but adds a hosted vendor dependency, MAU-based pricing, SDK-centered identity, and a much broader engagement platform surface.
+
+For 1 million mobile push delivery attempts, public pricing pages currently look like this:
+
+| Service | 1 million mobile push sends | Important caveat |
+| --- | --- | --- |
+| Pushboy | Infrastructure cost only; no per-send Pushboy fee | You operate the VM/container, Postgres, backups, logs, and monitoring. |
+| Firebase Cloud Messaging | FCM is listed as a no-cost Firebase product | You still build and run the app-layer user, token, topic, job, and receipt system yourself. FCM supports iOS Live Activities through HTTP v1. |
+| OneSignal | Not priced per mobile push send; paid mobile push is based on monthly active users | Free and Growth plans list Live Activity subscriber limits; higher Live Activity usage is custom pricing. |
+| AWS SNS | First 1 million monthly mobile push deliveries are free; after that SNS pricing is based on requests plus mobile push deliveries | Direct per-device sends and topic fanout meter differently, and you still need an app layer for user-token-topic ownership. |
+| Gorush | Infrastructure cost only; no per-send Gorush fee | Gorush is a push gateway; app users, topics, jobs, receipts, and Live Activity lifecycle are outside its core model. |
+
+Pricing changes. Check the linked provider pricing pages before making a buying decision: [Firebase pricing](https://firebase.google.com/pricing), [OneSignal pricing](https://onesignal.com/pricing), and [AWS SNS pricing](https://aws.amazon.com/sns/pricing/).
 
 ## OpenAPI
 
@@ -324,6 +344,7 @@ Before marketing Pushboy as production-scale OSS, these are the real gaps to clo
 
 ## Documentation
 
+- [Setup guide](docs/setup.md)
 - [OpenAPI spec](docs/openapi.yaml)
 - [Postman collection](pushboy.postman_collection.json)
 - [Security policy](SECURITY.md)
