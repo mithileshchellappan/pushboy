@@ -12,18 +12,15 @@ Pushboy started as a Go learning project and grew into a focused notification se
 
 - [Why Pushboy](#why-pushboy) - the ownership problem this repo solves
 - [What It Does](#what-it-does) - APNS, FCM, topics, scheduling, receipts, and Live Activities
-- [Current Status](#current-status) - what is ready and what is not yet production-safe
+- [Project Status](#project-status) - current release scope
 - [Quick Start](#quick-start) - run the service locally
 - [Setup Guide](docs/setup.md) - detailed Docker, Postgres, APNS, and FCM setup
 - [Docker](#docker) - build and run the container
 - [Configuration](#configuration) - environment variables
 - [API Examples](#api-examples) - common curl flows
 - [Architecture](#architecture) - shared worker pool and storage boundaries
-- [Live Activity Support](#live-activity-support) - APNS and FCM behavior
 - [Comparison](#comparison) - Firebase, OneSignal, AWS SNS, and Gorush
-- [Cost Model](#cost-model) - how self-hosting compares to hosted pricing
 - [OpenAPI](#openapi) - machine-readable API spec
-- [Production Checklist](#production-checklist) - remaining hardening work
 - [Documentation](#documentation) - supporting project docs
 - [License](#license) - MIT
 
@@ -34,20 +31,17 @@ APNS and FCM deliver to devices, but most apps still need a backend layer that o
 ## What It Does
 
 - Sends visible, silent, rich, and scheduled push notifications through APNS and FCM.
-- Tracks users, device tokens, topics, subscriptions, publish jobs, counters, and delivery receipts in Postgres.
+- Tracks users, device tokens, topics, subscriptions, publish jobs, counters, and delivery receipts.
 - Supports user-scoped and topic-scoped fanout.
-- Supports APNS Live Activities and FCM live-activity-style data updates through the same job pipeline.
+- Supports APNS and FCM Live Activity flows through the same job pipeline.
 - Auto-subscribes new users to a configurable broadcast topic.
+- Uses Postgres as the first-class storage backend today, with a `Store` interface for adding other databases.
 - Exposes a compact HTTP API with an OpenAPI 3.1 spec in [docs/openapi.yaml](docs/openapi.yaml).
 - Runs as a single binary or Docker container.
 
-## Current Status
+## Project Status
 
-Pushboy is ready to package and evaluate as a self-hosted service. It is not yet safe to expose directly to the public internet.
-
-Use it behind your own backend, private network, API gateway, or reverse proxy until native auth lands. The current API has no built-in API key, tenant isolation, rate limiting, TLS termination, or role model. Device tokens and payloads are stored in plaintext in your database.
-
-The worker pool is also process-local today. Jobs, tasks, and outcomes flow through in-memory `Pipeline[T]` implementations, with Postgres as the system of record for users, tokens, jobs, and receipts. This is a practical single-node architecture, not yet a durable distributed queue.
+`v0.0.0` is the first OSS preview release. It packages the core HTTP service, Postgres-backed storage, APNS/FCM dispatch, Live Activity jobs, Docker setup, OpenAPI docs, and setup scripts. The roadmap is tracked in GitHub milestones for CI, tests, auth, metrics, durable queue adapters, targeting, templates, imports, and dashboard work.
 
 ## Quick Start
 
@@ -142,7 +136,7 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 | `SENDER_COUNT` | `200` | Sender workers that call APNS/FCM. |
 | `JOB_QUEUE_SIZE` | `1000` | Buffer size for in-process queues. |
 | `BATCH_SIZE` | `5000` | Token batch size read from Postgres. |
-| `MAX_RETRY_NOTIFICATION` | `3` | Loaded by config; full provider retry policy is still being hardened. |
+| `MAX_RETRY_NOTIFICATION` | `3` | Number of notification retry attempts. |
 | `APNS_KEY_ID` | empty | Apple Developer key id. Enables APNS when present and readable. |
 | `APNS_TEAM_ID` | empty | Apple Developer team id. |
 | `APNS_BUNDLE_ID` | `APNS_TOPIC_ID` fallback | iOS bundle id. Live Activities use `<bundle>.push-type.liveactivity`. |
@@ -153,7 +147,8 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 
 ## API Examples
 
-Create a topic. The current router registers create/list topic routes with a trailing slash.
+<details>
+<summary>Create a topic</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/topics/ \
@@ -161,7 +156,10 @@ curl -X POST http://localhost:8080/v1/topics/ \
   -d '{"id":"broadcast","name":"Broadcast"}'
 ```
 
-Register an APNS or FCM device token:
+</details>
+
+<details>
+<summary>Register an APNS or FCM device token</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/users/tokens \
@@ -173,7 +171,10 @@ curl -X POST http://localhost:8080/v1/users/tokens \
   }'
 ```
 
-Send a notification to one user:
+</details>
+
+<details>
+<summary>Send a notification to one user</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/users/user-123/send \
@@ -188,7 +189,10 @@ curl -X POST http://localhost:8080/v1/users/user-123/send \
   }'
 ```
 
-Publish to a topic:
+</details>
+
+<details>
+<summary>Publish to a topic</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/topics/broadcast/publish \
@@ -199,7 +203,10 @@ curl -X POST http://localhost:8080/v1/topics/broadcast/publish \
   }'
 ```
 
-Schedule a future notification with `scheduled_at`:
+</details>
+
+<details>
+<summary>Schedule a future notification</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/topics/broadcast/publish \
@@ -211,7 +218,10 @@ curl -X POST http://localhost:8080/v1/topics/broadcast/publish \
   }'
 ```
 
-Register a Live Activity token:
+</details>
+
+<details>
+<summary>Register a Live Activity token</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/live-activity/tokens \
@@ -225,7 +235,10 @@ curl -X POST http://localhost:8080/v1/live-activity/tokens \
   }'
 ```
 
-Start a Live Activity:
+</details>
+
+<details>
+<summary>Start a Live Activity</summary>
 
 ```bash
 curl -X POST http://localhost:8080/v1/live-activity/jobs \
@@ -253,13 +266,15 @@ curl -X POST http://localhost:8080/v1/live-activity/jobs \
   }'
 ```
 
+</details>
+
 ## Architecture
 
 ```mermaid
 flowchart LR
     Client["App backend or trusted API caller"] --> API["Pushboy HTTP API"]
     API --> Service["Service layer"]
-    Service --> Store["Postgres store"]
+    Service --> Store["Store interface (Postgres)"]
     Service --> JobPool["shared job pool"]
     Scheduler["Scheduled job sweeper"] --> JobPool
     JobPool --> Masters["master workers"]
@@ -275,22 +290,11 @@ flowchart LR
 
 The shared pool is the important design choice. Push jobs and Live Activity dispatches enter the same job pipeline, then branch by `JobType`. Master workers page tokens from Postgres, sender workers call the platform transport, and the outcome worker writes receipts and counters back to Postgres.
 
-Today those pools are in-memory. The `Pipeline[T]` and `Store` boundaries are intentionally small so Redis, Kafka, Postgres leasing, or another durable queue can replace the in-process implementation without rewriting the HTTP or provider layers.
-
-## Live Activity Support
-
-| Flow | APNS | FCM |
-| --- | --- | --- |
-| Token registration | Start and update tokens | Stored as update tokens |
-| Start | ActivityKit `event=start`, attributes, alert, content state | Data message with `type=live_activity`, `action=start`, `activity_id`, `activity_type`, and compact payload |
-| Update | ActivityKit `event=update`, content state, collapse id support | Data message with collapse key support |
-| End | ActivityKit `event=end` | Data message with `action=end` |
-| Scope | User or topic | User or topic |
-| State | Postgres `live_activity_jobs`, `live_activity_tokens`, and `live_activity_dispatches` | Same tables |
+The `Pipeline[T]` and `Store` boundaries are intentionally small. Postgres has first-class support today, and another database can be added by implementing the `Store` interface. The in-process channel pipeline is the default queue today; Redis, Kafka, and other queue backends can be added behind the same pipeline boundary.
 
 ## Comparison
 
-This is positioning, not a benchmark. APNS and FCM are still the device transports; Pushboy is the self-hosted orchestration layer above them.
+APNS and FCM are still the device transports; Pushboy is the self-hosted orchestration layer above them.
 
 | Capability | Pushboy | Firebase Cloud Messaging | OneSignal | AWS SNS | Gorush |
 | --- | --- | --- | --- | --- | --- |
@@ -299,64 +303,20 @@ This is positioning, not a benchmark. APNS and FCM are still the device transpor
 | Primary shape | Push and Live Activity orchestration | Device push transport | Engagement platform | Pub/sub and mobile push service | Push gateway |
 | APNS support | Yes | Yes, through FCM setup | Yes | Yes | Yes |
 | FCM support | Yes | Native | Yes | Yes | Yes |
-| Extra push providers | No | No | Web, Huawei, Amazon, macOS, Windows | Other AWS-supported endpoint types | HMS |
+| Extra push providers | Adding support soon | No | Web, Huawei, Amazon, macOS, Windows | Other AWS-supported endpoint types | HMS |
 | Topic fanout | App-owned topic table | FCM topics and conditions | Audiences/segments/tags | SNS topics with mobile endpoints | No persisted app topic model |
 | User-token-topic ownership | Built in | You build it | Platform-owned | You build app user mapping on top | You supply tokens per request |
 | Persisted jobs and receipts | Built in | Provider message ids and Firebase tooling | Platform analytics | CloudWatch/SNS delivery status options | Stats/metrics focus |
-| Live Activities | APNS ActivityKit plus FCM-style Android updates | iOS Live Activities through FCM HTTP v1 | Live Activity APIs and SDK support | Not a focused Live Activity layer | No first-class Live Activity layer |
+| Live Activity orchestration | Token, job, dispatch, and receipt state built in | HTTP v1 transport supports send, update, and end; app state is yours | Live Activity APIs and SDK support | APNS payload/header transport; app state is yours | No first-class lifecycle model |
 | SDK dependency | None required for server callers | Client SDK and Admin SDK are the normal path; HTTP v1 also exists | SDK-centered for identity, delivery tracking, and Live Activities; REST API for sends | AWS SDK/API centered | REST API and CLI |
-| Cost model | Your infrastructure cost | FCM itself is listed as no-cost | Priced by mobile MAU on paid plans | Free tier, then request and delivery pricing | Your infrastructure cost |
-| Best fit | Apps that want a small owned push backend | Teams already standardized on Firebase | Teams that want a managed messaging product | AWS-heavy systems needing managed fanout | Teams that need a mature push gateway |
-| Main tradeoff | Auth, durable queues, and metrics are still maturing | Not self-hosted; app user model remains outside FCM | Paid hosted dependency and broad product surface | Needs another app layer for user-token-topic ownership | Less opinionated about app users, topics, jobs, receipts, and Live Activities |
 
-The practical difference: Pushboy is not trying to replace APNS or FCM. It owns the application layer those transports do not: users, device tokens, app topics, jobs, receipts, and Live Activity dispatch state.
+Pushboy owns the application layer above APNS and FCM: users, device tokens, app topics, jobs, receipts, and Live Activity dispatch state.
 
 Public docs checked for this comparison: [FCM Live Activities](https://firebase.google.com/docs/cloud-messaging/customize-messages/live-activity), [OneSignal Live Activities](https://documentation.onesignal.com/docs/en/live-activities-developer-setup), [AWS SNS mobile push](https://docs.aws.amazon.com/sns/latest/dg/sns-mobile-application-as-subscriber.html), and [Gorush](https://github.com/appleboy/gorush).
 
-## Cost Model
-
-Pushboy does not add a per-notification software fee. Your cost is the infrastructure you choose to run: a VM or container host, Postgres, backups, monitoring, logs, and network egress.
-
-The important comparison is total system cost, not only provider send price. Firebase Cloud Messaging and AWS SNS can be inexpensive at the transport layer, but they still leave user ownership, token storage, topic membership, scheduling, receipts, and Live Activity dispatch state in your application. OneSignal gives you more of that product layer, but adds a hosted vendor dependency, MAU-based pricing, SDK-centered identity, and a much broader engagement platform surface.
-
-For 1 million mobile push delivery attempts, public pricing pages currently look like this:
-
-| Service | 1 million mobile push sends | Important caveat |
-| --- | --- | --- |
-| Pushboy | Infrastructure cost only; no per-send Pushboy fee | You operate the VM/container, Postgres, backups, logs, and monitoring. |
-| Firebase Cloud Messaging | FCM is listed as a no-cost Firebase product | You still build and run the app-layer user, token, topic, job, and receipt system yourself. FCM supports iOS Live Activities through HTTP v1. |
-| OneSignal | Not priced per mobile push send; paid mobile push is based on monthly active users | Free and Growth plans list Live Activity subscriber limits; higher Live Activity usage is custom pricing. |
-| AWS SNS | First 1 million monthly mobile push deliveries are free; after that SNS pricing is based on requests plus mobile push deliveries | Direct per-device sends and topic fanout meter differently, and you still need an app layer for user-token-topic ownership. |
-| Gorush | Infrastructure cost only; no per-send Gorush fee | Gorush is a push gateway; app users, topics, jobs, receipts, and Live Activity lifecycle are outside its core model. |
-
-Pricing changes. Check the linked provider pricing pages before making a buying decision: [Firebase pricing](https://firebase.google.com/pricing), [OneSignal pricing](https://onesignal.com/pricing), and [AWS SNS pricing](https://aws.amazon.com/sns/pricing/).
-
 ## OpenAPI
 
-The API spec lives at [docs/openapi.yaml](docs/openapi.yaml). It documents the current wire behavior, including plain-text error responses and current response field casing from Go structs.
-
-Known API cleanup candidates before a stable public v1:
-
-- Add first-party auth and rate limiting.
-- Enforce token ownership on token read/delete routes.
-- Add JSON response tags or dedicated response DTOs for stable casing.
-- Add a public Live Activity status endpoint.
-- Convert plain-text errors to a consistent JSON error model.
-- Decide whether create/list routes should accept both slashless and trailing-slash paths.
-
-## Production Checklist
-
-Before marketing Pushboy as production-scale OSS, these are the real gaps to close:
-
-- API key or JWT auth, plus documented reverse-proxy/TLS guidance.
-- Durable dispatch recovery for queued and in-progress jobs after restarts.
-- External queue or Postgres leasing for multi-replica deployments.
-- Real readiness endpoint that checks Postgres and worker state, not just `/v1/ping`.
-- CI with `go test ./...`, `go vet ./...`, `go test -race ./...`, Docker build, and a migration smoke test.
-- Meaningful tests around scheduling, token fanout, provider failures, Live Activity lifecycle, and retry semantics.
-- `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue templates, and release notes.
-- Metrics and operational dashboards for queue depth, send latency, provider errors, and dead tokens.
-- A token retention and payload retention policy.
+The API spec lives at [docs/openapi.yaml](docs/openapi.yaml).
 
 ## Documentation
 
