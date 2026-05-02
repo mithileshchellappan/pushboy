@@ -541,42 +541,15 @@ func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mode
 		return nil
 	}
 
-	type counterDelta struct {
-		success int
-		failure int
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("error starting outcome transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	deltas := make(map[string]*counterDelta)
-
-	for _, receipt := range receipts {
-		if _, ok := deltas[receipt.JobID]; !ok {
-			deltas[receipt.JobID] = &counterDelta{}
-		}
-
-		switch receipt.Status {
-		case string(model.Success):
-			deltas[receipt.JobID].success++
-		case string(model.Failed):
-			deltas[receipt.JobID].failure++
-			if _, err := tx.ExecContext(
-				ctx,
-				`INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`,
-				receipt.ID,
-				receipt.JobID,
-				receipt.TokenID,
-				receipt.Status,
-				receipt.StatusReason,
-				receipt.DispatchedAt,
-			); err != nil {
-				return fmt.Errorf("error recording failure receipt for job %s token %s: %w", receipt.JobID, receipt.TokenID, err)
-			}
-		}
+	deltas, failureReceipts := summarizePushReceipts(receipts)
+	if err := s.bulkInsertReceiptsTx(ctx, tx, failureReceipts); err != nil {
+		return fmt.Errorf("error bulk recording failure receipts: %w", err)
 	}
 
 	for jobID, delta := range deltas {
@@ -610,6 +583,27 @@ func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mode
 	return nil
 }
 
+func (s *SQLiteStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, receipts []model.DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("error preparing bulk receipt insert: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, r := range receipts {
+		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt); err != nil {
+			return fmt.Errorf("error inserting receipt for job %s token %s: %w", r.JobID, r.TokenID, err)
+		}
+	}
+
+	return nil
+}
+
 func (s *SQLiteStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
 	query := `UPDATE publish_jobs SET success_count = success_count + ?, failure_count = failure_count + ? WHERE id = ?`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
@@ -638,34 +632,6 @@ func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
-}
-
-func (s *SQLiteStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
-	if len(receipts) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
-	stmt, err := tx.PrepareContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, r := range receipts {
-		_, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
 }
 
 func (s *SQLiteStore) GetTokenBatchForUser(ctx context.Context, userID string, cursor string, batchSize int) (*TokenBatch, error) {

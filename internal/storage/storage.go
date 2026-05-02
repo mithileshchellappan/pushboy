@@ -161,7 +161,6 @@ type Store interface {
 
 	// Delivery receipt operations
 	RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error
-	BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error
 
 	//Schedule operations
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)

@@ -635,42 +635,15 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 		return nil
 	}
 
-	type counterDelta struct {
-		success int
-		failure int
-	}
-
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("error starting outcome transaction: %w", err)
 	}
 	defer tx.Rollback()
 
-	deltas := make(map[string]*counterDelta)
-
-	for _, receipt := range receipts {
-		if _, ok := deltas[receipt.JobID]; !ok {
-			deltas[receipt.JobID] = &counterDelta{}
-		}
-
-		switch receipt.Status {
-		case string(model.Success):
-			deltas[receipt.JobID].success++
-		case string(model.Failed):
-			deltas[receipt.JobID].failure++
-			if _, err := tx.ExecContext(
-				ctx,
-				`INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`,
-				receipt.ID,
-				receipt.JobID,
-				receipt.TokenID,
-				receipt.Status,
-				receipt.StatusReason,
-				receipt.DispatchedAt,
-			); err != nil {
-				return fmt.Errorf("error recording failure receipt for job %s token %s: %w", receipt.JobID, receipt.TokenID, err)
-			}
-		}
+	deltas, failureReceipts := summarizePushReceipts(receipts)
+	if err := s.bulkInsertReceiptsTx(ctx, tx, failureReceipts); err != nil {
+		return fmt.Errorf("error bulk recording failure receipts: %w", err)
 	}
 
 	for jobID, delta := range deltas {
@@ -704,6 +677,35 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 	return nil
 }
 
+func (s *PostgresStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, receipts []model.DeliveryReceipt) error {
+	if len(receipts) == 0 {
+		return nil
+	}
+
+	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("delivery_receipts", "id", "job_id", "token_id", "status", "status_reason", "dispatched_at"))
+	if err != nil {
+		return fmt.Errorf("error preparing bulk receipt insert: %w", err)
+	}
+
+	for _, r := range receipts {
+		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt); err != nil {
+			_ = stmt.Close()
+			return fmt.Errorf("error buffering receipt for job %s token %s: %w", r.JobID, r.TokenID, err)
+		}
+	}
+
+	if _, err := stmt.ExecContext(ctx); err != nil {
+		_ = stmt.Close()
+		return fmt.Errorf("error flushing bulk receipt insert: %w", err)
+	}
+
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("error closing bulk receipt insert: %w", err)
+	}
+
+	return nil
+}
+
 func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
 	query := `UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
@@ -732,37 +734,6 @@ func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *mode
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
 	return err
-}
-
-func (s *PostgresStore) BulkInsertReceipts(ctx context.Context, receipts []model.DeliveryReceipt) error {
-	if len(receipts) == 0 {
-		return nil
-	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, pq.CopyIn("delivery_receipts", "id", "job_id", "token_id", "status", "status_reason", "dispatched_at"))
-	if err != nil {
-		return err
-	}
-
-	for _, r := range receipts {
-		_, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt)
-		if err != nil {
-			stmt.Close()
-			return err
-		}
-	}
-
-	if err := stmt.Close(); err != nil {
-		return err
-	}
-
-	return tx.Commit()
 }
 
 func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
