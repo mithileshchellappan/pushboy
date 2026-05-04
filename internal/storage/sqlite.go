@@ -20,6 +20,8 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+var _ Store = (*SQLiteStore)(nil)
+
 func NewSQLStore(dataSourceName string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
@@ -93,6 +95,10 @@ func (s *SQLiteStore) GetUser(ctx context.Context, userID string) (*User, error)
 	}
 
 	return &user, nil
+}
+
+func (s *SQLiteStore) ListUsers(ctx context.Context, query PageQuery) ([]User, error) {
+	return nil, fmt.Errorf("list users is only supported by postgres")
 }
 
 func (s *SQLiteStore) DeleteUser(ctx context.Context, userID string) error {
@@ -371,6 +377,10 @@ func (s *SQLiteStore) GetTopicSubscribers(ctx context.Context, topicID string) (
 	return users, rows.Err()
 }
 
+func (s *SQLiteStore) ListTopicSubscribers(ctx context.Context, topicID string, query PageQuery) ([]TopicSubscriber, error) {
+	return nil, fmt.Errorf("list topic subscribers is only supported by postgres")
+}
+
 func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error) {
 	var count int
 	query := `SELECT COUNT(*) FROM user_topic_subscriptions WHERE topic_id = ?`
@@ -536,6 +546,14 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 	return &job, nil
 }
 
+func (s *SQLiteStore) ListTopicNotifications(ctx context.Context, topicID string, query NotificationListQuery) ([]PublishJob, error) {
+	return nil, fmt.Errorf("list topic notifications is only supported by postgres")
+}
+
+func (s *SQLiteStore) ListUserNotifications(ctx context.Context, userID string, query NotificationListQuery) ([]PublishJob, error) {
+	return nil, fmt.Errorf("list user notifications is only supported by postgres")
+}
+
 func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
 	if len(receipts) == 0 {
 		return nil
@@ -645,6 +663,10 @@ func (s *SQLiteStore) GetTokenCountForUser(ctx context.Context, userID string) (
 		return 0, fmt.Errorf("error counting user tokens: %w", err)
 	}
 	return count, nil
+}
+
+func (s *SQLiteStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
+	return nil, fmt.Errorf("scheduled jobs are only supported by postgres")
 }
 
 func (s *SQLiteStore) Close() error {

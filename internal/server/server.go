@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,35 @@ type Server struct {
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
+
+const (
+	defaultPageLimit = 50
+	maxPageLimit     = 200
+	cursorVersion    = 1
+)
+
+var validNotificationStatuses = map[string]struct{}{
+	"QUEUED":      {},
+	"SCHEDULED":   {},
+	"IN_PROGRESS": {},
+	"DISPATCHED":  {},
+	"COMPLETED":   {},
+	"FAILED":      {},
+}
+
+type listResponse[T any] struct {
+	Items      []T    `json:"items"`
+	NextCursor string `json:"next_cursor"`
+	HasMore    bool   `json:"has_more"`
+}
+
+type pageCursor struct {
+	Version   int    `json:"v"`
+	Route     string `json:"route"`
+	Status    string `json:"status,omitempty"`
+	SortValue string `json:"sort_value"`
+	ID        string `json:"id"`
+}
 
 func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
 	return &Server{service: s, jobPipeline: jobPipeline}
@@ -51,9 +82,11 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/ping", s.handlePing)
+		r.Get("/notifications/{jobID}", s.handleGetJobStatus)
 
 		// User routes
 		r.Route("/users", func(r chi.Router) {
+			r.Get("/", s.handleListUsers)
 			r.Post("/", s.handleCreateUser)
 			r.Get("/{userID}", s.handleGetUser)
 			r.Delete("/{userID}", s.handleDeleteUser)
@@ -67,6 +100,7 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/{userID}/subscriptions/{topicID}", s.handleSubscribeToTopic)
 			r.Delete("/{userID}/subscriptions/{topicID}", s.handleUnsubscribeFromTopic)
 			r.Get("/{userID}/subscriptions", s.handleGetUserSubscriptions)
+			r.Get("/{userID}/notifications", s.handleListUserNotifications)
 
 			// Send to user
 			r.Post("/{userID}/send", s.handleSendToUser)
@@ -79,9 +113,10 @@ func (s *Server) setupRouter() chi.Router {
 			r.Get("/{topicID}", s.handleGetTopicByID)
 			r.Delete("/{topicID}", s.handleDeleteTopic)
 			r.Get("/{topicID}/count", s.handleGetTopicSubscriberCount)
+			r.Get("/{topicID}/subscribers", s.handleListTopicSubscribers)
+			r.Get("/{topicID}/notifications", s.handleListTopicNotifications)
 
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
-			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
 		})
 
 		r.Route("/live-activity", func(r chi.Router) {
@@ -116,6 +151,141 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 	return nil
 }
 
+func parseLimit(raw string) (int, error) {
+	if raw == "" {
+		return defaultPageLimit, nil
+	}
+
+	limit, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, err
+	}
+	if limit <= 0 || limit > maxPageLimit {
+		return 0, errors.New("limit out of range")
+	}
+
+	return limit, nil
+}
+
+func parseNotificationStatus(raw string) (string, error) {
+	if raw == "" {
+		return "", nil
+	}
+	if _, ok := validNotificationStatuses[raw]; !ok {
+		return "", errors.New("invalid status")
+	}
+	return raw, nil
+}
+
+func parseCursor(raw string, route string, status string) (storage.PageCursor, error) {
+	if raw == "" {
+		return storage.PageCursor{}, nil
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return storage.PageCursor{}, err
+	}
+
+	var cursor pageCursor
+	if err := json.Unmarshal(payload, &cursor); err != nil {
+		return storage.PageCursor{}, err
+	}
+
+	if cursor.Version != cursorVersion || cursor.Route != route || cursor.Status != status || cursor.SortValue == "" || cursor.ID == "" {
+		return storage.PageCursor{}, errors.New("invalid cursor")
+	}
+	if _, err := time.Parse(time.RFC3339, cursor.SortValue); err != nil {
+		return storage.PageCursor{}, err
+	}
+
+	return storage.PageCursor{
+		SortValue: cursor.SortValue,
+		ID:        cursor.ID,
+	}, nil
+}
+
+func encodeCursor(route string, status string, sortValue string, id string) string {
+	payload, err := json.Marshal(pageCursor{
+		Version:   cursorVersion,
+		Route:     route,
+		Status:    status,
+		SortValue: sortValue,
+		ID:        id,
+	})
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func pageQueryFromRequest(r *http.Request, route string) (storage.PageQuery, int, error) {
+	limit, err := parseLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		return storage.PageQuery{}, 0, err
+	}
+
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"), route, "")
+	if err != nil {
+		return storage.PageQuery{}, 0, err
+	}
+
+	return storage.PageQuery{
+		Limit:  limit + 1,
+		Cursor: cursor,
+	}, limit, nil
+}
+
+func notificationListQueryFromRequest(r *http.Request, route string) (storage.NotificationListQuery, int, error) {
+	status, err := parseNotificationStatus(r.URL.Query().Get("status"))
+	if err != nil {
+		return storage.NotificationListQuery{}, 0, err
+	}
+
+	limit, err := parseLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		return storage.NotificationListQuery{}, 0, err
+	}
+
+	cursor, err := parseCursor(r.URL.Query().Get("cursor"), route, status)
+	if err != nil {
+		return storage.NotificationListQuery{}, 0, err
+	}
+
+	return storage.NotificationListQuery{
+		Limit:  limit + 1,
+		Cursor: cursor,
+		Status: status,
+	}, limit, nil
+}
+
+func effectiveJobSortValue(job storage.PublishJob) string {
+	if job.ScheduledAt != "" {
+		return job.ScheduledAt
+	}
+	return job.CreatedAt
+}
+
+func makeListResponse[T any](items []T, limit int, route string, status string, keyFunc func(T) (string, string)) listResponse[T] {
+	if items == nil {
+		items = make([]T, 0)
+	}
+
+	response := listResponse[T]{
+		Items: items,
+	}
+
+	if len(items) <= limit {
+		return response
+	}
+
+	response.HasMore = true
+	response.Items = items[:limit]
+	sortValue, id := keyFunc(response.Items[len(response.Items)-1])
+	response.NextCursor = encodeCursor(route, status, sortValue, id)
+	return response
+}
+
 // Health check
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("pong"))
@@ -145,6 +315,28 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, r, user, http.StatusCreated)
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	const route = "/v1/users"
+
+	query, limit, err := pageQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	users, err := s.service.ListUsers(r.Context(), query)
+	if err != nil {
+		http.Error(w, "Error listing users", http.StatusInternalServerError)
+		log.Printf("Error listing users: %v", err)
+		return
+	}
+
+	response := makeListResponse(users, limit, route, "", func(user storage.User) (string, string) {
+		return user.CreatedAt, user.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
 }
 
 func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +543,37 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 	s.respond(w, r, subs, http.StatusOK)
 }
 
+func (s *Server) handleListUserNotifications(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userID")
+	if userID == "" {
+		http.Error(w, "userID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/users/" + userID + "/notifications"
+	query, limit, err := notificationListQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := s.service.ListUserNotifications(r.Context(), userID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing user notifications", http.StatusInternalServerError)
+		log.Printf("Error listing user notifications: %v", err)
+		return
+	}
+
+	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+		return effectiveJobSortValue(job), job.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
+}
+
 // Send to user handler
 
 type SendNotificationRequest struct {
@@ -532,6 +755,68 @@ func (s *Server) handleGetTopicSubscriberCount(w http.ResponseWriter, r *http.Re
 	}
 
 	s.respond(w, r, map[string]int{"count": count}, http.StatusOK)
+}
+
+func (s *Server) handleListTopicSubscribers(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/topics/" + topicID + "/subscribers"
+	query, limit, err := pageQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	subscribers, err := s.service.ListTopicSubscribers(r.Context(), topicID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing topic subscribers", http.StatusInternalServerError)
+		log.Printf("Error listing topic subscribers: %v", err)
+		return
+	}
+
+	response := makeListResponse(subscribers, limit, route, "", func(subscriber storage.TopicSubscriber) (string, string) {
+		return subscriber.SubscribedAt, subscriber.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
+}
+
+func (s *Server) handleListTopicNotifications(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/topics/" + topicID + "/notifications"
+	query, limit, err := notificationListQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := s.service.ListTopicNotifications(r.Context(), topicID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing topic notifications", http.StatusInternalServerError)
+		log.Printf("Error listing topic notifications: %v", err)
+		return
+	}
+
+	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+		return effectiveJobSortValue(job), job.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
 }
 
 // Publish handlers

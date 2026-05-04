@@ -20,6 +20,12 @@ type PostgresStore struct {
 	db *sql.DB
 }
 
+var _ Store = (*PostgresStore)(nil)
+
+type sqlScanner interface {
+	Scan(dest ...any) error
+}
+
 func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 	db, err := sql.Open("postgres", databaseURL)
 	if err != nil {
@@ -66,13 +72,85 @@ func NewPostgresStore(databaseURL string) (*PostgresStore, error) {
 	return store, nil
 }
 
+func formatPostgresTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
+func parseRequiredPostgresTime(value string) (time.Time, error) {
+	if value == "" {
+		return time.Now().UTC(), nil
+	}
+
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return t.UTC(), nil
+}
+
+func parseOptionalPostgresTime(value string) (any, error) {
+	if value == "" {
+		return nil, nil
+	}
+
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil, err
+	}
+	return t.UTC(), nil
+}
+
+func scanPublishJob(scanner sqlScanner) (*PublishJob, error) {
+	var job PublishJob
+	var payloadJSON []byte
+	var createdAt time.Time
+	var completedAt sql.NullTime
+	var scheduledAt sql.NullTime
+
+	err := scanner.Scan(
+		&job.ID,
+		&job.TopicID,
+		&job.UserID,
+		&payloadJSON,
+		&job.Status,
+		&job.TotalCount,
+		&job.SuccessCount,
+		&job.FailureCount,
+		&createdAt,
+		&completedAt,
+		&scheduledAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	job.CreatedAt = formatPostgresTime(createdAt)
+	if completedAt.Valid {
+		job.CompletedAt = formatPostgresTime(completedAt.Time)
+	}
+	if scheduledAt.Valid {
+		job.ScheduledAt = formatPostgresTime(scheduledAt.Time)
+	}
+
+	if len(payloadJSON) > 0 {
+		var payload model.NotificationPayload
+		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+			return nil, fmt.Errorf("error deserializing payload: %w", err)
+		}
+		job.Payload = &payload
+	}
+
+	return &job, nil
+}
+
 // User operations
 
 func (s *PostgresStore) CreateUser(ctx context.Context, user *User) (*User, error) {
-	user.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	createdAt := time.Now().UTC()
+	user.CreatedAt = formatPostgresTime(createdAt)
 
 	query := `INSERT INTO users(id, created_at) VALUES($1, $2)`
-	_, err := s.db.ExecContext(ctx, query, user.ID, user.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, user.ID, createdAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, Errors.AlreadyExists
@@ -88,15 +166,49 @@ func (s *PostgresStore) GetUser(ctx context.Context, userID string) (*User, erro
 	row := s.db.QueryRowContext(ctx, query, userID)
 
 	var user User
-	err := row.Scan(&user.ID, &user.CreatedAt)
+	var createdAt time.Time
+	err := row.Scan(&user.ID, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting user: %w", err)
 	}
+	user.CreatedAt = formatPostgresTime(createdAt)
 
 	return &user, nil
+}
+
+func (s *PostgresStore) ListUsers(ctx context.Context, query PageQuery) ([]User, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id, created_at
+		FROM users
+		WHERE NULLIF($1, '') IS NULL
+			OR (created_at, id) < (NULLIF($1, '')::timestamptz, $2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`,
+		query.Cursor.SortValue,
+		query.Cursor.ID,
+		query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error listing users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []User
+	for rows.Next() {
+		var user User
+		var createdAt time.Time
+		if err := rows.Scan(&user.ID, &createdAt); err != nil {
+			return nil, fmt.Errorf("error scanning user: %w", err)
+		}
+		user.CreatedAt = formatPostgresTime(createdAt)
+		users = append(users, user)
+	}
+
+	return users, rows.Err()
 }
 
 func (s *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
@@ -117,10 +229,11 @@ func (s *PostgresStore) DeleteUser(ctx context.Context, userID string) error {
 // Token operations
 
 func (s *PostgresStore) CreateToken(ctx context.Context, token *Token) (*Token, error) {
-	token.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	createdAt := time.Now().UTC()
+	token.CreatedAt = formatPostgresTime(createdAt)
 
 	query := `INSERT INTO tokens(id, user_id, platform, token, created_at) VALUES($1, $2, $3, $4, $5)`
-	_, err := s.db.ExecContext(ctx, query, token.ID, token.UserID, token.Platform, token.Token, token.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, token.ID, token.UserID, token.Platform, token.Token, createdAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, Errors.AlreadyExists
@@ -142,9 +255,11 @@ func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([
 	var tokens []Token
 	for rows.Next() {
 		var token Token
-		if err := rows.Scan(&token.ID, &token.UserID, &token.Platform, &token.Token, &token.CreatedAt); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(&token.ID, &token.UserID, &token.Platform, &token.Token, &createdAt); err != nil {
 			return nil, fmt.Errorf("error scanning token: %w", err)
 		}
+		token.CreatedAt = formatPostgresTime(createdAt)
 		tokens = append(tokens, token)
 	}
 
@@ -375,10 +490,11 @@ func (s *PostgresStore) DeleteTopic(ctx context.Context, topicID string) error {
 
 func (s *PostgresStore) SubscribeUserToTopic(ctx context.Context, sub *UserTopicSubscription) (*UserTopicSubscription, error) {
 	sub.ID = fmt.Sprintf("sub:%s:%s", sub.UserID, sub.TopicID)
-	sub.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	createdAt := time.Now().UTC()
+	sub.CreatedAt = formatPostgresTime(createdAt)
 
 	query := `INSERT INTO user_topic_subscriptions(id, user_id, topic_id, created_at) VALUES($1, $2, $3, $4)`
-	_, err := s.db.ExecContext(ctx, query, sub.ID, sub.UserID, sub.TopicID, sub.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, sub.ID, sub.UserID, sub.TopicID, createdAt)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") {
 			return nil, Errors.AlreadyExists
@@ -415,9 +531,11 @@ func (s *PostgresStore) GetUserSubscriptions(ctx context.Context, userID string)
 	var subs []UserTopicSubscription
 	for rows.Next() {
 		var sub UserTopicSubscription
-		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.TopicID, &sub.CreatedAt); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.TopicID, &createdAt); err != nil {
 			return nil, fmt.Errorf("error scanning subscription: %w", err)
 		}
+		sub.CreatedAt = formatPostgresTime(createdAt)
 		subs = append(subs, sub)
 	}
 
@@ -437,13 +555,54 @@ func (s *PostgresStore) GetTopicSubscribers(ctx context.Context, topicID string)
 	var users []User
 	for rows.Next() {
 		var user User
-		if err := rows.Scan(&user.ID, &user.CreatedAt); err != nil {
+		var createdAt time.Time
+		if err := rows.Scan(&user.ID, &createdAt); err != nil {
 			return nil, fmt.Errorf("error scanning user: %w", err)
 		}
+		user.CreatedAt = formatPostgresTime(createdAt)
 		users = append(users, user)
 	}
 
 	return users, rows.Err()
+}
+
+func (s *PostgresStore) ListTopicSubscribers(ctx context.Context, topicID string, query PageQuery) ([]TopicSubscriber, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT u.id, u.created_at, sub.created_at
+		FROM user_topic_subscriptions sub
+		INNER JOIN users u ON u.id = sub.user_id
+		WHERE sub.topic_id = $1
+			AND (
+				NULLIF($2, '') IS NULL
+				OR (sub.created_at, sub.user_id) < (NULLIF($2, '')::timestamptz, $3)
+			)
+		ORDER BY sub.created_at DESC, sub.user_id DESC
+		LIMIT $4`,
+		topicID,
+		query.Cursor.SortValue,
+		query.Cursor.ID,
+		query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error listing topic subscribers: %w", err)
+	}
+	defer rows.Close()
+
+	var subscribers []TopicSubscriber
+	for rows.Next() {
+		var subscriber TopicSubscriber
+		var createdAt time.Time
+		var subscribedAt time.Time
+		if err := rows.Scan(&subscriber.ID, &createdAt, &subscribedAt); err != nil {
+			return nil, fmt.Errorf("error scanning topic subscriber: %w", err)
+		}
+		subscriber.CreatedAt = formatPostgresTime(createdAt)
+		subscriber.SubscribedAt = formatPostgresTime(subscribedAt)
+		subscribers = append(subscribers, subscriber)
+	}
+
+	return subscribers, rows.Err()
 }
 
 func (s *PostgresStore) GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error) {
@@ -469,12 +628,21 @@ func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (
 	if job.ScheduledAt == "" {
 		scheduledAt = nil
 	} else {
-		scheduledAt = job.ScheduledAt
+		scheduledAt, err = parseOptionalPostgresTime(job.ScheduledAt)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing scheduled_at: %w", err)
+		}
 	}
+
+	createdAt, err := parseRequiredPostgresTime(job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing created_at: %w", err)
+	}
+	job.CreatedAt = formatPostgresTime(createdAt)
 
 	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at) 
 		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt, scheduledAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, createdAt, scheduledAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -503,11 +671,20 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 	if job.ScheduledAt == "" {
 		scheduledAt = nil
 	} else {
-		scheduledAt = job.ScheduledAt
+		scheduledAt, err = parseOptionalPostgresTime(job.ScheduledAt)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing scheduled_at: %w", err)
+		}
 	}
 
+	createdAt, err := parseRequiredPostgresTime(job.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing created_at: %w", err)
+	}
+	job.CreatedAt = formatPostgresTime(createdAt)
+
 	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt, scheduledAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, createdAt, scheduledAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating user publish job: %w", err)
 	}
@@ -515,7 +692,7 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 }
 
 func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at 
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at
 		FROM publish_jobs WHERE status = 'PENDING' LIMIT $1`
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
@@ -525,24 +702,11 @@ func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publ
 
 	var jobs []PublishJob
 	for rows.Next() {
-		var job PublishJob
-		var payloadJSON []byte
-		var completedAt sql.NullTime
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
+		job, err := scanPublishJob(rows)
+		if err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
 		}
-		if completedAt.Valid {
-			job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
-		}
-		// Deserialize payload from JSON
-		if len(payloadJSON) > 0 {
-			var payload model.NotificationPayload
-			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-				return nil, fmt.Errorf("error deserializing payload: %w", err)
-			}
-			job.Payload = &payload
-		}
-		jobs = append(jobs, job)
+		jobs = append(jobs, *job)
 	}
 
 	return jobs, rows.Err()
@@ -597,16 +761,14 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 			pj.success_count,
 			pj.failure_count,
 			pj.created_at,
-			pj.completed_at
+			pj.completed_at,
+			pj.scheduled_at
 		FROM publish_jobs pj
 		WHERE pj.id = $1`
 
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
-	var job PublishJob
-	var payloadJSON []byte
-	var completedAt sql.NullTime
-	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt)
+	job, err := scanPublishJob(row)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
@@ -614,20 +776,139 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 		return nil, fmt.Errorf("error getting job status: %w", err)
 	}
 
-	if completedAt.Valid {
-		job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
-	}
+	return job, nil
+}
 
-	// Deserialize payload from JSON
-	if len(payloadJSON) > 0 {
-		var payload model.NotificationPayload
-		if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-			return nil, fmt.Errorf("error deserializing payload: %w", err)
+func (s *PostgresStore) ListTopicNotifications(ctx context.Context, topicID string, query NotificationListQuery) ([]PublishJob, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT
+			pj.id,
+			COALESCE(pj.topic_id, ''),
+			COALESCE(pj.user_id, ''),
+			pj.payload,
+			pj.status,
+			pj.total_count,
+			pj.success_count,
+			pj.failure_count,
+			pj.created_at,
+			pj.completed_at,
+			pj.scheduled_at
+		FROM publish_jobs pj
+		WHERE pj.topic_id = $1
+			AND ($2 = '' OR pj.status = $2)
+			AND (
+				NULLIF($3, '') IS NULL
+				OR (COALESCE(pj.scheduled_at, pj.created_at), pj.id) < (NULLIF($3, '')::timestamptz, $4)
+			)
+		ORDER BY COALESCE(pj.scheduled_at, pj.created_at) DESC, pj.id DESC
+		LIMIT $5`,
+		topicID,
+		query.Status,
+		query.Cursor.SortValue,
+		query.Cursor.ID,
+		query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error listing topic notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []PublishJob
+	for rows.Next() {
+		job, err := scanPublishJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning topic notification: %w", err)
 		}
-		job.Payload = &payload
+		jobs = append(jobs, *job)
 	}
 
-	return &job, nil
+	return jobs, rows.Err()
+}
+
+func (s *PostgresStore) ListUserNotifications(ctx context.Context, userID string, query NotificationListQuery) ([]PublishJob, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`WITH eligible_jobs AS (
+			SELECT
+				pj.id,
+				pj.topic_id,
+				pj.user_id,
+				pj.payload,
+				pj.status,
+				pj.total_count,
+				pj.success_count,
+				pj.failure_count,
+				pj.created_at,
+				pj.completed_at,
+				pj.scheduled_at,
+				COALESCE(pj.scheduled_at, pj.created_at) AS effective_at
+			FROM publish_jobs pj
+			WHERE pj.user_id = $1
+
+			UNION ALL
+
+			SELECT
+				pj.id,
+				pj.topic_id,
+				pj.user_id,
+				pj.payload,
+				pj.status,
+				pj.total_count,
+				pj.success_count,
+				pj.failure_count,
+				pj.created_at,
+				pj.completed_at,
+				pj.scheduled_at,
+				COALESCE(pj.scheduled_at, pj.created_at) AS effective_at
+			FROM publish_jobs pj
+			INNER JOIN user_topic_subscriptions sub
+				ON sub.topic_id = pj.topic_id
+				AND sub.user_id = $1
+			WHERE pj.topic_id IS NOT NULL
+				AND COALESCE(pj.scheduled_at, pj.created_at) >= sub.created_at
+		)
+		SELECT
+			id,
+			COALESCE(topic_id, ''),
+			COALESCE(user_id, ''),
+			payload,
+			status,
+			total_count,
+			success_count,
+			failure_count,
+			created_at,
+			completed_at,
+			scheduled_at
+		FROM eligible_jobs
+		WHERE ($2 = '' OR status = $2)
+			AND (
+				NULLIF($3, '') IS NULL
+				OR (effective_at, id) < (NULLIF($3, '')::timestamptz, $4)
+			)
+		ORDER BY effective_at DESC, id DESC
+		LIMIT $5`,
+		userID,
+		query.Status,
+		query.Cursor.SortValue,
+		query.Cursor.ID,
+		query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error listing user notifications: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []PublishJob
+	for rows.Next() {
+		job, err := scanPublishJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning user notification: %w", err)
+		}
+		jobs = append(jobs, *job)
+	}
+
+	return jobs, rows.Err()
 }
 
 func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
@@ -688,7 +969,12 @@ func (s *PostgresStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, re
 	}
 
 	for _, r := range receipts {
-		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt); err != nil {
+		dispatchedAt, err := parseRequiredPostgresTime(r.DispatchedAt)
+		if err != nil {
+			_ = stmt.Close()
+			return fmt.Errorf("error parsing dispatched_at for job %s token %s: %w", r.JobID, r.TokenID, err)
+		}
+		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, dispatchedAt); err != nil {
 			_ = stmt.Close()
 			return fmt.Errorf("error buffering receipt for job %s token %s: %w", r.JobID, r.TokenID, err)
 		}
@@ -731,8 +1017,13 @@ func (s *PostgresStore) CompleteJobIfDone(ctx context.Context, jobID string) err
 // Delivery receipt operations
 
 func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
+	dispatchedAt, err := parseRequiredPostgresTime(receipt.DispatchedAt)
+	if err != nil {
+		return fmt.Errorf("error parsing dispatched_at: %w", err)
+	}
+
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
-	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
+	_, err = s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, dispatchedAt)
 	return err
 }
 
@@ -748,28 +1039,11 @@ func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, err
 
 	var jobs []PublishJob
 	for rows.Next() {
-		var job PublishJob
-		var payloadJSON []byte
-		var completedAt sql.NullTime
-		var scheduledAt sql.NullTime
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt, &scheduledAt); err != nil {
+		job, err := scanPublishJob(rows)
+		if err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
 		}
-		if completedAt.Valid {
-			job.CompletedAt = completedAt.Time.UTC().Format(time.RFC3339)
-		}
-		if scheduledAt.Valid {
-			job.ScheduledAt = scheduledAt.Time.UTC().Format(time.RFC3339)
-		}
-		// Deserialize payload from JSON
-		if len(payloadJSON) > 0 {
-			var payload model.NotificationPayload
-			if err := json.Unmarshal(payloadJSON, &payload); err != nil {
-				return nil, fmt.Errorf("error deserializing payload: %w", err)
-			}
-			job.Payload = &payload
-		}
-		jobs = append(jobs, job)
+		jobs = append(jobs, *job)
 	}
 
 	return jobs, rows.Err()

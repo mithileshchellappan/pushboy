@@ -74,6 +74,10 @@ func (s *PushboyService) GetUser(ctx context.Context, userID string) (*storage.U
 	return s.store.GetUser(ctx, userID)
 }
 
+func (s *PushboyService) ListUsers(ctx context.Context, query storage.PageQuery) ([]storage.User, error) {
+	return s.store.ListUsers(ctx, query)
+}
+
 func (s *PushboyService) ensureUser(ctx context.Context, userID string) (*storage.User, error) {
 	user, err := s.store.GetUser(ctx, userID)
 	if err == nil {
@@ -183,6 +187,14 @@ func (s *PushboyService) GetTopicSubscriberCount(ctx context.Context, topicID st
 	return s.store.GetTopicSubscriberCount(ctx, topicID)
 }
 
+func (s *PushboyService) ListTopicSubscribers(ctx context.Context, topicID string, query storage.PageQuery) ([]storage.TopicSubscriber, error) {
+	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		return nil, err
+	}
+
+	return s.store.ListTopicSubscribers(ctx, topicID, query)
+}
+
 // User-Topic subscription operations
 
 func (s *PushboyService) SubscribeUserToTopic(ctx context.Context, userID string, topicID string) (*storage.UserTopicSubscription, error) {
@@ -279,6 +291,22 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 
 func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*storage.PublishJob, error) {
 	return s.store.GetJobStatus(ctx, jobID)
+}
+
+func (s *PushboyService) ListTopicNotifications(ctx context.Context, topicID string, query storage.NotificationListQuery) ([]storage.PublishJob, error) {
+	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		return nil, err
+	}
+
+	return s.store.ListTopicNotifications(ctx, topicID, query)
+}
+
+func (s *PushboyService) ListUserNotifications(ctx context.Context, userID string, query storage.NotificationListQuery) ([]storage.PublishJob, error) {
+	if _, err := s.store.GetUser(ctx, userID); err != nil {
+		return nil, err
+	}
+
+	return s.store.ListUserNotifications(ctx, userID, query)
 }
 
 func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
