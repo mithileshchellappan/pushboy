@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
@@ -159,14 +160,14 @@ func TestTopicNotificationsPassStatusFilter(t *testing.T) {
 			if topicID != "topic-1" {
 				t.Fatalf("unexpected topicID %q", topicID)
 			}
-			if query.Status != "COMPLETED" {
+			if query.Status != model.NotificationJobStatusCompleted {
 				t.Fatalf("expected status COMPLETED, got %q", query.Status)
 			}
 			if query.Limit != defaultPageLimit+1 {
 				t.Fatalf("expected default storage limit %d, got %d", defaultPageLimit+1, query.Limit)
 			}
 			return []storage.PublishJob{
-				{ID: "job-1", TopicID: "topic-1", Status: "COMPLETED", CreatedAt: "2026-05-01T10:00:00Z"},
+				{ID: "job-1", TopicID: "topic-1", Status: model.NotificationJobStatusCompleted, CreatedAt: "2026-05-01T10:00:00Z"},
 			}, nil
 		},
 	}
@@ -186,7 +187,7 @@ func TestCanonicalNotificationLookupAndOldRouteRemoval(t *testing.T) {
 			if jobID != "job-1" {
 				t.Fatalf("unexpected jobID %q", jobID)
 			}
-			return &storage.PublishJob{ID: "job-1", Status: "QUEUED", CreatedAt: "2026-05-01T10:00:00Z"}, nil
+			return &storage.PublishJob{ID: "job-1", Status: model.NotificationJobStatusQueued, CreatedAt: "2026-05-01T10:00:00Z"}, nil
 		},
 	})
 

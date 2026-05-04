@@ -97,7 +97,7 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 	}
 
 	if topicID != "" {
-		if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+		if _, err := s.requireTopic(ctx, topicID); err != nil {
 			return nil, nil, fmt.Errorf("topic not found: %w", err)
 		}
 		sub := &storage.LiveActivityUserTopicSubscription{
@@ -144,10 +144,10 @@ func (s *PushboyService) RegisterUserToLATopic(ctx context.Context, userID strin
 	if userID == "" || topicID == "" {
 		return nil, fmt.Errorf("userId and topicId are required")
 	}
-	if _, err := s.store.GetUser(ctx, userID); err != nil {
+	if _, err := s.requireUser(ctx, userID); err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
-	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+	if _, err := s.requireTopic(ctx, topicID); err != nil {
 		return nil, fmt.Errorf("topic not found: %w", err)
 	}
 
@@ -234,12 +234,12 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		return nil, fmt.Errorf("provide either userId or topicId, not both")
 	}
 	if req.UserID != "" {
-		if _, err := s.store.GetUser(ctx, req.UserID); err != nil {
+		if _, err := s.requireUser(ctx, req.UserID); err != nil {
 			return nil, fmt.Errorf("user not found: %w", err)
 		}
 	}
 	if req.TopicID != "" {
-		if _, err := s.store.GetTopicByID(ctx, req.TopicID); err != nil {
+		if _, err := s.requireTopic(ctx, req.TopicID); err != nil {
 			return nil, fmt.Errorf("topic not found: %w", err)
 		}
 	}

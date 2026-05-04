@@ -2,12 +2,10 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,35 +25,6 @@ type Server struct {
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
-
-const (
-	defaultPageLimit = 50
-	maxPageLimit     = 200
-	cursorVersion    = 1
-)
-
-var validNotificationStatuses = map[string]struct{}{
-	"QUEUED":      {},
-	"SCHEDULED":   {},
-	"IN_PROGRESS": {},
-	"DISPATCHED":  {},
-	"COMPLETED":   {},
-	"FAILED":      {},
-}
-
-type listResponse[T any] struct {
-	Items      []T    `json:"items"`
-	NextCursor string `json:"next_cursor"`
-	HasMore    bool   `json:"has_more"`
-}
-
-type pageCursor struct {
-	Version   int    `json:"v"`
-	Route     string `json:"route"`
-	Status    string `json:"status,omitempty"`
-	SortValue string `json:"sort_value"`
-	ID        string `json:"id"`
-}
 
 func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
 	return &Server{service: s, jobPipeline: jobPipeline}
@@ -142,148 +111,13 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 
-		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, "FAILED"); updateErr != nil {
+		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, model.NotificationJobStatusFailed); updateErr != nil {
 			log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobID, updateErr)
 		}
 		return err
 	}
 
 	return nil
-}
-
-func parseLimit(raw string) (int, error) {
-	if raw == "" {
-		return defaultPageLimit, nil
-	}
-
-	limit, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, err
-	}
-	if limit <= 0 || limit > maxPageLimit {
-		return 0, errors.New("limit out of range")
-	}
-
-	return limit, nil
-}
-
-func parseNotificationStatus(raw string) (string, error) {
-	if raw == "" {
-		return "", nil
-	}
-	if _, ok := validNotificationStatuses[raw]; !ok {
-		return "", errors.New("invalid status")
-	}
-	return raw, nil
-}
-
-func parseCursor(raw string, route string, status string) (storage.PageCursor, error) {
-	if raw == "" {
-		return storage.PageCursor{}, nil
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return storage.PageCursor{}, err
-	}
-
-	var cursor pageCursor
-	if err := json.Unmarshal(payload, &cursor); err != nil {
-		return storage.PageCursor{}, err
-	}
-
-	if cursor.Version != cursorVersion || cursor.Route != route || cursor.Status != status || cursor.SortValue == "" || cursor.ID == "" {
-		return storage.PageCursor{}, errors.New("invalid cursor")
-	}
-	if _, err := time.Parse(time.RFC3339, cursor.SortValue); err != nil {
-		return storage.PageCursor{}, err
-	}
-
-	return storage.PageCursor{
-		SortValue: cursor.SortValue,
-		ID:        cursor.ID,
-	}, nil
-}
-
-func encodeCursor(route string, status string, sortValue string, id string) string {
-	payload, err := json.Marshal(pageCursor{
-		Version:   cursorVersion,
-		Route:     route,
-		Status:    status,
-		SortValue: sortValue,
-		ID:        id,
-	})
-	if err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(payload)
-}
-
-func pageQueryFromRequest(r *http.Request, route string) (storage.PageQuery, int, error) {
-	limit, err := parseLimit(r.URL.Query().Get("limit"))
-	if err != nil {
-		return storage.PageQuery{}, 0, err
-	}
-
-	cursor, err := parseCursor(r.URL.Query().Get("cursor"), route, "")
-	if err != nil {
-		return storage.PageQuery{}, 0, err
-	}
-
-	return storage.PageQuery{
-		Limit:  limit + 1,
-		Cursor: cursor,
-	}, limit, nil
-}
-
-func notificationListQueryFromRequest(r *http.Request, route string) (storage.NotificationListQuery, int, error) {
-	status, err := parseNotificationStatus(r.URL.Query().Get("status"))
-	if err != nil {
-		return storage.NotificationListQuery{}, 0, err
-	}
-
-	limit, err := parseLimit(r.URL.Query().Get("limit"))
-	if err != nil {
-		return storage.NotificationListQuery{}, 0, err
-	}
-
-	cursor, err := parseCursor(r.URL.Query().Get("cursor"), route, status)
-	if err != nil {
-		return storage.NotificationListQuery{}, 0, err
-	}
-
-	return storage.NotificationListQuery{
-		Limit:  limit + 1,
-		Cursor: cursor,
-		Status: status,
-	}, limit, nil
-}
-
-func effectiveJobSortValue(job storage.PublishJob) string {
-	if job.ScheduledAt != "" {
-		return job.ScheduledAt
-	}
-	return job.CreatedAt
-}
-
-func makeListResponse[T any](items []T, limit int, route string, status string, keyFunc func(T) (string, string)) listResponse[T] {
-	if items == nil {
-		items = make([]T, 0)
-	}
-
-	response := listResponse[T]{
-		Items: items,
-	}
-
-	if len(items) <= limit {
-		return response
-	}
-
-	response.HasMore = true
-	response.Items = items[:limit]
-	sortValue, id := keyFunc(response.Items[len(response.Items)-1])
-	response.NextCursor = encodeCursor(route, status, sortValue, id)
-	return response
 }
 
 // Health check
@@ -569,7 +403,7 @@ func (s *Server) handleListUserNotifications(w http.ResponseWriter, r *http.Requ
 	}
 
 	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
-		return effectiveJobSortValue(job), job.ID
+		return notificationJobCursorTime(job), job.ID
 	})
 	s.respond(w, r, response, http.StatusOK)
 }
@@ -622,6 +456,10 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "User not found", http.StatusNotFound)
 			return
 		}
+		if strings.Contains(err.Error(), "scheduledAt") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Error sending notification", http.StatusInternalServerError)
 		log.Printf("Error sending notification to user: %v", err)
 		return
@@ -663,20 +501,14 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ID == "" || req.Name == "" {
-		http.Error(w, "topic id and name are required", http.StatusBadRequest)
-		return
-	}
-
-	if strings.Contains(req.ID, " ") {
-		http.Error(w, "topic id cannot contain spaces", http.StatusBadRequest)
-		return
-	}
-
 	topic, err := s.service.CreateTopic(r.Context(), req.ID, req.Name)
 	if err != nil {
 		if errors.Is(err, storage.Errors.AlreadyExists) {
 			http.Error(w, "Topic already exists", http.StatusConflict)
+			return
+		}
+		if strings.Contains(err.Error(), "topic id") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		http.Error(w, "Error creating topic", http.StatusInternalServerError)
@@ -814,7 +646,7 @@ func (s *Server) handleListTopicNotifications(w http.ResponseWriter, r *http.Req
 	}
 
 	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
-		return effectiveJobSortValue(job), job.ID
+		return notificationJobCursorTime(job), job.ID
 	})
 	s.respond(w, r, response, http.StatusOK)
 }

@@ -27,7 +27,7 @@ type PageQuery struct {
 type NotificationListQuery struct {
 	Limit  int
 	Cursor PageCursor
-	Status string
+	Status model.NotificationJobStatus
 }
 
 // Token represents a device token for push notifications
@@ -68,7 +68,7 @@ type PublishJob struct {
 	TopicID      string
 	UserID       string
 	Payload      *model.NotificationPayload // Full notification content
-	Status       string
+	Status       model.NotificationJobStatus
 	TotalCount   int
 	SuccessCount int
 	FailureCount int
@@ -172,7 +172,7 @@ type Store interface {
 	CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
-	UpdateJobStatus(ctx context.Context, jobID string, status string) error
+	UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error
 	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
 	ListTopicNotifications(ctx context.Context, topicID string, query NotificationListQuery) ([]PublishJob, error)

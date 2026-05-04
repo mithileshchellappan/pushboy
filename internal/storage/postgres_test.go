@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-func TestFormatPostgresTimePreservesSubsecondPrecision(t *testing.T) {
+func TestFormatStorageTimePreservesSubsecondPrecision(t *testing.T) {
 	input := time.Date(2026, 5, 1, 10, 30, 0, 123456789, time.UTC)
 
-	got := formatPostgresTime(input)
+	got := formatStorageTime(input)
 	if got != "2026-05-01T10:30:00.123456789Z" {
 		t.Fatalf("expected nanosecond precision, got %q", got)
 	}

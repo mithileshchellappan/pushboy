@@ -32,7 +32,7 @@ func formatTimePtr(t sql.NullTime) string {
 	if !t.Valid {
 		return ""
 	}
-	return t.Time.UTC().Format(time.RFC3339)
+	return formatStorageTime(t.Time)
 }
 
 func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivityToken) error {
@@ -59,8 +59,8 @@ func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivi
 
 	token.Platform = model.Platform(platform)
 	token.TokenType = model.LiveActivityTokenType(tokenType)
-	token.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	token.LastSeenAt = lastSeenAt.UTC().Format(time.RFC3339)
+	token.CreatedAt = formatStorageTime(createdAt)
+	token.LastSeenAt = formatStorageTime(lastSeenAt)
 	token.ExpiresAt = formatTimePtr(expiresAt)
 	token.InvalidatedAt = formatTimePtr(invalidatedAt)
 	return nil
@@ -109,8 +109,8 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 	job.Status = model.LiveActivityJobStatus(status)
 	job.LatestPayload = latestPayload
 	job.Options = options
-	job.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	job.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
+	job.CreatedAt = formatStorageTime(createdAt)
+	job.UpdatedAt = formatStorageTime(updatedAt)
 	job.ExpiresAt = formatTimePtr(expiresAt)
 	job.ClosedAt = formatTimePtr(closedAt)
 	return nil
@@ -131,7 +131,7 @@ func laConstraint(err error) string {
 }
 
 func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := formatStorageTime(time.Now().UTC())
 	if token.ID == "" {
 		token.ID = token.Token
 	}
@@ -211,7 +211,7 @@ func (s *PostgresStore) SubscribeUserToLATopic(ctx context.Context, sub *LiveAct
 	if err := row.Scan(&stored.ID, &stored.UserID, &stored.TopicID, &createdAt); err != nil {
 		return nil, fmt.Errorf("error subscribing user to LA topic: %w", err)
 	}
-	stored.CreatedAt = createdAt.UTC().Format(time.RFC3339)
+	stored.CreatedAt = formatStorageTime(createdAt)
 	return &stored, nil
 }
 
@@ -693,7 +693,7 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 			return fmt.Errorf("error failing empty LA start job: %w", err)
 		}
 	case string(model.LiveActivityActionEnd):
-		if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC().Format(time.RFC3339)); err != nil && !errors.Is(err, Errors.NotFound) {
+		if err := s.CloseLAJobIfActive(ctx, jobID, formatStorageTime(time.Now().UTC())); err != nil && !errors.Is(err, Errors.NotFound) {
 			return fmt.Errorf("error closing empty LA end job: %w", err)
 		}
 	}

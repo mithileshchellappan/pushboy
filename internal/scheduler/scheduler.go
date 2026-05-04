@@ -77,7 +77,7 @@ func (s *Scheduler) processScheduledJobs(ctx context.Context) {
 			statusCtx, statusCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer statusCancel()
 
-			if updateErr := s.store.UpdateJobStatus(statusCtx, jobItem.ID, "FAILED"); updateErr != nil {
+			if updateErr := s.store.UpdateJobStatus(statusCtx, jobItem.ID, model.NotificationJobStatusFailed); updateErr != nil {
 				log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobItem.ID, updateErr)
 			}
 		}

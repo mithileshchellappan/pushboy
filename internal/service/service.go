@@ -78,6 +78,10 @@ func (s *PushboyService) ListUsers(ctx context.Context, query storage.PageQuery)
 	return s.store.ListUsers(ctx, query)
 }
 
+func (s *PushboyService) requireUser(ctx context.Context, userID string) (*storage.User, error) {
+	return s.store.GetUser(ctx, userID)
+}
+
 func (s *PushboyService) ensureUser(ctx context.Context, userID string) (*storage.User, error) {
 	user, err := s.store.GetUser(ctx, userID)
 	if err == nil {
@@ -160,6 +164,9 @@ func (s *PushboyService) CreateTopic(ctx context.Context, ID string, name string
 	if ID == "" || name == "" {
 		return nil, fmt.Errorf("topic id and name are required")
 	}
+	if strings.Contains(ID, " ") {
+		return nil, fmt.Errorf("topic id cannot contain spaces")
+	}
 
 	topic := &storage.Topic{ID: ID, Name: name}
 
@@ -179,6 +186,10 @@ func (s *PushboyService) GetTopicByID(ctx context.Context, topicID string) (*sto
 	return s.store.GetTopicByID(ctx, topicID)
 }
 
+func (s *PushboyService) requireTopic(ctx context.Context, topicID string) (*storage.Topic, error) {
+	return s.store.GetTopicByID(ctx, topicID)
+}
+
 func (s *PushboyService) DeleteTopic(ctx context.Context, topicID string) error {
 	return s.store.DeleteTopic(ctx, topicID)
 }
@@ -188,7 +199,7 @@ func (s *PushboyService) GetTopicSubscriberCount(ctx context.Context, topicID st
 }
 
 func (s *PushboyService) ListTopicSubscribers(ctx context.Context, topicID string, query storage.PageQuery) ([]storage.TopicSubscriber, error) {
-	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+	if _, err := s.requireTopic(ctx, topicID); err != nil {
 		return nil, err
 	}
 
@@ -199,13 +210,13 @@ func (s *PushboyService) ListTopicSubscribers(ctx context.Context, topicID strin
 
 func (s *PushboyService) SubscribeUserToTopic(ctx context.Context, userID string, topicID string) (*storage.UserTopicSubscription, error) {
 	// Verify user exists
-	_, err := s.store.GetUser(ctx, userID)
+	_, err := s.requireUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("user not found: %w", err)
 	}
 
 	// Verify topic exists
-	_, err = s.store.GetTopicByID(ctx, topicID)
+	_, err = s.requireTopic(ctx, topicID)
 	if err != nil {
 		return nil, fmt.Errorf("topic not found: %w", err)
 	}
@@ -234,21 +245,15 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 		return nil, err
 	}
 
-	var status string
-	if scheduledAt == "" {
-		status = "QUEUED"
-	} else {
-		status = "SCHEDULED"
-	}
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		UserID:       userID,
 		Payload:      payload,
-		Status:       status,
+		Status:       notificationJobStatusForSchedule(scheduledAt),
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 		ScheduledAt:  scheduledAt,
 	}
 
@@ -258,7 +263,7 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 // Publish job operations
 
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
-	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+	if _, err := s.requireTopic(ctx, topicID); err != nil {
 		return nil, err
 	}
 
@@ -267,22 +272,15 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 		return nil, err
 	}
 
-	var status string
-	if scheduledAt == "" {
-		status = "QUEUED"
-	} else {
-		status = "SCHEDULED"
-	}
-
 	job := &storage.PublishJob{
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
 		Payload:      payload,
-		Status:       status,
+		Status:       notificationJobStatusForSchedule(scheduledAt),
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 		ScheduledAt:  scheduledAt,
 	}
 
@@ -294,7 +292,7 @@ func (s *PushboyService) GetJobStatus(ctx context.Context, jobID string) (*stora
 }
 
 func (s *PushboyService) ListTopicNotifications(ctx context.Context, topicID string, query storage.NotificationListQuery) ([]storage.PublishJob, error) {
-	if _, err := s.store.GetTopicByID(ctx, topicID); err != nil {
+	if _, err := s.requireTopic(ctx, topicID); err != nil {
 		return nil, err
 	}
 
@@ -302,13 +300,20 @@ func (s *PushboyService) ListTopicNotifications(ctx context.Context, topicID str
 }
 
 func (s *PushboyService) ListUserNotifications(ctx context.Context, userID string, query storage.NotificationListQuery) ([]storage.PublishJob, error) {
-	if _, err := s.store.GetUser(ctx, userID); err != nil {
+	if _, err := s.requireUser(ctx, userID); err != nil {
 		return nil, err
 	}
 
 	return s.store.ListUserNotifications(ctx, userID, query)
 }
 
-func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error {
 	return s.store.UpdateJobStatus(ctx, jobID, status)
+}
+
+func notificationJobStatusForSchedule(scheduledAt string) model.NotificationJobStatus {
+	if scheduledAt == "" {
+		return model.NotificationJobStatusQueued
+	}
+	return model.NotificationJobStatusScheduled
 }

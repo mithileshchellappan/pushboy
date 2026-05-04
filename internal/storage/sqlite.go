@@ -402,7 +402,7 @@ func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*P
 
 	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, string(job.Status), job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -428,7 +428,7 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 	}
 
 	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, string(job.Status), job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating user publish job: %w", err)
 	}
@@ -448,10 +448,12 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
+		var status string
 		var completedAt sql.NullString
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
 		}
+		job.Status = model.NotificationJobStatus(status)
 		if completedAt.Valid {
 			job.CompletedAt = completedAt.String
 		}
@@ -469,14 +471,14 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	return jobs, rows.Err()
 }
 
-func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error {
 	var query string
-	if status == "COMPLETED" {
+	if status == model.NotificationJobStatusCompleted {
 		query = `UPDATE publish_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`
 	} else {
 		query = `UPDATE publish_jobs SET status = ? WHERE id = ?`
 	}
-	_, err := s.db.ExecContext(ctx, query, status, jobID)
+	_, err := s.db.ExecContext(ctx, query, string(status), jobID)
 	return err
 }
 
@@ -526,13 +528,15 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 
 	var job PublishJob
 	var payloadJSON []byte
-	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &job.CompletedAt)
+	var status string
+	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &job.CompletedAt)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting job status: %w", err)
 	}
+	job.Status = model.NotificationJobStatus(status)
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {

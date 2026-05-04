@@ -74,7 +74,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		ID:           "job-old-topic",
 		TopicID:      "topic-1",
 		Payload:      payload,
-		Status:       "COMPLETED",
+		Status:       model.NotificationJobStatusCompleted,
 		CreatedAt:    base.Format(time.RFC3339),
 		TotalCount:   1,
 		SuccessCount: 1,
@@ -91,7 +91,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		ID:        "job-direct",
 		UserID:    "user-1",
 		Payload:   payload,
-		Status:    "QUEUED",
+		Status:    model.NotificationJobStatusQueued,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if _, err := store.CreateUserPublishJob(ctx, directJob); err != nil {
@@ -102,7 +102,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		ID:          "job-scheduled-topic",
 		TopicID:     "topic-1",
 		Payload:     payload,
-		Status:      "SCHEDULED",
+		Status:      model.NotificationJobStatusScheduled,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
 		ScheduledAt: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
 	}
@@ -139,7 +139,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 
 	scheduledOnly, err := store.ListUserNotifications(ctx, "user-1", NotificationListQuery{
 		Limit:  10,
-		Status: "SCHEDULED",
+		Status: model.NotificationJobStatusScheduled,
 	})
 	if err != nil {
 		t.Fatalf("list scheduled notifications: %v", err)
