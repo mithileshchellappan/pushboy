@@ -37,6 +37,25 @@ paths:
                 type: string
                 example: pong
 
+  /v1/users:
+    get:
+      tags: [Users]
+      summary: List users
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Users ordered by creation time descending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedUsers"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/users/:
     post:
       tags: [Users]
@@ -203,6 +222,31 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
 
+  /v1/users/{userID}/notifications:
+    parameters:
+      - $ref: "#/components/parameters/UserID"
+    get:
+      tags: [Notifications]
+      summary: List notifications eligible for a user
+      description: Returns direct user sends and topic sends where the user is currently subscribed and the job effective time is on or after the subscription time. This is eligibility, not delivery history.
+      parameters:
+        - $ref: "#/components/parameters/NotificationStatus"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Eligible notification jobs ordered by effective time descending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedPublishJobs"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/users/{userID}/send:
     parameters:
       - $ref: "#/components/parameters/UserID"
@@ -318,6 +362,53 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
 
+  /v1/topics/{topicID}/subscribers:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+    get:
+      tags: [Subscriptions]
+      summary: List topic subscribers
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Current subscribers ordered by subscription time descending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedTopicSubscribers"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v1/topics/{topicID}/notifications:
+    parameters:
+      - $ref: "#/components/parameters/TopicID"
+    get:
+      tags: [Notifications]
+      summary: List notifications for a topic
+      parameters:
+        - $ref: "#/components/parameters/NotificationStatus"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Topic notification jobs ordered by effective time descending.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedPublishJobs"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/topics/{topicID}/publish:
     parameters:
       - $ref: "#/components/parameters/TopicID"
@@ -346,17 +437,15 @@ paths:
         "503":
           $ref: "#/components/responses/TextError"
 
-  /v1/topics/{topicID}/publish/{jobID}:
+  /v1/notifications/{jobID}:
     parameters:
-      - $ref: "#/components/parameters/TopicID"
       - $ref: "#/components/parameters/JobID"
     get:
       tags: [Notifications]
-      summary: Get publish job status
-      description: The current handler looks up by jobID; topicID is not used for filtering.
+      summary: Get notification job
       responses:
         "200":
-          description: Job status.
+          description: Notification job.
           content:
             application/json:
               schema:
@@ -519,6 +608,31 @@ components:
       schema:
         type: string
       example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque URL-safe cursor returned by the previous page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size. Defaults to 50 and must be between 1 and 200.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    NotificationStatus:
+      name: status
+      in: query
+      required: false
+      description: Exact uppercase notification job status. Omit for no status filter.
+      schema:
+        type: string
+        enum: [QUEUED, SCHEDULED, IN_PROGRESS, DISPATCHED, COMPLETED, FAILED]
 
   responses:
     TextError:
@@ -658,6 +772,21 @@ components:
           type: string
           example: "2026-05-01T10:30:00Z"
 
+    PaginatedUsers:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        next_cursor:
+          type: string
+          example: ""
+        has_more:
+          type: boolean
+          example: false
+
     Token:
       type: object
       required: [ID, UserID, Platform, Token, CreatedAt]
@@ -697,6 +826,35 @@ components:
         CreatedAt:
           type: string
 
+    TopicSubscriber:
+      type: object
+      required: [ID, CreatedAt, SubscribedAt]
+      properties:
+        ID:
+          type: string
+          example: user-123
+        CreatedAt:
+          type: string
+          example: "2026-05-01T10:00:00Z"
+        SubscribedAt:
+          type: string
+          example: "2026-05-01T10:30:00Z"
+
+    PaginatedTopicSubscribers:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicSubscriber"
+        next_cursor:
+          type: string
+          example: ""
+        has_more:
+          type: boolean
+          example: false
+
     PublishJob:
       type: object
       required: [ID, Status, TotalCount, SuccessCount, FailureCount, CreatedAt]
@@ -711,7 +869,7 @@ components:
           $ref: "#/components/schemas/NotificationPayload"
         Status:
           type: string
-          enum: [QUEUED, SCHEDULED, IN_PROGRESS, COMPLETED, FAILED]
+          enum: [QUEUED, SCHEDULED, IN_PROGRESS, DISPATCHED, COMPLETED, FAILED]
         TotalCount:
           type: integer
         SuccessCount:
@@ -724,6 +882,21 @@ components:
           type: string
         ScheduledAt:
           type: string
+
+    PaginatedPublishJobs:
+      type: object
+      required: [items, next_cursor, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublishJob"
+        next_cursor:
+          type: string
+          example: ""
+        has_more:
+          type: boolean
+          example: false
 
     LiveActivityTokenType:
       type: string

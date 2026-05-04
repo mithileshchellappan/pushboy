@@ -14,6 +14,22 @@ type User struct {
 	CreatedAt string
 }
 
+type PageCursor struct {
+	SortValue string
+	ID        string
+}
+
+type PageQuery struct {
+	Limit  int
+	Cursor PageCursor
+}
+
+type NotificationListQuery struct {
+	Limit  int
+	Cursor PageCursor
+	Status model.NotificationJobStatus
+}
+
 // Token represents a device token for push notifications
 type Token struct {
 	ID        string
@@ -37,6 +53,12 @@ type UserTopicSubscription struct {
 	CreatedAt string
 }
 
+type TopicSubscriber struct {
+	ID           string
+	CreatedAt    string
+	SubscribedAt string
+}
+
 // NotificationPayload stores the full notification content as JSON
 // This is separate from dispatch.NotificationPayload to avoid circular imports
 
@@ -46,7 +68,7 @@ type PublishJob struct {
 	TopicID      string
 	UserID       string
 	Payload      *model.NotificationPayload // Full notification content
-	Status       string
+	Status       model.NotificationJobStatus
 	TotalCount   int
 	SuccessCount int
 	FailureCount int
@@ -122,6 +144,7 @@ type Store interface {
 	// User operations
 	CreateUser(ctx context.Context, user *User) (*User, error)
 	GetUser(ctx context.Context, userID string) (*User, error)
+	ListUsers(ctx context.Context, query PageQuery) ([]User, error)
 	DeleteUser(ctx context.Context, userID string) error
 
 	// Token operations
@@ -142,15 +165,18 @@ type Store interface {
 	UnsubscribeUserFromTopic(ctx context.Context, userID, topicID string) error
 	GetUserSubscriptions(ctx context.Context, userID string) ([]UserTopicSubscription, error)
 	GetTopicSubscribers(ctx context.Context, topicID string) ([]User, error)
+	ListTopicSubscribers(ctx context.Context, topicID string, query PageQuery) ([]TopicSubscriber, error)
 	GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error)
 
 	// Publish job operations
 	CreatePublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	CreateUserPublishJob(ctx context.Context, job *PublishJob) (*PublishJob, error)
 	FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error)
-	UpdateJobStatus(ctx context.Context, jobID string, status string) error
+	UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error
 	FinalizeJobDispatch(ctx context.Context, jobID string, totalCount int) error
 	GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error)
+	ListTopicNotifications(ctx context.Context, topicID string, query NotificationListQuery) ([]PublishJob, error)
+	ListUserNotifications(ctx context.Context, userID string, query NotificationListQuery) ([]PublishJob, error)
 	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
 	IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error
 	CompleteJobIfDone(ctx context.Context, jobID string) error

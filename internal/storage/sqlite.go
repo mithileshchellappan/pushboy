@@ -20,6 +20,8 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+var _ Store = (*SQLiteStore)(nil)
+
 func NewSQLStore(dataSourceName string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite3", dataSourceName)
 	if err != nil {
@@ -93,6 +95,10 @@ func (s *SQLiteStore) GetUser(ctx context.Context, userID string) (*User, error)
 	}
 
 	return &user, nil
+}
+
+func (s *SQLiteStore) ListUsers(ctx context.Context, query PageQuery) ([]User, error) {
+	return nil, fmt.Errorf("list users is only supported by postgres")
 }
 
 func (s *SQLiteStore) DeleteUser(ctx context.Context, userID string) error {
@@ -371,6 +377,10 @@ func (s *SQLiteStore) GetTopicSubscribers(ctx context.Context, topicID string) (
 	return users, rows.Err()
 }
 
+func (s *SQLiteStore) ListTopicSubscribers(ctx context.Context, topicID string, query PageQuery) ([]TopicSubscriber, error) {
+	return nil, fmt.Errorf("list topic subscribers is only supported by postgres")
+}
+
 func (s *SQLiteStore) GetTopicSubscriberCount(ctx context.Context, topicID string) (int, error) {
 	var count int
 	query := `SELECT COUNT(*) FROM user_topic_subscriptions WHERE topic_id = ?`
@@ -392,7 +402,7 @@ func (s *SQLiteStore) CreatePublishJob(ctx context.Context, job *PublishJob) (*P
 
 	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at) 
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, string(job.Status), job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating publish job: %w", err)
 	}
@@ -418,7 +428,7 @@ func (s *SQLiteStore) CreateUserPublishJob(ctx context.Context, job *PublishJob)
 	}
 
 	query := `INSERT INTO publish_jobs(id, user_id, payload, status, total_count, success_count, failure_count, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`
-	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, job.Status, job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
+	_, err = s.db.ExecContext(ctx, query, job.ID, job.UserID, payloadJSON, string(job.Status), job.TotalCount, job.SuccessCount, job.FailureCount, job.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error creating user publish job: %w", err)
 	}
@@ -438,10 +448,12 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	for rows.Next() {
 		var job PublishJob
 		var payloadJSON []byte
+		var status string
 		var completedAt sql.NullString
-		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
+		if err := rows.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &completedAt); err != nil {
 			return nil, fmt.Errorf("error scanning job: %w", err)
 		}
+		job.Status = model.NotificationJobStatus(status)
 		if completedAt.Valid {
 			job.CompletedAt = completedAt.String
 		}
@@ -459,14 +471,14 @@ func (s *SQLiteStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publis
 	return jobs, rows.Err()
 }
 
-func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status string) error {
+func (s *SQLiteStore) UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error {
 	var query string
-	if status == "COMPLETED" {
+	if status == model.NotificationJobStatusCompleted {
 		query = `UPDATE publish_jobs SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`
 	} else {
 		query = `UPDATE publish_jobs SET status = ? WHERE id = ?`
 	}
-	_, err := s.db.ExecContext(ctx, query, status, jobID)
+	_, err := s.db.ExecContext(ctx, query, string(status), jobID)
 	return err
 }
 
@@ -516,13 +528,15 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 
 	var job PublishJob
 	var payloadJSON []byte
-	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &job.Status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &job.CompletedAt)
+	var status string
+	err := row.Scan(&job.ID, &job.TopicID, &job.UserID, &payloadJSON, &status, &job.TotalCount, &job.SuccessCount, &job.FailureCount, &job.CreatedAt, &job.CompletedAt)
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting job status: %w", err)
 	}
+	job.Status = model.NotificationJobStatus(status)
 
 	// Deserialize payload from JSON
 	if len(payloadJSON) > 0 {
@@ -534,6 +548,14 @@ func (s *SQLiteStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJ
 	}
 
 	return &job, nil
+}
+
+func (s *SQLiteStore) ListTopicNotifications(ctx context.Context, topicID string, query NotificationListQuery) ([]PublishJob, error) {
+	return nil, fmt.Errorf("list topic notifications is only supported by postgres")
+}
+
+func (s *SQLiteStore) ListUserNotifications(ctx context.Context, userID string, query NotificationListQuery) ([]PublishJob, error) {
+	return nil, fmt.Errorf("list user notifications is only supported by postgres")
 }
 
 func (s *SQLiteStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
@@ -645,6 +667,10 @@ func (s *SQLiteStore) GetTokenCountForUser(ctx context.Context, userID string) (
 		return 0, fmt.Errorf("error counting user tokens: %w", err)
 	}
 	return count, nil
+}
+
+func (s *SQLiteStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
+	return nil, fmt.Errorf("scheduled jobs are only supported by postgres")
 }
 
 func (s *SQLiteStore) Close() error {

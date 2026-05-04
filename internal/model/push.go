@@ -9,6 +9,17 @@ const (
 	FCM  Platform = "fcm"
 )
 
+type NotificationJobStatus string
+
+const (
+	NotificationJobStatusQueued     NotificationJobStatus = "QUEUED"
+	NotificationJobStatusScheduled  NotificationJobStatus = "SCHEDULED"
+	NotificationJobStatusInProgress NotificationJobStatus = "IN_PROGRESS"
+	NotificationJobStatusDispatched NotificationJobStatus = "DISPATCHED"
+	NotificationJobStatusCompleted  NotificationJobStatus = "COMPLETED"
+	NotificationJobStatusFailed     NotificationJobStatus = "FAILED"
+)
+
 type NotificationPayload struct {
 	// Required fields
 	Title string `json:"title"`
@@ -41,5 +52,19 @@ func ParsePlatform(s string) (Platform, error) {
 		return Platform(s), nil
 	default:
 		return "", fmt.Errorf("invalid platform: %q", s)
+	}
+}
+
+func ParseNotificationJobStatus(s string) (NotificationJobStatus, error) {
+	switch NotificationJobStatus(s) {
+	case NotificationJobStatusQueued,
+		NotificationJobStatusScheduled,
+		NotificationJobStatusInProgress,
+		NotificationJobStatusDispatched,
+		NotificationJobStatusCompleted,
+		NotificationJobStatusFailed:
+		return NotificationJobStatus(s), nil
+	default:
+		return "", fmt.Errorf("invalid notification job status: %q", s)
 	}
 }
