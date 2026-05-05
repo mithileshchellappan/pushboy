@@ -94,9 +94,6 @@ func (s *Scheduler) runLiveActivitySweep(ctx context.Context, sweep func(context
 	for i := 0; i < liveActivitySweepMaxBatches; i++ {
 		count, err := sweep(ctx, liveActivitySweepBatchSize)
 		if err != nil {
-			if storage.IsLiveActivityUnsupported(err) {
-				return nil
-			}
 			return err
 		}
 		if count < liveActivitySweepBatchSize {

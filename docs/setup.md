@@ -82,7 +82,6 @@ createdb pushboy
 Set `DATABASE_URL` in `.env` to your local database:
 
 ```dotenv
-DATABASE_DRIVER=postgres
 DATABASE_URL=postgres://user:password@localhost:5432/pushboy?sslmode=disable
 ```
 
@@ -143,7 +142,6 @@ The main runtime settings are:
 | Variable | Purpose |
 | --- | --- |
 | `SERVER_PORT` | HTTP bind address. Default is `:8080`. |
-| `DATABASE_DRIVER` | Use `postgres`. |
 | `DATABASE_URL` | Postgres connection string. |
 | `WORKER_COUNT` | Number of master workers that fan out jobs into token batches. |
 | `SENDER_COUNT` | Number of sender workers that call APNS/FCM. |

@@ -11,6 +11,10 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
+func ptrTime(value time.Time) *time.Time {
+	return &value
+}
+
 func newTestPostgresStore(t *testing.T) *PostgresStore {
 	t.Helper()
 
@@ -75,7 +79,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		TopicID:      "topic-1",
 		Payload:      payload,
 		Status:       model.NotificationJobStatusCompleted,
-		CreatedAt:    base.Format(time.RFC3339),
+		CreatedAt:    base,
 		TotalCount:   1,
 		SuccessCount: 1,
 	}
@@ -92,7 +96,7 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		UserID:    "user-1",
 		Payload:   payload,
 		Status:    model.NotificationJobStatusQueued,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC(),
 	}
 	if _, err := store.CreateUserPublishJob(ctx, directJob); err != nil {
 		t.Fatalf("create direct job: %v", err)
@@ -103,8 +107,8 @@ func TestPostgresNotificationEligibility(t *testing.T) {
 		TopicID:     "topic-1",
 		Payload:     payload,
 		Status:      model.NotificationJobStatusScheduled,
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339),
-		ScheduledAt: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339),
+		CreatedAt:   time.Now().UTC(),
+		ScheduledAt: ptrTime(time.Now().UTC().Add(2 * time.Hour)),
 	}
 	if _, err := store.CreatePublishJob(ctx, scheduledJob); err != nil {
 		t.Fatalf("create scheduled topic job: %v", err)
@@ -211,8 +215,8 @@ func TestPostgresTimestampColumnsAreTimestamptz(t *testing.T) {
 		TopicID:     "timestamp-topic",
 		Payload:     &model.NotificationPayload{Title: "timestamp", Body: "shape"},
 		Status:      model.NotificationJobStatusScheduled,
-		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
-		ScheduledAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		CreatedAt:   time.Now().UTC(),
+		ScheduledAt: ptrTime(time.Now().UTC().Add(time.Hour)),
 	}); err != nil {
 		t.Fatalf("create timestamp job: %v", err)
 	}

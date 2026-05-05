@@ -22,19 +22,20 @@ func NewPushBoyService(s storage.Store, broadcastTopicID string) *PushboyService
 	return &PushboyService{store: s, broadcastTopicID: broadcastTopicID}
 }
 
-// validateScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future
-func validateScheduledAt(scheduledAt string) error {
+// parseScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future.
+func parseScheduledAt(scheduledAt string) (*time.Time, error) {
 	if scheduledAt == "" {
-		return nil
+		return nil, nil
 	}
 	t, err := time.Parse(time.RFC3339, scheduledAt)
 	if err != nil {
-		return fmt.Errorf("invalid scheduledAt format, must be RFC3339 (e.g., 2025-01-15T10:00:00Z): %w", err)
+		return nil, fmt.Errorf("invalid scheduledAt format, must be RFC3339 (e.g., 2025-01-15T10:00:00Z): %w", err)
 	}
 	if t.Before(time.Now()) {
-		return fmt.Errorf("scheduledAt must be in the future")
+		return nil, fmt.Errorf("scheduledAt must be in the future")
 	}
-	return nil
+	t = t.UTC()
+	return &t, nil
 }
 
 // subscribeToBroadcast subscribes a user to the broadcast topic if configured
@@ -240,8 +241,8 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 // Send to user operations
 
 func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
-	// Validate scheduledAt format
-	if err := validateScheduledAt(scheduledAt); err != nil {
+	scheduledTime, err := parseScheduledAt(scheduledAt)
+	if err != nil {
 		return nil, err
 	}
 
@@ -249,12 +250,12 @@ func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload 
 		ID:           uuid.New().String(),
 		UserID:       userID,
 		Payload:      payload,
-		Status:       notificationJobStatusForSchedule(scheduledAt),
+		Status:       notificationJobStatusForSchedule(scheduledTime),
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		ScheduledAt:  scheduledAt,
+		CreatedAt:    time.Now().UTC(),
+		ScheduledAt:  scheduledTime,
 	}
 
 	return s.store.CreateUserPublishJob(ctx, job)
@@ -267,8 +268,8 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 		return nil, err
 	}
 
-	// Validate scheduledAt format
-	if err := validateScheduledAt(scheduledAt); err != nil {
+	scheduledTime, err := parseScheduledAt(scheduledAt)
+	if err != nil {
 		return nil, err
 	}
 
@@ -276,12 +277,12 @@ func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, p
 		ID:           uuid.New().String(),
 		TopicID:      topicID,
 		Payload:      payload,
-		Status:       notificationJobStatusForSchedule(scheduledAt),
+		Status:       notificationJobStatusForSchedule(scheduledTime),
 		TotalCount:   0,
 		SuccessCount: 0,
 		FailureCount: 0,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-		ScheduledAt:  scheduledAt,
+		CreatedAt:    time.Now().UTC(),
+		ScheduledAt:  scheduledTime,
 	}
 
 	return s.store.CreatePublishJob(ctx, job)
@@ -311,8 +312,8 @@ func (s *PushboyService) UpdateJobStatus(ctx context.Context, jobID string, stat
 	return s.store.UpdateJobStatus(ctx, jobID, status)
 }
 
-func notificationJobStatusForSchedule(scheduledAt string) model.NotificationJobStatus {
-	if scheduledAt == "" {
+func notificationJobStatusForSchedule(scheduledAt *time.Time) model.NotificationJobStatus {
+	if scheduledAt == nil {
 		return model.NotificationJobStatusQueued
 	}
 	return model.NotificationJobStatusScheduled

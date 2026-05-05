@@ -30,28 +30,15 @@ import (
 func main() {
 	cfg := config.Load()
 
-	var store storage.Store
-	var err error
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	workerCtx, workerStop := context.WithCancel(context.Background())
 	defer workerStop()
 
-	switch cfg.DatabaseDriver {
-	// case "sqlite":
-	// 	store, err = storage.NewSQLStore(cfg.DatabaseURL)
-	// 	if err != nil {
-	// 		log.Fatalf("Cannot create store: %v", err)
-	// 	}
-	case "postgres":
-		store, err = storage.NewPostgresStore(cfg.DatabaseURL)
-		if err != nil {
-			log.Fatalf("Cannot create store: %v", err)
-		}
-	default:
-		log.Fatalf("Unsupported database driver: %s", cfg.DatabaseDriver)
-		return
+	store, err := storage.NewPostgresStore(cfg.DatabaseURL)
+	if err != nil {
+		log.Fatalf("Cannot create store: %v", err)
 	}
 
 	// Initialize dispatchers - only add successfully created clients

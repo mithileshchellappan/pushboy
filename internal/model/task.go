@@ -1,6 +1,9 @@
 package model
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type JobType string
 
@@ -57,5 +60,5 @@ type DeliveryReceipt struct {
 	TokenID      string
 	Status       DeliveryStatus
 	StatusReason string
-	DispatchedAt string
+	DispatchedAt time.Time
 }

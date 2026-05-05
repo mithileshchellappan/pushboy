@@ -35,7 +35,7 @@ Recommended deployment controls:
 - Restrict direct database access.
 - Rotate APNS and FCM credentials if they are ever copied into logs, tickets, issue comments, or shell history.
 - Mount APNS `.p8` files and Firebase service-account JSON as runtime secrets, not committed files.
-- Keep `.env`, `keys/`, `.p8` files, service-account JSON, database dumps, and local SQLite files out of git.
+- Keep `.env`, `keys/`, `.p8` files, service-account JSON, and database dumps out of git.
 
 ## Reporting A Vulnerability
 
