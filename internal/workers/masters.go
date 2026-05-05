@@ -187,7 +187,7 @@ func (m *MasterWorker) pushLATokensToPipeline(ctx context.Context, batch *storag
 				Receipt: model.DeliveryReceipt{
 					JobID:        job.LADispatchID,
 					TokenID:      token.ID,
-					Status:       string(model.Failed),
+					Status:       model.DeliveryStatusFailed,
 					StatusReason: "task enqueue failed",
 					DispatchedAt: time.Now().UTC().Format(time.RFC3339),
 				},

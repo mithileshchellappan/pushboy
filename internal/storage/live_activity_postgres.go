@@ -708,9 +708,9 @@ func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelt
 		dispatchID := outcome.Receipt.JobID
 		delta := deltas[dispatchID]
 		switch outcome.Receipt.Status {
-		case string(model.Success):
+		case model.DeliveryStatusSuccess:
 			delta.success++
-		case string(model.Failed):
+		case model.DeliveryStatusFailed:
 			delta.failure++
 			if isLAInvalidToken(outcome.Receipt.StatusReason) {
 				invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}

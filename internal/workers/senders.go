@@ -66,7 +66,7 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 		DispatchedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if !ok {
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
 		s.pushToDLQ(ctx, receipt, task)
 		return
@@ -74,7 +74,7 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 
 	pushDispatcher, ok := dispatcher.(dispatch.Dispatcher)
 	if !ok {
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
 		s.pushToDLQ(ctx, receipt, task)
 		return
@@ -83,12 +83,12 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 	err := pushDispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
 		s.pushToDLQ(ctx, receipt, task)
 		return
 	}
-	receipt.Status = string(model.Success)
+	receipt.Status = model.DeliveryStatusSuccess
 	s.pushToDLQ(ctx, receipt, task)
 	return
 }
@@ -102,7 +102,7 @@ func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 		DispatchedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if !ok {
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
 		s.pushToDLQ(ctx, receipt, task)
 		return
@@ -110,7 +110,7 @@ func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 
 	laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
 	if !ok {
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("No live activity dispatcher configured for platform: %s", task.Target.Platform)
 		s.pushToDLQ(ctx, receipt, task)
 		return
@@ -125,13 +125,13 @@ func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 	})
 	if err != nil {
 		fmt.Printf("Error sending %s live activity, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
-		receipt.Status = string(model.Failed)
+		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
 		s.pushToDLQ(ctx, receipt, task)
 		return
 	}
 
-	receipt.Status = string(model.Success)
+	receipt.Status = model.DeliveryStatusSuccess
 	s.pushToDLQ(ctx, receipt, task)
 }
 

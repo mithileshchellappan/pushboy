@@ -618,7 +618,7 @@ func (s *SQLiteStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, rece
 	defer stmt.Close()
 
 	for _, r := range receipts {
-		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, r.DispatchedAt); err != nil {
+		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, string(r.Status), r.StatusReason, r.DispatchedAt); err != nil {
 			return fmt.Errorf("error inserting receipt for job %s token %s: %w", r.JobID, r.TokenID, err)
 		}
 	}
@@ -652,7 +652,7 @@ func (s *SQLiteStore) CompleteJobIfDone(ctx context.Context, jobID string) error
 
 func (s *SQLiteStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES(?, ?, ?, ?, ?, ?)`
-	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, receipt.DispatchedAt)
+	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, string(receipt.Status), receipt.StatusReason, receipt.DispatchedAt)
 	return err
 }
 

@@ -948,7 +948,7 @@ func (s *PostgresStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, re
 			_ = stmt.Close()
 			return fmt.Errorf("error parsing dispatched_at for job %s token %s: %w", r.JobID, r.TokenID, err)
 		}
-		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, r.Status, r.StatusReason, dispatchedAt); err != nil {
+		if _, err := stmt.ExecContext(ctx, r.ID, r.JobID, r.TokenID, string(r.Status), r.StatusReason, dispatchedAt); err != nil {
 			_ = stmt.Close()
 			return fmt.Errorf("error buffering receipt for job %s token %s: %w", r.JobID, r.TokenID, err)
 		}
@@ -997,7 +997,7 @@ func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *mode
 	}
 
 	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
-	_, err = s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, receipt.Status, receipt.StatusReason, dispatchedAt)
+	_, err = s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, string(receipt.Status), receipt.StatusReason, dispatchedAt)
 	return err
 }
 
