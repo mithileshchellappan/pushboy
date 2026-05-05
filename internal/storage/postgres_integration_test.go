@@ -158,6 +158,8 @@ func TestPostgresTimestampColumnsAreTimestamptz(t *testing.T) {
 		"tokens.created_at":                   "timestamp with time zone",
 		"user_topic_subscriptions.created_at": "timestamp with time zone",
 		"publish_jobs.created_at":             "timestamp with time zone",
+		"publish_jobs.completed_at":           "timestamp with time zone",
+		"publish_jobs.scheduled_at":           "timestamp with time zone",
 		"delivery_receipts.dispatched_at":     "timestamp with time zone",
 	}
 
@@ -171,6 +173,8 @@ func TestPostgresTimestampColumnsAreTimestamptz(t *testing.T) {
 				('tokens', 'created_at'),
 				('user_topic_subscriptions', 'created_at'),
 				('publish_jobs', 'created_at'),
+				('publish_jobs', 'completed_at'),
+				('publish_jobs', 'scheduled_at'),
 				('delivery_receipts', 'dispatched_at')
 			)`,
 	)
@@ -197,5 +201,32 @@ func TestPostgresTimestampColumnsAreTimestamptz(t *testing.T) {
 	}
 	if len(expected) != 0 {
 		t.Fatalf("missing timestamp columns: %+v", expected)
+	}
+
+	if err := store.CreateTopic(ctx, &Topic{ID: "timestamp-topic", Name: "Timestamp Topic"}); err != nil {
+		t.Fatalf("create timestamp topic: %v", err)
+	}
+	if _, err := store.CreatePublishJob(ctx, &PublishJob{
+		ID:          "timestamp-job",
+		TopicID:     "timestamp-topic",
+		Payload:     &model.NotificationPayload{Title: "timestamp", Body: "shape"},
+		Status:      model.NotificationJobStatusScheduled,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		ScheduledAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatalf("create timestamp job: %v", err)
+	}
+
+	var effectiveAtType string
+	if err := store.db.QueryRowContext(
+		ctx,
+		`SELECT pg_typeof(COALESCE(scheduled_at, created_at))::text
+		FROM publish_jobs
+		LIMIT 1`,
+	).Scan(&effectiveAtType); err != nil {
+		t.Fatalf("query effective timestamp type: %v", err)
+	}
+	if effectiveAtType != "timestamp with time zone" {
+		t.Fatalf("expected effective notification timestamp to be timestamptz, got %q", effectiveAtType)
 	}
 }
