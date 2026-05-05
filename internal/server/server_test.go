@@ -6,11 +6,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
+
+func parseTestTime(value string) time.Time {
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
 
 type fakeStore struct {
 	storage.Store
@@ -28,7 +37,7 @@ func (f *fakeStore) GetUser(ctx context.Context, userID string) (*storage.User, 
 	if f.getUser != nil {
 		return f.getUser(ctx, userID)
 	}
-	return &storage.User{ID: userID, CreatedAt: "2026-05-01T10:00:00Z"}, nil
+	return &storage.User{ID: userID, CreatedAt: parseTestTime("2026-05-01T10:00:00Z")}, nil
 }
 
 func (f *fakeStore) GetTopicByID(ctx context.Context, topicID string) (*storage.Topic, error) {
@@ -69,12 +78,12 @@ func TestListUsersPagination(t *testing.T) {
 			if query.Limit != 2 {
 				t.Fatalf("expected storage limit 2, got %d", query.Limit)
 			}
-			if query.Cursor.SortValue != "" || query.Cursor.ID != "" {
+			if !query.Cursor.SortValue.IsZero() || query.Cursor.ID != "" {
 				t.Fatalf("expected empty cursor, got %+v", query.Cursor)
 			}
 			return []storage.User{
-				{ID: "user-2", CreatedAt: "2026-05-01T11:00:00Z"},
-				{ID: "user-1", CreatedAt: "2026-05-01T10:00:00Z"},
+				{ID: "user-2", CreatedAt: parseTestTime("2026-05-01T11:00:00Z")},
+				{ID: "user-1", CreatedAt: parseTestTime("2026-05-01T10:00:00Z")},
 			}, nil
 		},
 	}
@@ -87,7 +96,7 @@ func TestListUsersPagination(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	var response listResponse[storage.User]
+	var response listResponse[userResponse]
 	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
@@ -102,7 +111,7 @@ func TestListUsersPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode next cursor: %v", err)
 	}
-	if cursor.SortValue != "2026-05-01T11:00:00Z" || cursor.ID != "user-2" {
+	if !cursor.SortValue.Equal(parseTestTime("2026-05-01T11:00:00Z")) || cursor.ID != "user-2" {
 		t.Fatalf("unexpected cursor: %+v", cursor)
 	}
 }
@@ -167,7 +176,7 @@ func TestTopicNotificationsPassStatusFilter(t *testing.T) {
 				t.Fatalf("expected default storage limit %d, got %d", defaultPageLimit+1, query.Limit)
 			}
 			return []storage.PublishJob{
-				{ID: "job-1", TopicID: "topic-1", Status: model.NotificationJobStatusCompleted, CreatedAt: "2026-05-01T10:00:00Z"},
+				{ID: "job-1", TopicID: "topic-1", Status: model.NotificationJobStatusCompleted, CreatedAt: parseTestTime("2026-05-01T10:00:00Z")},
 			}, nil
 		},
 	}
@@ -187,7 +196,7 @@ func TestCanonicalNotificationLookupAndOldRouteRemoval(t *testing.T) {
 			if jobID != "job-1" {
 				t.Fatalf("unexpected jobID %q", jobID)
 			}
-			return &storage.PublishJob{ID: "job-1", Status: model.NotificationJobStatusQueued, CreatedAt: "2026-05-01T10:00:00Z"}, nil
+			return &storage.PublishJob{ID: "job-1", Status: model.NotificationJobStatusQueued, CreatedAt: parseTestTime("2026-05-01T10:00:00Z")}, nil
 		},
 	})
 

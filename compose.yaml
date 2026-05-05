@@ -23,7 +23,6 @@ services:
         condition: service_healthy
     environment:
       SERVER_PORT: ":8080"
-      DATABASE_DRIVER: postgres
       DATABASE_URL: postgres://pushboy:pushboy@postgres:5432/pushboy?sslmode=disable
       WORKER_COUNT: "10"
       SENDER_COUNT: "200"

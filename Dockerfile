@@ -26,8 +26,7 @@ COPY --from=build /src/db/migrations /app/db/migrations
 RUN chown -R pushboy:pushboy /app/db/migrations \
     && chmod -R a+rX /app/db/migrations
 
-ENV SERVER_PORT=:8080 \
-    DATABASE_DRIVER=postgres
+ENV SERVER_PORT=:8080
 
 USER pushboy:pushboy
 EXPOSE 8080

@@ -48,16 +48,12 @@ func parseLAExpiry(expiresAt string, now time.Time) (*time.Time, error) {
 	return &t, nil
 }
 
-func laExpired(expiresAt string, now time.Time) bool {
-	if expiresAt == "" {
+func laExpired(expiresAt *time.Time, now time.Time) bool {
+	if expiresAt == nil {
 		return false
 	}
 
-	t, err := time.Parse(time.RFC3339, expiresAt)
-	if err != nil {
-		return false
-	}
-	return !t.After(now)
+	return !expiresAt.After(now)
 }
 
 func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string) (*storage.LiveActivityToken, *storage.User, error) {
@@ -86,11 +82,6 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 		}
 	}
 
-	expiresAt = ""
-	if expiryTime != nil {
-		expiresAt = expiryTime.Format(time.RFC3339)
-	}
-
 	user, err := s.ensureUser(ctx, userID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to ensure user: %w", err)
@@ -104,7 +95,7 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 			ID:        uuid.New().String(),
 			UserID:    userID,
 			TopicID:   topicID,
-			CreatedAt: now.Format(time.RFC3339),
+			CreatedAt: now,
 		}
 		if _, err := s.store.SubscribeUserToLATopic(ctx, sub); err != nil {
 			return nil, nil, fmt.Errorf("failed to subscribe user to LA topic: %w", err)
@@ -117,9 +108,9 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 		Platform:   platform,
 		TokenType:  tokenType,
 		Token:      tokenValue,
-		ExpiresAt:  expiresAt,
-		CreatedAt:  now.Format(time.RFC3339),
-		LastSeenAt: now.Format(time.RFC3339),
+		ExpiresAt:  expiryTime,
+		CreatedAt:  now,
+		LastSeenAt: now,
 	}
 
 	stored, err := s.store.UpsertLiveActivityToken(ctx, token)
@@ -155,7 +146,7 @@ func (s *PushboyService) RegisterUserToLATopic(ctx context.Context, userID strin
 		ID:        uuid.New().String(),
 		UserID:    userID,
 		TopicID:   topicID,
-		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		CreatedAt: time.Now().UTC(),
 	}
 	return s.store.SubscribeUserToLATopic(ctx, sub)
 }
@@ -266,9 +257,9 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		Status:        model.LiveActivityJobStatusActive,
 		LatestPayload: req.Payload,
 		Options:       req.Options,
-		CreatedAt:     now.Format(time.RFC3339),
-		UpdatedAt:     now.Format(time.RFC3339),
-		ExpiresAt:     expiryTime.Format(time.RFC3339),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		ExpiresAt:     expiryTime,
 	}
 
 	storedJob, created, err := s.store.CreateOrGetLAStartJob(ctx, job)
@@ -317,11 +308,11 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 		}
 		return nil, err
 	}
-	if job == nil || job.Status != model.LiveActivityJobStatusActive || job.ClosedAt != "" || laExpired(job.ExpiresAt, now) {
+	if job == nil || job.Status != model.LiveActivityJobStatusActive || job.ClosedAt != nil || laExpired(job.ExpiresAt, now) {
 		return nil, storage.Errors.NotFound
 	}
 
-	if err := s.store.UpdateLAJobPayloadIfActive(ctx, job.ID, req.Payload, req.Options, now.Format(time.RFC3339)); err != nil {
+	if err := s.store.UpdateLAJobPayloadIfActive(ctx, job.ID, req.Payload, req.Options, now); err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			return nil, storage.Errors.NotFound
 		}
@@ -329,7 +320,7 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 	}
 	job.LatestPayload = req.Payload
 	job.Options = req.Options
-	job.UpdatedAt = now.Format(time.RFC3339)
+	job.UpdatedAt = now
 
 	dispatch, err := s.createLADispatchRow(ctx, job, req.Action, req.Payload, req.Options, now)
 	if err != nil {
@@ -403,7 +394,7 @@ func (s *PushboyService) createLADispatchRow(ctx context.Context, job *storage.L
 		Payload:           dispatchPayload,
 		Options:           options,
 		Status:            "QUEUED",
-		CreatedAt:         now.Format(time.RFC3339),
+		CreatedAt:         now,
 	}
 	return s.store.CreateLADispatch(ctx, dispatch)
 }

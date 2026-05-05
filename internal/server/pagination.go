@@ -73,22 +73,27 @@ func parseCursor(raw string, route string, status model.NotificationJobStatus) (
 	if cursor.Version != cursorVersion || cursor.Route != route || cursor.Status != string(status) || cursor.SortValue == "" || cursor.ID == "" {
 		return storage.PageCursor{}, errors.New("invalid cursor")
 	}
-	if _, err := time.Parse(time.RFC3339Nano, cursor.SortValue); err != nil {
+	sortValue, err := time.Parse(time.RFC3339Nano, cursor.SortValue)
+	if err != nil {
 		return storage.PageCursor{}, err
 	}
 
 	return storage.PageCursor{
-		SortValue: cursor.SortValue,
+		SortValue: sortValue.UTC(),
 		ID:        cursor.ID,
 	}, nil
 }
 
-func encodeCursor(route string, status model.NotificationJobStatus, sortValue string, id string) string {
+func encodeCursor(route string, status model.NotificationJobStatus, sortValue time.Time, id string) string {
+	if sortValue.IsZero() || id == "" {
+		return ""
+	}
+
 	payload, err := json.Marshal(pageCursor{
 		Version:   cursorVersion,
 		Route:     route,
 		Status:    string(status),
-		SortValue: sortValue,
+		SortValue: sortValue.UTC().Format(time.RFC3339Nano),
 		ID:        id,
 	})
 	if err != nil {
@@ -137,29 +142,36 @@ func notificationListQueryFromRequest(r *http.Request, route string) (storage.No
 	}, limit, nil
 }
 
-func notificationJobCursorTime(job storage.PublishJob) string {
-	if job.ScheduledAt != "" {
-		return job.ScheduledAt
+func notificationJobCursorTime(job storage.PublishJob) time.Time {
+	if job.ScheduledAt != nil {
+		return *job.ScheduledAt
 	}
 	return job.CreatedAt
 }
 
-func makeListResponse[T any](items []T, limit int, route string, status model.NotificationJobStatus, keyFunc func(T) (string, string)) listResponse[T] {
+func makeMappedListResponse[In any, Out any](items []In, limit int, route string, status model.NotificationJobStatus, keyFunc func(In) (time.Time, string), mapFunc func(In) Out) listResponse[Out] {
 	if items == nil {
-		items = make([]T, 0)
+		items = make([]In, 0)
 	}
 
-	response := listResponse[T]{
-		Items: items,
+	mappedItems := make([]Out, 0, min(len(items), limit))
+	response := listResponse[Out]{
+		Items: mappedItems,
 	}
 
 	if len(items) <= limit {
+		for _, item := range items {
+			response.Items = append(response.Items, mapFunc(item))
+		}
 		return response
 	}
 
 	response.HasMore = true
-	response.Items = items[:limit]
-	sortValue, id := keyFunc(response.Items[len(response.Items)-1])
+	visibleItems := items[:limit]
+	for _, item := range visibleItems {
+		response.Items = append(response.Items, mapFunc(item))
+	}
+	sortValue, id := keyFunc(visibleItems[len(visibleItems)-1])
 	response.NextCursor = encodeCursor(route, status, sortValue, id)
 	return response
 }

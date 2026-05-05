@@ -1,77 +1,36 @@
 package storage
 
 import (
-	"fmt"
+	"database/sql"
 	"time"
 )
 
-type storageTimeScanner struct {
-	dest *string
-}
-
-func scanStorageTime(dest *string) storageTimeScanner {
-	return storageTimeScanner{dest: dest}
-}
-
-func (s storageTimeScanner) Scan(value any) error {
-	if s.dest == nil {
-		return fmt.Errorf("nil timestamp destination")
+func requiredTime(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Now().UTC()
 	}
-
-	switch v := value.(type) {
-	case nil:
-		*s.dest = ""
-		return nil
-	case time.Time:
-		*s.dest = formatStorageTime(v)
-		return nil
-	case string:
-		return scanStorageTimeString(s.dest, v)
-	case []byte:
-		return scanStorageTimeString(s.dest, string(v))
-	default:
-		return fmt.Errorf("cannot scan timestamp value of type %T", value)
-	}
+	return value.UTC()
 }
 
-func formatStorageTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func scanStorageTimeString(dest *string, value string) error {
-	if value == "" {
-		*dest = ""
+func optionalTime(value *time.Time) any {
+	if value == nil {
 		return nil
 	}
-
-	t, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return err
-	}
-	*dest = formatStorageTime(t)
-	return nil
+	t := value.UTC()
+	return t
 }
 
-func parseRequiredStorageTime(value string) (time.Time, error) {
-	if value == "" {
-		return time.Now().UTC(), nil
+func cursorTimeArg(value time.Time) any {
+	if value.IsZero() {
+		return nil
 	}
-
-	t, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return t.UTC(), nil
+	return value.UTC()
 }
 
-func parseOptionalStorageTime(value string) (any, error) {
-	if value == "" {
-		return nil, nil
+func nullTimePtr(value sql.NullTime) *time.Time {
+	if !value.Valid {
+		return nil
 	}
-
-	t, err := time.Parse(time.RFC3339Nano, value)
-	if err != nil {
-		return nil, err
-	}
-	return t.UTC(), nil
+	t := value.Time.UTC()
+	return &t
 }
