@@ -28,20 +28,9 @@ func nullableJSONRawMessage(value json.RawMessage) any {
 	return []byte(trimmed)
 }
 
-func formatTimePtr(t sql.NullTime) string {
-	if !t.Valid {
-		return ""
-	}
-	return t.Time.UTC().Format(time.RFC3339)
-}
-
 func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivityToken) error {
 	var platform string
 	var tokenType string
-	var createdAt time.Time
-	var lastSeenAt time.Time
-	var expiresAt sql.NullTime
-	var invalidatedAt sql.NullTime
 
 	if err := scanner.Scan(
 		&token.ID,
@@ -49,20 +38,16 @@ func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivi
 		&platform,
 		&tokenType,
 		&token.Token,
-		&createdAt,
-		&lastSeenAt,
-		&expiresAt,
-		&invalidatedAt,
+		scanStorageTime(&token.CreatedAt),
+		scanStorageTime(&token.LastSeenAt),
+		scanStorageTime(&token.ExpiresAt),
+		scanStorageTime(&token.InvalidatedAt),
 	); err != nil {
 		return err
 	}
 
 	token.Platform = model.Platform(platform)
 	token.TokenType = model.LiveActivityTokenType(tokenType)
-	token.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	token.LastSeenAt = lastSeenAt.UTC().Format(time.RFC3339)
-	token.ExpiresAt = formatTimePtr(expiresAt)
-	token.InvalidatedAt = formatTimePtr(invalidatedAt)
 	return nil
 }
 
@@ -84,10 +69,6 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 	var status string
 	var latestPayload []byte
 	var options []byte
-	var createdAt time.Time
-	var updatedAt time.Time
-	var expiresAt sql.NullTime
-	var closedAt sql.NullTime
 
 	if err := scanner.Scan(
 		&job.ID,
@@ -98,10 +79,10 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 		&status,
 		&latestPayload,
 		&options,
-		&createdAt,
-		&updatedAt,
-		&expiresAt,
-		&closedAt,
+		scanStorageTime(&job.CreatedAt),
+		scanStorageTime(&job.UpdatedAt),
+		scanStorageTime(&job.ExpiresAt),
+		scanStorageTime(&job.ClosedAt),
 	); err != nil {
 		return err
 	}
@@ -109,10 +90,6 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 	job.Status = model.LiveActivityJobStatus(status)
 	job.LatestPayload = latestPayload
 	job.Options = options
-	job.CreatedAt = createdAt.UTC().Format(time.RFC3339)
-	job.UpdatedAt = updatedAt.UTC().Format(time.RFC3339)
-	job.ExpiresAt = formatTimePtr(expiresAt)
-	job.ClosedAt = formatTimePtr(closedAt)
 	return nil
 }
 
@@ -131,7 +108,7 @@ func laConstraint(err error) string {
 }
 
 func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := formatStorageTime(time.Now().UTC())
 	if token.ID == "" {
 		token.ID = token.Token
 	}
@@ -207,11 +184,9 @@ func (s *PostgresStore) SubscribeUserToLATopic(ctx context.Context, sub *LiveAct
 	)
 
 	var stored LiveActivityUserTopicSubscription
-	var createdAt time.Time
-	if err := row.Scan(&stored.ID, &stored.UserID, &stored.TopicID, &createdAt); err != nil {
+	if err := row.Scan(&stored.ID, &stored.UserID, &stored.TopicID, scanStorageTime(&stored.CreatedAt)); err != nil {
 		return nil, fmt.Errorf("error subscribing user to LA topic: %w", err)
 	}
-	stored.CreatedAt = createdAt.UTC().Format(time.RFC3339)
 	return &stored, nil
 }
 
@@ -693,7 +668,7 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 			return fmt.Errorf("error failing empty LA start job: %w", err)
 		}
 	case string(model.LiveActivityActionEnd):
-		if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC().Format(time.RFC3339)); err != nil && !errors.Is(err, Errors.NotFound) {
+		if err := s.CloseLAJobIfActive(ctx, jobID, formatStorageTime(time.Now().UTC())); err != nil && !errors.Is(err, Errors.NotFound) {
 			return fmt.Errorf("error closing empty LA end job: %w", err)
 		}
 	}
@@ -708,9 +683,9 @@ func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelt
 		dispatchID := outcome.Receipt.JobID
 		delta := deltas[dispatchID]
 		switch outcome.Receipt.Status {
-		case string(model.Success):
+		case model.DeliveryStatusSuccess:
 			delta.success++
-		case string(model.Failed):
+		case model.DeliveryStatusFailed:
 			delta.failure++
 			if isLAInvalidToken(outcome.Receipt.StatusReason) {
 				invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}

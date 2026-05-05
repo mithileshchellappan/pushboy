@@ -51,9 +51,11 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Get("/ping", s.handlePing)
+		r.Get("/notifications/{jobID}", s.handleGetJobStatus)
 
 		// User routes
 		r.Route("/users", func(r chi.Router) {
+			r.Get("/", s.handleListUsers)
 			r.Post("/", s.handleCreateUser)
 			r.Get("/{userID}", s.handleGetUser)
 			r.Delete("/{userID}", s.handleDeleteUser)
@@ -67,6 +69,7 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/{userID}/subscriptions/{topicID}", s.handleSubscribeToTopic)
 			r.Delete("/{userID}/subscriptions/{topicID}", s.handleUnsubscribeFromTopic)
 			r.Get("/{userID}/subscriptions", s.handleGetUserSubscriptions)
+			r.Get("/{userID}/notifications", s.handleListUserNotifications)
 
 			// Send to user
 			r.Post("/{userID}/send", s.handleSendToUser)
@@ -79,9 +82,10 @@ func (s *Server) setupRouter() chi.Router {
 			r.Get("/{topicID}", s.handleGetTopicByID)
 			r.Delete("/{topicID}", s.handleDeleteTopic)
 			r.Get("/{topicID}/count", s.handleGetTopicSubscriberCount)
+			r.Get("/{topicID}/subscribers", s.handleListTopicSubscribers)
+			r.Get("/{topicID}/notifications", s.handleListTopicNotifications)
 
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
-			r.Get("/{topicID}/publish/{jobID}", s.handleGetJobStatus)
 		})
 
 		r.Route("/live-activity", func(r chi.Router) {
@@ -107,7 +111,7 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 
-		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, "FAILED"); updateErr != nil {
+		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, model.NotificationJobStatusFailed); updateErr != nil {
 			log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobID, updateErr)
 		}
 		return err
@@ -145,6 +149,28 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.respond(w, r, user, http.StatusCreated)
+}
+
+func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
+	const route = "/v1/users"
+
+	query, limit, err := pageQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	users, err := s.service.ListUsers(r.Context(), query)
+	if err != nil {
+		http.Error(w, "Error listing users", http.StatusInternalServerError)
+		log.Printf("Error listing users: %v", err)
+		return
+	}
+
+	response := makeListResponse(users, limit, route, "", func(user storage.User) (string, string) {
+		return user.CreatedAt, user.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
 }
 
 func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
@@ -351,6 +377,37 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 	s.respond(w, r, subs, http.StatusOK)
 }
 
+func (s *Server) handleListUserNotifications(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "userID")
+	if userID == "" {
+		http.Error(w, "userID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/users/" + userID + "/notifications"
+	query, limit, err := notificationListQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := s.service.ListUserNotifications(r.Context(), userID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "User not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing user notifications", http.StatusInternalServerError)
+		log.Printf("Error listing user notifications: %v", err)
+		return
+	}
+
+	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+		return notificationJobCursorTime(job), job.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
+}
+
 // Send to user handler
 
 type SendNotificationRequest struct {
@@ -399,6 +456,10 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "User not found", http.StatusNotFound)
 			return
 		}
+		if strings.Contains(err.Error(), "scheduledAt") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Error sending notification", http.StatusInternalServerError)
 		log.Printf("Error sending notification to user: %v", err)
 		return
@@ -440,20 +501,14 @@ func (s *Server) handleCreateTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.ID == "" || req.Name == "" {
-		http.Error(w, "topic id and name are required", http.StatusBadRequest)
-		return
-	}
-
-	if strings.Contains(req.ID, " ") {
-		http.Error(w, "topic id cannot contain spaces", http.StatusBadRequest)
-		return
-	}
-
 	topic, err := s.service.CreateTopic(r.Context(), req.ID, req.Name)
 	if err != nil {
 		if errors.Is(err, storage.Errors.AlreadyExists) {
 			http.Error(w, "Topic already exists", http.StatusConflict)
+			return
+		}
+		if strings.Contains(err.Error(), "topic id") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		http.Error(w, "Error creating topic", http.StatusInternalServerError)
@@ -532,6 +587,68 @@ func (s *Server) handleGetTopicSubscriberCount(w http.ResponseWriter, r *http.Re
 	}
 
 	s.respond(w, r, map[string]int{"count": count}, http.StatusOK)
+}
+
+func (s *Server) handleListTopicSubscribers(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/topics/" + topicID + "/subscribers"
+	query, limit, err := pageQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	subscribers, err := s.service.ListTopicSubscribers(r.Context(), topicID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing topic subscribers", http.StatusInternalServerError)
+		log.Printf("Error listing topic subscribers: %v", err)
+		return
+	}
+
+	response := makeListResponse(subscribers, limit, route, "", func(subscriber storage.TopicSubscriber) (string, string) {
+		return subscriber.SubscribedAt, subscriber.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
+}
+
+func (s *Server) handleListTopicNotifications(w http.ResponseWriter, r *http.Request) {
+	topicID := chi.URLParam(r, "topicID")
+	if topicID == "" {
+		http.Error(w, "topicID is required", http.StatusBadRequest)
+		return
+	}
+
+	route := "/v1/topics/" + topicID + "/notifications"
+	query, limit, err := notificationListQueryFromRequest(r, route)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := s.service.ListTopicNotifications(r.Context(), topicID, query)
+	if err != nil {
+		if errors.Is(err, storage.Errors.NotFound) {
+			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Error listing topic notifications", http.StatusInternalServerError)
+		log.Printf("Error listing topic notifications: %v", err)
+		return
+	}
+
+	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+		return notificationJobCursorTime(job), job.ID
+	})
+	s.respond(w, r, response, http.StatusOK)
 }
 
 // Publish handlers

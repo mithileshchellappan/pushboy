@@ -62,7 +62,7 @@ func (m *MasterWorker) Stop() {
 }
 
 func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem) error {
-	m.store.UpdateJobStatus(ctx, job.ID, "IN_PROGRESS")
+	m.store.UpdateJobStatus(ctx, job.ID, model.NotificationJobStatusInProgress)
 	cursor := ""
 	totalTokenCount := 0
 	for {
@@ -79,7 +79,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem
 		log.Printf("fetching tokens for job %v", job.ID)
 		if err != nil {
 			log.Printf("Error fetching tokens: %v", err)
-			m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
+			m.store.UpdateJobStatus(ctx, job.ID, model.NotificationJobStatusFailed)
 			return fmt.Errorf("error fetching tokens: %v", err)
 		}
 		totalTokenCount += len(batch.Tokens)
@@ -105,7 +105,7 @@ func (m *MasterWorker) fetchAndPushTokens(ctx context.Context, job model.JobItem
 	}
 	if err := m.store.FinalizeJobDispatch(ctx, job.ID, totalTokenCount); err != nil {
 		log.Printf("Error finalizing dispatch for job %v: %v", job.ID, err)
-		m.store.UpdateJobStatus(ctx, job.ID, "FAILED")
+		m.store.UpdateJobStatus(ctx, job.ID, model.NotificationJobStatusFailed)
 		return fmt.Errorf("error finalizing dispatch: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func (m *MasterWorker) pushLATokensToPipeline(ctx context.Context, batch *storag
 				Receipt: model.DeliveryReceipt{
 					JobID:        job.LADispatchID,
 					TokenID:      token.ID,
-					Status:       string(model.Failed),
+					Status:       model.DeliveryStatusFailed,
 					StatusReason: "task enqueue failed",
 					DispatchedAt: time.Now().UTC().Format(time.RFC3339),
 				},

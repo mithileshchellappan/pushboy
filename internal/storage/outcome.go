@@ -17,9 +17,9 @@ func summarizePushReceipts(receipts []model.DeliveryReceipt) (map[string]*pushOu
 		}
 
 		switch receipt.Status {
-		case string(model.Success):
+		case model.DeliveryStatusSuccess:
 			deltas[receipt.JobID].success++
-		case string(model.Failed):
+		case model.DeliveryStatusFailed:
 			deltas[receipt.JobID].failure++
 			failureReceipts = append(failureReceipts, receipt)
 		}

@@ -9,11 +9,11 @@ const (
 	JobTypeLA   JobType = "la"
 )
 
-type Status string
+type DeliveryStatus string
 
 const (
-	Failed  Status = "FAILED"
-	Success Status = "SUCCESS"
+	DeliveryStatusFailed  DeliveryStatus = "FAILED"
+	DeliveryStatusSuccess DeliveryStatus = "SUCCESS"
 )
 
 type SendTarget struct {
@@ -55,7 +55,7 @@ type DeliveryReceipt struct {
 	ID           string
 	JobID        string
 	TokenID      string
-	Status       string
+	Status       DeliveryStatus
 	StatusReason string
 	DispatchedAt string
 }

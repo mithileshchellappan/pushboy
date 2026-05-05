@@ -30,6 +30,21 @@
 			"key": "jobID",
 			"value": "",
 			"type": "string"
+		},
+		{
+			"key": "status",
+			"value": "COMPLETED",
+			"type": "string"
+		},
+		{
+			"key": "limit",
+			"value": "50",
+			"type": "string"
+		},
+		{
+			"key": "cursor",
+			"value": "",
+			"type": "string"
 		}
 	],
 	"item": [
@@ -98,6 +113,31 @@
 							"path": ["v1", "users"]
 						},
 						"description": "Create a new user with an auto-generated UUID."
+					},
+					"response": []
+				},
+				{
+					"name": "List Users",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users?limit={{limit}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "{{limit}}"
+								},
+								{
+									"key": "cursor",
+									"value": "{{cursor}}",
+									"disabled": true
+								}
+							]
+						},
+						"description": "List users with keyset pagination. Responses use {\"items\": [], \"next_cursor\": \"\", \"has_more\": false}."
 					},
 					"response": []
 				},
@@ -248,7 +288,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"name\": \"announcements\"\n}"
+							"raw": "{\n    \"id\": \"topic:announcements\",\n    \"name\": \"announcements\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/v1/topics",
@@ -345,6 +385,31 @@
 							"path": ["v1", "users", "{{userID}}", "subscriptions"]
 						},
 						"description": "Get all topic subscriptions for a user"
+					},
+					"response": []
+				},
+				{
+					"name": "List Topic Subscribers",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/subscribers?limit={{limit}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "topics", "{{topicID}}", "subscribers"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "{{limit}}"
+								},
+								{
+									"key": "cursor",
+									"value": "{{cursor}}",
+									"disabled": true
+								}
+							]
+						},
+						"description": "List current topic subscribers with keyset pagination."
 					},
 					"response": []
 				}
@@ -469,16 +534,74 @@
 					"response": []
 				},
 				{
-					"name": "Get Publish Job Status",
+					"name": "List Topic Notifications",
 					"request": {
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/publish/{{jobID}}",
+							"raw": "{{baseUrl}}/v1/topics/{{topicID}}/notifications?status={{status}}&limit={{limit}}",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "topics", "{{topicID}}", "publish", "{{jobID}}"]
+							"path": ["v1", "topics", "{{topicID}}", "notifications"],
+							"query": [
+								{
+									"key": "status",
+									"value": "{{status}}"
+								},
+								{
+									"key": "limit",
+									"value": "{{limit}}"
+								},
+								{
+									"key": "cursor",
+									"value": "{{cursor}}",
+									"disabled": true
+								}
+							]
 						},
-						"description": "Get the status of a publish job.\n\nStatus values:\n- QUEUED: Job is waiting to be processed\n- IN_PROGRESS: Job is currently being processed\n- COMPLETED: Job finished processing\n\nAlso returns total_count, success_count, failure_count for delivery stats."
+						"description": "List topic notification jobs with optional exact uppercase status filtering."
+					},
+					"response": []
+				},
+				{
+					"name": "List User Notifications",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/users/{{userID}}/notifications?status={{status}}&limit={{limit}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "users", "{{userID}}", "notifications"],
+							"query": [
+								{
+									"key": "status",
+									"value": "{{status}}"
+								},
+								{
+									"key": "limit",
+									"value": "{{limit}}"
+								},
+								{
+									"key": "cursor",
+									"value": "{{cursor}}",
+									"disabled": true
+								}
+							]
+						},
+						"description": "List notifications a user is currently eligible for: direct sends plus topic sends after the user's subscription time."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Notification Job",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/v1/notifications/{{jobID}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["v1", "notifications", "{{jobID}}"]
+						},
+						"description": "Get a notification job by ID.\n\nStatus values:\n- QUEUED\n- SCHEDULED\n- IN_PROGRESS\n- DISPATCHED\n- COMPLETED\n- FAILED\n\nAlso returns total_count, success_count, failure_count for delivery stats."
 					},
 					"response": []
 				}
@@ -486,5 +609,3 @@
 		}
 	]
 }
-
-
