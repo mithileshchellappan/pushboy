@@ -21,3 +21,22 @@ func TestFormatStorageTimePreservesSubsecondPrecision(t *testing.T) {
 		t.Fatalf("expected parsed time %s to equal input %s", parsed, input)
 	}
 }
+
+func TestScanStorageTimePreservesSubsecondPrecision(t *testing.T) {
+	input := time.Date(2026, 5, 1, 10, 30, 0, 123456789, time.UTC)
+	var got string
+
+	if err := scanStorageTime(&got).Scan(input); err != nil {
+		t.Fatalf("scan timestamp: %v", err)
+	}
+	if got != "2026-05-01T10:30:00.123456789Z" {
+		t.Fatalf("expected nanosecond precision, got %q", got)
+	}
+
+	if err := scanStorageTime(&got).Scan(nil); err != nil {
+		t.Fatalf("scan null timestamp: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("expected null timestamp to scan as empty string, got %q", got)
+	}
+}

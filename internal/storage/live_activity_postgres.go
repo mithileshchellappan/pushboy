@@ -28,20 +28,9 @@ func nullableJSONRawMessage(value json.RawMessage) any {
 	return []byte(trimmed)
 }
 
-func formatTimePtr(t sql.NullTime) string {
-	if !t.Valid {
-		return ""
-	}
-	return formatStorageTime(t.Time)
-}
-
 func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivityToken) error {
 	var platform string
 	var tokenType string
-	var createdAt time.Time
-	var lastSeenAt time.Time
-	var expiresAt sql.NullTime
-	var invalidatedAt sql.NullTime
 
 	if err := scanner.Scan(
 		&token.ID,
@@ -49,20 +38,16 @@ func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivi
 		&platform,
 		&tokenType,
 		&token.Token,
-		&createdAt,
-		&lastSeenAt,
-		&expiresAt,
-		&invalidatedAt,
+		scanStorageTime(&token.CreatedAt),
+		scanStorageTime(&token.LastSeenAt),
+		scanStorageTime(&token.ExpiresAt),
+		scanStorageTime(&token.InvalidatedAt),
 	); err != nil {
 		return err
 	}
 
 	token.Platform = model.Platform(platform)
 	token.TokenType = model.LiveActivityTokenType(tokenType)
-	token.CreatedAt = formatStorageTime(createdAt)
-	token.LastSeenAt = formatStorageTime(lastSeenAt)
-	token.ExpiresAt = formatTimePtr(expiresAt)
-	token.InvalidatedAt = formatTimePtr(invalidatedAt)
 	return nil
 }
 
@@ -84,10 +69,6 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 	var status string
 	var latestPayload []byte
 	var options []byte
-	var createdAt time.Time
-	var updatedAt time.Time
-	var expiresAt sql.NullTime
-	var closedAt sql.NullTime
 
 	if err := scanner.Scan(
 		&job.ID,
@@ -98,10 +79,10 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 		&status,
 		&latestPayload,
 		&options,
-		&createdAt,
-		&updatedAt,
-		&expiresAt,
-		&closedAt,
+		scanStorageTime(&job.CreatedAt),
+		scanStorageTime(&job.UpdatedAt),
+		scanStorageTime(&job.ExpiresAt),
+		scanStorageTime(&job.ClosedAt),
 	); err != nil {
 		return err
 	}
@@ -109,10 +90,6 @@ func scanLAJob(scanner interface{ Scan(dest ...any) error }, job *LiveActivityJo
 	job.Status = model.LiveActivityJobStatus(status)
 	job.LatestPayload = latestPayload
 	job.Options = options
-	job.CreatedAt = formatStorageTime(createdAt)
-	job.UpdatedAt = formatStorageTime(updatedAt)
-	job.ExpiresAt = formatTimePtr(expiresAt)
-	job.ClosedAt = formatTimePtr(closedAt)
 	return nil
 }
 
@@ -207,11 +184,9 @@ func (s *PostgresStore) SubscribeUserToLATopic(ctx context.Context, sub *LiveAct
 	)
 
 	var stored LiveActivityUserTopicSubscription
-	var createdAt time.Time
-	if err := row.Scan(&stored.ID, &stored.UserID, &stored.TopicID, &createdAt); err != nil {
+	if err := row.Scan(&stored.ID, &stored.UserID, &stored.TopicID, scanStorageTime(&stored.CreatedAt)); err != nil {
 		return nil, fmt.Errorf("error subscribing user to LA topic: %w", err)
 	}
-	stored.CreatedAt = formatStorageTime(createdAt)
 	return &stored, nil
 }
 

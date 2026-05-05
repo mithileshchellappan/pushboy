@@ -76,9 +76,6 @@ func scanPublishJob(scanner rowScanner) (*PublishJob, error) {
 	var job PublishJob
 	var payloadJSON []byte
 	var status string
-	var createdAt time.Time
-	var completedAt sql.NullTime
-	var scheduledAt sql.NullTime
 
 	err := scanner.Scan(
 		&job.ID,
@@ -89,22 +86,15 @@ func scanPublishJob(scanner rowScanner) (*PublishJob, error) {
 		&job.TotalCount,
 		&job.SuccessCount,
 		&job.FailureCount,
-		&createdAt,
-		&completedAt,
-		&scheduledAt,
+		scanStorageTime(&job.CreatedAt),
+		scanStorageTime(&job.CompletedAt),
+		scanStorageTime(&job.ScheduledAt),
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	job.Status = model.NotificationJobStatus(status)
-	job.CreatedAt = formatStorageTime(createdAt)
-	if completedAt.Valid {
-		job.CompletedAt = formatStorageTime(completedAt.Time)
-	}
-	if scheduledAt.Valid {
-		job.ScheduledAt = formatStorageTime(scheduledAt.Time)
-	}
 
 	if len(payloadJSON) > 0 {
 		var payload model.NotificationPayload
@@ -140,15 +130,13 @@ func (s *PostgresStore) GetUser(ctx context.Context, userID string) (*User, erro
 	row := s.db.QueryRowContext(ctx, query, userID)
 
 	var user User
-	var createdAt time.Time
-	err := row.Scan(&user.ID, &createdAt)
+	err := row.Scan(&user.ID, scanStorageTime(&user.CreatedAt))
 	if err == sql.ErrNoRows {
 		return nil, Errors.NotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("error getting user: %w", err)
 	}
-	user.CreatedAt = formatStorageTime(createdAt)
 
 	return &user, nil
 }
@@ -174,11 +162,9 @@ func (s *PostgresStore) ListUsers(ctx context.Context, query PageQuery) ([]User,
 	var users []User
 	for rows.Next() {
 		var user User
-		var createdAt time.Time
-		if err := rows.Scan(&user.ID, &createdAt); err != nil {
+		if err := rows.Scan(&user.ID, scanStorageTime(&user.CreatedAt)); err != nil {
 			return nil, fmt.Errorf("error scanning user: %w", err)
 		}
-		user.CreatedAt = formatStorageTime(createdAt)
 		users = append(users, user)
 	}
 
@@ -229,11 +215,9 @@ func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([
 	var tokens []Token
 	for rows.Next() {
 		var token Token
-		var createdAt time.Time
-		if err := rows.Scan(&token.ID, &token.UserID, &token.Platform, &token.Token, &createdAt); err != nil {
+		if err := rows.Scan(&token.ID, &token.UserID, &token.Platform, &token.Token, scanStorageTime(&token.CreatedAt)); err != nil {
 			return nil, fmt.Errorf("error scanning token: %w", err)
 		}
-		token.CreatedAt = formatStorageTime(createdAt)
 		tokens = append(tokens, token)
 	}
 
@@ -505,11 +489,9 @@ func (s *PostgresStore) GetUserSubscriptions(ctx context.Context, userID string)
 	var subs []UserTopicSubscription
 	for rows.Next() {
 		var sub UserTopicSubscription
-		var createdAt time.Time
-		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.TopicID, &createdAt); err != nil {
+		if err := rows.Scan(&sub.ID, &sub.UserID, &sub.TopicID, scanStorageTime(&sub.CreatedAt)); err != nil {
 			return nil, fmt.Errorf("error scanning subscription: %w", err)
 		}
-		sub.CreatedAt = formatStorageTime(createdAt)
 		subs = append(subs, sub)
 	}
 
@@ -529,11 +511,9 @@ func (s *PostgresStore) GetTopicSubscribers(ctx context.Context, topicID string)
 	var users []User
 	for rows.Next() {
 		var user User
-		var createdAt time.Time
-		if err := rows.Scan(&user.ID, &createdAt); err != nil {
+		if err := rows.Scan(&user.ID, scanStorageTime(&user.CreatedAt)); err != nil {
 			return nil, fmt.Errorf("error scanning user: %w", err)
 		}
-		user.CreatedAt = formatStorageTime(createdAt)
 		users = append(users, user)
 	}
 
@@ -566,13 +546,9 @@ func (s *PostgresStore) ListTopicSubscribers(ctx context.Context, topicID string
 	var subscribers []TopicSubscriber
 	for rows.Next() {
 		var subscriber TopicSubscriber
-		var createdAt time.Time
-		var subscribedAt time.Time
-		if err := rows.Scan(&subscriber.ID, &createdAt, &subscribedAt); err != nil {
+		if err := rows.Scan(&subscriber.ID, scanStorageTime(&subscriber.CreatedAt), scanStorageTime(&subscriber.SubscribedAt)); err != nil {
 			return nil, fmt.Errorf("error scanning topic subscriber: %w", err)
 		}
-		subscriber.CreatedAt = formatStorageTime(createdAt)
-		subscriber.SubscribedAt = formatStorageTime(subscribedAt)
 		subscribers = append(subscribers, subscriber)
 	}
 
