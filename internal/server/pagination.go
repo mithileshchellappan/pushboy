@@ -93,7 +93,7 @@ func encodeCursor(route string, status model.NotificationJobStatus, sortValue ti
 		Version:   cursorVersion,
 		Route:     route,
 		Status:    string(status),
-		SortValue: sortValue.UTC().Format(time.RFC3339Nano),
+		SortValue: formatAPITime(sortValue),
 		ID:        id,
 	})
 	if err != nil {
