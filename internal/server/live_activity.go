@@ -102,7 +102,7 @@ func (s *Server) handleRegisterLAToken(w http.ResponseWriter, r *http.Request) {
 
 	s.respond(w, r, map[string]any{
 		"user":  toUserResponsePtr(user),
-		"token": toLiveActivityTokenResponsePtr(token),
+		"token": toLATokenResponsePtr(token),
 	}, http.StatusCreated)
 }
 
@@ -147,7 +147,7 @@ func (s *Server) handleRegisterUserToLATopic(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	s.respond(w, r, toLiveActivitySubscriptionResponse(*sub), http.StatusCreated)
+	s.respond(w, r, toLASubscriptionResponse(*sub), http.StatusCreated)
 }
 
 func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
