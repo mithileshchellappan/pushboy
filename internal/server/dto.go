@@ -143,7 +143,7 @@ func toPublishJobResponse(job storage.PublishJob) publishJobResponse {
 	}
 }
 
-type liveActivityTokenResponse struct {
+type laTokenResponse struct {
 	ID            string
 	UserID        string
 	Platform      model.Platform
@@ -155,8 +155,8 @@ type liveActivityTokenResponse struct {
 	InvalidatedAt string
 }
 
-func toLiveActivityTokenResponse(token storage.LiveActivityToken) liveActivityTokenResponse {
-	return liveActivityTokenResponse{
+func toLATokenResponse(token storage.LiveActivityToken) laTokenResponse {
+	return laTokenResponse{
 		ID:            token.ID,
 		UserID:        token.UserID,
 		Platform:      token.Platform,
@@ -169,23 +169,23 @@ func toLiveActivityTokenResponse(token storage.LiveActivityToken) liveActivityTo
 	}
 }
 
-func toLiveActivityTokenResponsePtr(token *storage.LiveActivityToken) *liveActivityTokenResponse {
+func toLATokenResponsePtr(token *storage.LiveActivityToken) *laTokenResponse {
 	if token == nil {
 		return nil
 	}
-	response := toLiveActivityTokenResponse(*token)
+	response := toLATokenResponse(*token)
 	return &response
 }
 
-type liveActivitySubscriptionResponse struct {
+type laSubscriptionResponse struct {
 	ID        string
 	UserID    string
 	TopicID   string
 	CreatedAt string
 }
 
-func toLiveActivitySubscriptionResponse(sub storage.LiveActivityUserTopicSubscription) liveActivitySubscriptionResponse {
-	return liveActivitySubscriptionResponse{
+func toLASubscriptionResponse(sub storage.LiveActivityUserTopicSubscription) laSubscriptionResponse {
+	return laSubscriptionResponse{
 		ID:        sub.ID,
 		UserID:    sub.UserID,
 		TopicID:   sub.TopicID,
