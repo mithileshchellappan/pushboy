@@ -63,7 +63,7 @@ func (s *SenderWorker) sendPushTask(ctx context.Context, task model.SendTask) {
 		ID:           uuid.New().String(),
 		JobID:        task.Job.ID,
 		TokenID:      task.Target.TokenID,
-		DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+		DispatchedAt: time.Now().UTC(),
 	}
 	if !ok {
 		receipt.Status = model.DeliveryStatusFailed
@@ -99,7 +99,7 @@ func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 		ID:           uuid.New().String(),
 		JobID:        task.Job.ID,
 		TokenID:      task.Target.TokenID,
-		DispatchedAt: time.Now().UTC().Format(time.RFC3339),
+		DispatchedAt: time.Now().UTC(),
 	}
 	if !ok {
 		receipt.Status = model.DeliveryStatusFailed

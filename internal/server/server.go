@@ -148,7 +148,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respond(w, r, user, http.StatusCreated)
+	s.respond(w, r, toUserResponse(*user), http.StatusCreated)
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
@@ -167,9 +167,9 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := makeListResponse(users, limit, route, "", func(user storage.User) (string, string) {
+	response := makeMappedListResponse(users, limit, route, "", func(user storage.User) (time.Time, string) {
 		return user.CreatedAt, user.ID
-	})
+	}, toUserResponse)
 	s.respond(w, r, response, http.StatusOK)
 }
 
@@ -191,7 +191,7 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respond(w, r, user, http.StatusOK)
+	s.respond(w, r, toUserResponse(*user), http.StatusOK)
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
@@ -252,11 +252,11 @@ func (s *Server) handleRegisterToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := struct {
-		User  *storage.User  `json:"user"`
-		Token *storage.Token `json:"token"`
+		User  *userResponse  `json:"user"`
+		Token *tokenResponse `json:"token"`
 	}{
-		User:  user,
-		Token: token,
+		User:  toUserResponsePtr(user),
+		Token: toTokenResponsePtr(token),
 	}
 
 	s.respond(w, r, response, http.StatusCreated)
@@ -276,7 +276,7 @@ func (s *Server) handleGetUserTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respond(w, r, tokens, http.StatusOK)
+	s.respond(w, r, toTokenResponses(tokens), http.StatusOK)
 }
 
 func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
@@ -330,7 +330,7 @@ func (s *Server) handleSubscribeToTopic(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.respond(w, r, sub, http.StatusCreated)
+	s.respond(w, r, toSubscriptionResponse(*sub), http.StatusCreated)
 }
 
 func (s *Server) handleUnsubscribeFromTopic(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +374,7 @@ func (s *Server) handleGetUserSubscriptions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	s.respond(w, r, subs, http.StatusOK)
+	s.respond(w, r, toSubscriptionResponses(subs), http.StatusOK)
 }
 
 func (s *Server) handleListUserNotifications(w http.ResponseWriter, r *http.Request) {
@@ -402,9 +402,9 @@ func (s *Server) handleListUserNotifications(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+	response := makeMappedListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (time.Time, string) {
 		return notificationJobCursorTime(job), job.ID
-	})
+	}, toPublishJobResponse)
 	s.respond(w, r, response, http.StatusOK)
 }
 
@@ -473,7 +473,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		UserID:   userID,
 	}
 
-	if job.ScheduledAt == "" {
+	if job.ScheduledAt == nil {
 		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
 			log.Printf("Error enqueueing immediate user job %s: %v", job.ID, err)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
@@ -614,9 +614,9 @@ func (s *Server) handleListTopicSubscribers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	response := makeListResponse(subscribers, limit, route, "", func(subscriber storage.TopicSubscriber) (string, string) {
+	response := makeMappedListResponse(subscribers, limit, route, "", func(subscriber storage.TopicSubscriber) (time.Time, string) {
 		return subscriber.SubscribedAt, subscriber.ID
-	})
+	}, toTopicSubscriberResponse)
 	s.respond(w, r, response, http.StatusOK)
 }
 
@@ -645,9 +645,9 @@ func (s *Server) handleListTopicNotifications(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	response := makeListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (string, string) {
+	response := makeMappedListResponse(jobs, limit, route, query.Status, func(job storage.PublishJob) (time.Time, string) {
 		return notificationJobCursorTime(job), job.ID
-	})
+	}, toPublishJobResponse)
 	s.respond(w, r, response, http.StatusOK)
 }
 
@@ -709,7 +709,7 @@ func (s *Server) handlePublishToTopic(w http.ResponseWriter, r *http.Request) {
 		TopicID: topicID,
 	}
 
-	if job.ScheduledAt == "" {
+	if job.ScheduledAt == nil {
 		if err := s.enqueueImmediateJob(job.ID, jobItem); err != nil {
 			log.Printf("Error enqueueing immediate topic job %s: %v", job.ID, err)
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, pipeline.ErrClosed) {
@@ -741,7 +741,7 @@ func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.respond(w, r, job, http.StatusOK)
+	s.respond(w, r, toPublishJobResponse(*job), http.StatusOK)
 }
 
 // Helper

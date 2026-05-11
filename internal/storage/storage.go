@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
@@ -11,11 +12,11 @@ import (
 // User represents a user in the system
 type User struct {
 	ID        string
-	CreatedAt string
+	CreatedAt time.Time
 }
 
 type PageCursor struct {
-	SortValue string
+	SortValue time.Time
 	ID        string
 }
 
@@ -36,7 +37,7 @@ type Token struct {
 	UserID    string
 	Platform  model.Platform // apns or fcm
 	Token     string
-	CreatedAt string
+	CreatedAt time.Time
 }
 
 // Topic represents a notification topic
@@ -50,13 +51,13 @@ type UserTopicSubscription struct {
 	ID        string
 	UserID    string
 	TopicID   string
-	CreatedAt string
+	CreatedAt time.Time
 }
 
 type TopicSubscriber struct {
 	ID           string
-	CreatedAt    string
-	SubscribedAt string
+	CreatedAt    time.Time
+	SubscribedAt time.Time
 }
 
 // NotificationPayload stores the full notification content as JSON
@@ -72,9 +73,9 @@ type PublishJob struct {
 	TotalCount   int
 	SuccessCount int
 	FailureCount int
-	CreatedAt    string
-	CompletedAt  string
-	ScheduledAt  string
+	CreatedAt    time.Time
+	CompletedAt  *time.Time
+	ScheduledAt  *time.Time
 }
 
 // DeliveryReceipt tracks the delivery status of a notification
@@ -91,17 +92,17 @@ type LiveActivityToken struct {
 	Platform      model.Platform
 	TokenType     model.LiveActivityTokenType
 	Token         string
-	CreatedAt     string
-	LastSeenAt    string
-	ExpiresAt     string
-	InvalidatedAt string
+	CreatedAt     time.Time
+	LastSeenAt    time.Time
+	ExpiresAt     *time.Time
+	InvalidatedAt *time.Time
 }
 
 type LiveActivityUserTopicSubscription struct {
 	ID        string
 	UserID    string
 	TopicID   string
-	CreatedAt string
+	CreatedAt time.Time
 }
 
 type LiveActivityJob struct {
@@ -113,10 +114,10 @@ type LiveActivityJob struct {
 	Status        model.LiveActivityJobStatus
 	LatestPayload json.RawMessage
 	Options       json.RawMessage
-	CreatedAt     string
-	UpdatedAt     string
-	ExpiresAt     string
-	ClosedAt      string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	ExpiresAt     *time.Time
+	ClosedAt      *time.Time
 }
 
 type LiveActivityDispatch struct {
@@ -129,8 +130,8 @@ type LiveActivityDispatch struct {
 	TotalCount        int
 	SuccessCount      int
 	FailureCount      int
-	CreatedAt         string
-	CompletedAt       string
+	CreatedAt         time.Time
+	CompletedAt       *time.Time
 }
 
 type LiveActivityTokenBatch struct {
@@ -200,9 +201,9 @@ type Store interface {
 	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
 	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
 	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
-	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt string) error
+	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt time.Time) error
 	RollbackLAStartJob(ctx context.Context, jobID string) error
-	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt string) error
+	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt time.Time) error
 	FailLAJobIfActive(ctx context.Context, jobID string) error
 	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error

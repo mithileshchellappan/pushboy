@@ -130,8 +130,7 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `SERVER_PORT` | `:8080` | HTTP bind address. Use a private network or gateway in production. |
-| `DATABASE_DRIVER` | `postgres` | Postgres is the supported runtime driver today. |
-| `DATABASE_URL` | `./pushboy.db` | Set this explicitly to a Postgres connection string. |
+| `DATABASE_URL` | `postgres://localhost:5432/pushboy?sslmode=disable` | Postgres connection string. |
 | `WORKER_COUNT` | `10` | Master workers that fan out jobs into token batches. |
 | `SENDER_COUNT` | `200` | Sender workers that call APNS/FCM. |
 | `JOB_QUEUE_SIZE` | `1000` | Buffer size for in-process queues. |

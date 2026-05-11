@@ -18,8 +18,7 @@ type Config struct {
 	MaxRetryNotification int
 	//TODO: LA Add separate retry count for LA
 
-	DatabaseDriver string
-	DatabaseURL    string
+	DatabaseURL string
 
 	APNSKeyID      string
 	APNSTeamID     string
@@ -43,8 +42,7 @@ func Load() *Config {
 		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
 		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
 		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
-		DatabaseDriver:       getEnv("DATABASE_DRIVER", "postgres"),
-		DatabaseURL:          getEnv("DATABASE_URL", "./pushboy.db"),
+		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/pushboy?sslmode=disable"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
 		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
 		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
