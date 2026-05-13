@@ -11,8 +11,14 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
+type schedulerStore interface {
+	GetScheduledJobs(ctx context.Context) ([]storage.PublishJob, error)
+	UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error
+	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
+}
+
 type Scheduler struct {
-	store       storage.Store
+	store       schedulerStore
 	jobPipeline pipeline.Pipeline[model.JobItem]
 	stopChan    chan struct{}
 	interval    int
@@ -24,7 +30,7 @@ const (
 	liveActivitySweepMaxBatches = 2
 )
 
-func New(store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], interval int) *Scheduler {
+func New(store schedulerStore, jobPipeline pipeline.Pipeline[model.JobItem], interval int) *Scheduler {
 	return &Scheduler{
 		store:       store,
 		jobPipeline: jobPipeline,
