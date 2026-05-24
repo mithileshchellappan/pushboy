@@ -916,6 +916,10 @@ components:
         topicId:
           type: string
           example: live-orders
+        activityId:
+          type: string
+          description: Associates this token with a specific Live Activity for scoped update/end fanout.
+          example: order-123
         platform:
           $ref: "#/components/schemas/Platform"
         tokenType:
@@ -1135,6 +1139,9 @@ components:
           $ref: "#/components/schemas/LiveActivityTokenType"
         Token:
           type: string
+        ActivityID:
+          type: string
+          description: Activity associated by this registration, when provided.
         CreatedAt:
           type: string
         LastSeenAt:

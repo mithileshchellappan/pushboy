@@ -92,6 +92,7 @@ type LiveActivityToken struct {
 	Platform      model.Platform
 	TokenType     model.LiveActivityTokenType
 	Token         string
+	ActivityID    string
 	CreatedAt     time.Time
 	LastSeenAt    time.Time
 	ExpiresAt     *time.Time

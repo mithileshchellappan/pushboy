@@ -228,6 +228,7 @@ curl -X POST http://localhost:8080/v1/live-activity/tokens \
   -d '{
     "userId": "user-123",
     "topicId": "orders",
+    "activityId": "order-123",
     "platform": "apns",
     "tokenType": "start",
     "token": "live-activity-token"
