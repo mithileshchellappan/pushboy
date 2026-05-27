@@ -674,6 +674,17 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 			OR
 			(
 				lad.action <> 'start'
+				AND (
+					(laj.user_id IS NOT NULL AND lat.user_id = laj.user_id)
+					OR
+					(
+						laj.topic_id IS NOT NULL AND lat.user_id IN (
+							SELECT user_id
+							FROM live_activity_user_topic_subscriptions
+							WHERE topic_id = laj.topic_id
+						)
+					)
+				)
 				AND EXISTS (
 					SELECT 1
 					FROM live_activity_token_activities lata
@@ -770,6 +781,17 @@ func (s *PostgresStore) logLAScopedFanoutShadow(ctx context.Context, dispatchID 
 		            (lat.platform = 'apns' AND lat.token_type = CASE WHEN d.action = 'start' THEN 'start' ELSE 'update' END)
 		            OR
 		            (lat.platform = 'fcm' AND lat.token_type = 'update')
+		          )
+		          AND (
+		            (d.user_id IS NOT NULL AND lat.user_id = d.user_id)
+		            OR
+		            (
+		              d.topic_id IS NOT NULL AND lat.user_id IN (
+		                SELECT user_id
+		                FROM live_activity_user_topic_subscriptions
+		                WHERE topic_id = d.topic_id
+		              )
+		            )
 		          )
 		       ) AS associated_candidates
 		FROM dispatch d`,
