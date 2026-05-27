@@ -32,15 +32,6 @@ func TestIsLAInvalidToken(t *testing.T) {
 func TestSummarizeLAOutcomes(t *testing.T) {
 	outcomes := []model.SendOutcome{
 		{
-			Task: model.SendTask{
-				Target: model.SendTarget{
-					Platform: model.FCM,
-				},
-				Job: &model.JobItem{
-					LAAction:     model.LiveActivityActionStart,
-					LAActivityID: "activity-1",
-				},
-			},
 			Receipt: model.DeliveryReceipt{
 				JobID:   "dispatch-1",
 				TokenID: "token-1",
@@ -73,7 +64,7 @@ func TestSummarizeLAOutcomes(t *testing.T) {
 		},
 	}
 
-	deltas, invalidTokenIDs, tokenActivities := summarizeLAOutcomes(outcomes)
+	deltas, invalidTokenIDs := summarizeLAOutcomes(outcomes)
 
 	if got := deltas["dispatch-1"]; got.success != 1 || got.failure != 2 {
 		t.Fatalf("dispatch-1 delta = %+v, want 1 success / 2 failure", got)
@@ -89,11 +80,5 @@ func TestSummarizeLAOutcomes(t *testing.T) {
 	}
 	if _, ok := invalidTokenIDs["token-3"]; ok {
 		t.Fatalf("token-3 generic failure should not be marked invalid")
-	}
-	if len(tokenActivities) != 1 {
-		t.Fatalf("tokenActivities length = %d, want 1", len(tokenActivities))
-	}
-	if tokenActivities[0].tokenID != "token-1" || tokenActivities[0].activityID != "activity-1" || tokenActivities[0].source != "start_dispatch" {
-		t.Fatalf("tokenActivities[0] = %+v", tokenActivities[0])
 	}
 }

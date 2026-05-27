@@ -138,6 +138,7 @@ func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *Live
 		token.CreatedAt = token.CreatedAt.UTC()
 	}
 	token.LastSeenAt = now
+	activityID := strings.TrimSpace(token.ActivityID)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -145,25 +146,6 @@ func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *Live
 	}
 	defer tx.Rollback()
 
-	stored, err := upsertLiveActivityTokenTx(ctx, tx, token)
-	if err != nil {
-		return nil, err
-	}
-
-	if strings.TrimSpace(token.ActivityID) != "" {
-		if err := associateLiveActivityTokenTx(ctx, tx, strings.TrimSpace(token.ActivityID), stored.ID, now, "registration"); err != nil {
-			return nil, err
-		}
-		stored.ActivityID = strings.TrimSpace(token.ActivityID)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("error committing LA token upsert transaction: %w", err)
-	}
-	return stored, nil
-}
-
-func upsertLiveActivityTokenTx(ctx context.Context, tx *sql.Tx, token *LiveActivityToken) (*LiveActivityToken, error) {
 	row := tx.QueryRowContext(
 		ctx,
 		`INSERT INTO live_activity_tokens(
@@ -191,32 +173,38 @@ func upsertLiveActivityTokenTx(ctx context.Context, tx *sql.Tx, token *LiveActiv
 	if err := scanLAToken(row, &stored); err != nil {
 		return nil, fmt.Errorf("error upserting LA token: %w", err)
 	}
+
+	if activityID != "" {
+		if err := associateLiveActivityTokenTx(ctx, tx, activityID, stored.ID, now); err != nil {
+			return nil, err
+		}
+		stored.ActivityID = activityID
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("error committing LA token upsert transaction: %w", err)
+	}
 	return &stored, nil
 }
 
-func associateLiveActivityTokenTx(ctx context.Context, tx *sql.Tx, activityID string, tokenID string, lastSeenAt time.Time, source string) error {
-	activityID = strings.TrimSpace(activityID)
-	tokenID = strings.TrimSpace(tokenID)
-	source = strings.TrimSpace(source)
-	if activityID == "" || tokenID == "" {
-		return nil
+func associateLiveActivityTokenTx(ctx context.Context, tx *sql.Tx, activityID string, tokenID string, lastSeenAt time.Time) error {
+	if activityID == "" {
+		return fmt.Errorf("activityID is required for LA token association")
 	}
-	if source == "" {
-		source = "unknown"
+	if tokenID == "" {
+		return fmt.Errorf("tokenID is required for LA token association")
 	}
 
 	if _, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO live_activity_token_activities(activity_id, token_id, created_at, last_seen_at, source)
-		 VALUES($1, $2, $3, $3, $4)
+		`INSERT INTO live_activity_token_activities(activity_id, token_id, created_at, last_seen_at)
+		 VALUES($1, $2, $3, $3)
 		 ON CONFLICT (activity_id, token_id)
 		 DO UPDATE SET
-		    last_seen_at = EXCLUDED.last_seen_at,
-		    source = EXCLUDED.source`,
+		    last_seen_at = EXCLUDED.last_seen_at`,
 		activityID,
 		tokenID,
 		lastSeenAt.UTC(),
-		source,
 	); err != nil {
 		return fmt.Errorf("error associating LA token with activity: %w", err)
 	}
@@ -611,8 +599,23 @@ func (s *PostgresStore) UpdateLADispatchStatus(ctx context.Context, dispatchID s
 }
 
 func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error) {
-	if cursor == "" && !liveActivityScopedUpdateFanoutEnabled() {
+	scopedFanout := liveActivityScopedUpdateFanoutEnabled()
+	if cursor == "" && !scopedFanout {
 		s.logLAScopedFanoutShadow(ctx, dispatchID)
+	}
+
+	activityFilter := ""
+	if scopedFanout {
+		activityFilter = `
+	   AND (
+		lad.action = 'start'
+		OR EXISTS (
+			SELECT 1
+			FROM live_activity_token_activities lata
+			WHERE lata.activity_id = laj.activity_id
+			  AND lata.token_id = lat.id
+		)
+	   )`
 	}
 
 	query := `SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
@@ -630,72 +633,17 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 	   AND lat.id > $2
 	   AND (
 		(laj.user_id IS NOT NULL AND lat.user_id = laj.user_id)
-		OR
-		(
-			laj.topic_id IS NOT NULL AND lat.user_id IN (
+		OR (
+			laj.topic_id IS NOT NULL
+			AND lat.user_id IN (
 				SELECT user_id
 				FROM live_activity_user_topic_subscriptions
 				WHERE topic_id = laj.topic_id
 			)
 		)
-	   )
+	   )` + activityFilter + `
 	 ORDER BY lat.id
 	 LIMIT $3`
-
-	if liveActivityScopedUpdateFanoutEnabled() {
-		query = `SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
-		 FROM live_activity_dispatches lad
-		 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
-		 JOIN live_activity_tokens lat
-		   ON lat.invalidated_at IS NULL
-		  AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-		  AND (
-			(lat.platform = 'apns' AND lat.token_type = CASE WHEN lad.action = 'start' THEN 'start' ELSE 'update' END)
-			OR
-			(lat.platform = 'fcm' AND lat.token_type = 'update')
-		  )
-		 WHERE lad.id = $1
-		   AND lat.id > $2
-		   AND (
-			(
-				lad.action = 'start'
-				AND (
-					(laj.user_id IS NOT NULL AND lat.user_id = laj.user_id)
-					OR
-					(
-						laj.topic_id IS NOT NULL AND lat.user_id IN (
-							SELECT user_id
-							FROM live_activity_user_topic_subscriptions
-							WHERE topic_id = laj.topic_id
-						)
-					)
-				)
-			)
-			OR
-			(
-				lad.action <> 'start'
-				AND (
-					(laj.user_id IS NOT NULL AND lat.user_id = laj.user_id)
-					OR
-					(
-						laj.topic_id IS NOT NULL AND lat.user_id IN (
-							SELECT user_id
-							FROM live_activity_user_topic_subscriptions
-							WHERE topic_id = laj.topic_id
-						)
-					)
-				)
-				AND EXISTS (
-					SELECT 1
-					FROM live_activity_token_activities lata
-					WHERE lata.activity_id = laj.activity_id
-					  AND lata.token_id = lat.id
-				)
-			)
-		   )
-		 ORDER BY lat.id
-		 LIMIT $3`
-	}
 
 	rows, err := s.db.QueryContext(
 		ctx,
@@ -739,60 +687,42 @@ func (s *PostgresStore) logLAScopedFanoutShadow(ctx context.Context, dispatchID 
 	err := s.db.QueryRowContext(
 		ctx,
 		`WITH dispatch AS (
-			SELECT lad.action, laj.activity_id, laj.user_id, laj.topic_id
-			FROM live_activity_dispatches lad
-			JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
-			WHERE lad.id = $1
-			  AND lad.action <> 'start'
+			 SELECT lad.action, laj.activity_id, laj.user_id, laj.topic_id
+			 FROM live_activity_dispatches lad
+			 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
+			 WHERE lad.id = $1
+			   AND lad.action <> 'start'
+		),
+		scoped_tokens AS (
+			 SELECT d.activity_id, lat.id
+			 FROM dispatch d
+			 JOIN live_activity_tokens lat
+			   ON lat.invalidated_at IS NULL
+			  AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+			  AND (
+				(lat.platform = 'apns' AND lat.token_type = 'update')
+				OR
+				(lat.platform = 'fcm' AND lat.token_type = 'update')
+			  )
+			 WHERE (d.user_id IS NOT NULL AND lat.user_id = d.user_id)
+			    OR (
+				d.topic_id IS NOT NULL
+				AND lat.user_id IN (
+					SELECT user_id
+					FROM live_activity_user_topic_subscriptions
+					WHERE topic_id = d.topic_id
+				)
+			    )
 		)
 		SELECT d.action,
 		       d.activity_id,
+		       (SELECT COUNT(*) FROM scoped_tokens) AS broadcast_candidates,
 		       (
-		        SELECT COUNT(*)
-		        FROM live_activity_tokens lat
-		        WHERE lat.invalidated_at IS NULL
-		          AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-		          AND (
-		            (lat.platform = 'apns' AND lat.token_type = CASE WHEN d.action = 'start' THEN 'start' ELSE 'update' END)
-		            OR
-		            (lat.platform = 'fcm' AND lat.token_type = 'update')
-		          )
-		          AND (
-		            (d.user_id IS NOT NULL AND lat.user_id = d.user_id)
-		            OR
-		            (
-		              d.topic_id IS NOT NULL AND lat.user_id IN (
-		                SELECT user_id
-		                FROM live_activity_user_topic_subscriptions
-		                WHERE topic_id = d.topic_id
-		              )
-		            )
-		          )
-		       ) AS broadcast_candidates,
-		       (
-		        SELECT COUNT(*)
-		        FROM live_activity_tokens lat
-		        JOIN live_activity_token_activities lata
-		          ON lata.token_id = lat.id
-		         AND lata.activity_id = d.activity_id
-		        WHERE lat.invalidated_at IS NULL
-		          AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-		          AND (
-		            (lat.platform = 'apns' AND lat.token_type = CASE WHEN d.action = 'start' THEN 'start' ELSE 'update' END)
-		            OR
-		            (lat.platform = 'fcm' AND lat.token_type = 'update')
-		          )
-		          AND (
-		            (d.user_id IS NOT NULL AND lat.user_id = d.user_id)
-		            OR
-		            (
-		              d.topic_id IS NOT NULL AND lat.user_id IN (
-		                SELECT user_id
-		                FROM live_activity_user_topic_subscriptions
-		                WHERE topic_id = d.topic_id
-		              )
-		            )
-		          )
+			SELECT COUNT(*)
+			FROM scoped_tokens st
+			JOIN live_activity_token_activities lata
+			  ON lata.token_id = st.id
+			 AND lata.activity_id = st.activity_id
 		       ) AS associated_candidates
 		FROM dispatch d`,
 		dispatchID,
@@ -818,12 +748,6 @@ func (s *PostgresStore) logLAScopedFanoutShadow(ctx context.Context, dispatchID 
 type laOutcomeDelta struct {
 	success int
 	failure int
-}
-
-type laTokenActivityAssociation struct {
-	tokenID    string
-	activityID string
-	source     string
 }
 
 func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
@@ -870,12 +794,25 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 	}
 	defer tx.Rollback()
 
-	deltas, invalidTokenIDs, tokenActivities := summarizeLAOutcomes(outcomes)
+	deltas, invalidTokenIDs := summarizeLAOutcomes(outcomes)
 	if err := invalidateLATokensTx(ctx, tx, invalidTokenIDs); err != nil {
 		return err
 	}
-	if err := associateLATokensTx(ctx, tx, tokenActivities, time.Now().UTC()); err != nil {
-		return err
+
+	lastSeenAt := time.Now().UTC()
+	for _, outcome := range outcomes {
+		if outcome.Receipt.Status != model.DeliveryStatusSuccess ||
+			outcome.Task.Job == nil ||
+			outcome.Task.Job.LAAction != model.LiveActivityActionStart ||
+			outcome.Task.Job.LAActivityID == "" ||
+			outcome.Task.Target.Platform != model.FCM ||
+			outcome.Receipt.TokenID == "" {
+			continue
+		}
+
+		if err := associateLiveActivityTokenTx(ctx, tx, outcome.Task.Job.LAActivityID, outcome.Receipt.TokenID, lastSeenAt); err != nil {
+			return err
+		}
 	}
 
 	if err := applyLAOutcomeDeltasTx(ctx, tx, deltas); err != nil {
@@ -918,10 +855,9 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 	return nil
 }
 
-func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelta, map[string]struct{}, []laTokenActivityAssociation) {
+func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelta, map[string]struct{}) {
 	deltas := make(map[string]laOutcomeDelta)
 	invalidTokenIDs := make(map[string]struct{})
-	tokenActivities := make([]laTokenActivityAssociation, 0)
 
 	for _, outcome := range outcomes {
 		dispatchID := outcome.Receipt.JobID
@@ -929,17 +865,6 @@ func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelt
 		switch outcome.Receipt.Status {
 		case model.DeliveryStatusSuccess:
 			delta.success++
-			if outcome.Task.Job != nil &&
-				outcome.Task.Job.LAAction == model.LiveActivityActionStart &&
-				outcome.Task.Job.LAActivityID != "" &&
-				outcome.Task.Target.Platform == model.FCM &&
-				outcome.Receipt.TokenID != "" {
-				tokenActivities = append(tokenActivities, laTokenActivityAssociation{
-					tokenID:    outcome.Receipt.TokenID,
-					activityID: outcome.Task.Job.LAActivityID,
-					source:     "start_dispatch",
-				})
-			}
 		case model.DeliveryStatusFailed:
 			delta.failure++
 			if isLAInvalidToken(outcome.Receipt.StatusReason) {
@@ -949,7 +874,7 @@ func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelt
 		deltas[dispatchID] = delta
 	}
 
-	return deltas, invalidTokenIDs, tokenActivities
+	return deltas, invalidTokenIDs
 }
 
 func invalidateLATokensTx(ctx context.Context, tx *sql.Tx, invalidTokenIDs map[string]struct{}) error {
@@ -970,33 +895,6 @@ func invalidateLATokensTx(ctx context.Context, tx *sql.Tx, invalidTokenIDs map[s
 		pq.Array(tokenIDs),
 	); err != nil {
 		return fmt.Errorf("error invalidating LA tokens: %w", err)
-	}
-	return nil
-}
-
-func associateLATokensTx(ctx context.Context, tx *sql.Tx, associations []laTokenActivityAssociation, lastSeenAt time.Time) error {
-	if len(associations) == 0 {
-		return nil
-	}
-
-	seen := make(map[string]struct{}, len(associations))
-	for _, association := range associations {
-		key := association.activityID + "\x00" + association.tokenID
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-
-		if err := associateLiveActivityTokenTx(
-			ctx,
-			tx,
-			association.activityID,
-			association.tokenID,
-			lastSeenAt,
-			association.source,
-		); err != nil {
-			return err
-		}
 	}
 	return nil
 }

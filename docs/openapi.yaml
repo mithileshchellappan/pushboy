@@ -1139,9 +1139,6 @@ components:
           $ref: "#/components/schemas/LiveActivityTokenType"
         Token:
           type: string
-        ActivityID:
-          type: string
-          description: Activity associated by this registration, when provided.
         CreatedAt:
           type: string
         LastSeenAt:

@@ -202,15 +202,6 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
 	}
-	var response struct {
-		Token *laTokenResponse
-	}
-	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if response.Token == nil || response.Token.ActivityID != "session-1_2026" {
-		t.Fatalf("response.Token = %+v", response.Token)
-	}
 }
 
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem]) http.Handler {

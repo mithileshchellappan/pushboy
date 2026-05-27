@@ -149,7 +149,6 @@ type laTokenResponse struct {
 	Platform      model.Platform
 	TokenType     model.LiveActivityTokenType
 	Token         string
-	ActivityID    string `json:"ActivityID,omitempty"`
 	CreatedAt     string
 	LastSeenAt    string
 	ExpiresAt     string
@@ -163,7 +162,6 @@ func toLATokenResponse(token storage.LiveActivityToken) laTokenResponse {
 		Platform:      token.Platform,
 		TokenType:     token.TokenType,
 		Token:         token.Token,
-		ActivityID:    token.ActivityID,
 		CreatedAt:     formatAPITime(token.CreatedAt),
 		LastSeenAt:    formatAPITime(token.LastSeenAt),
 		ExpiresAt:     formatAPIOptionalTime(token.ExpiresAt),

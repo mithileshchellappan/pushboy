@@ -230,8 +230,8 @@ curl -X POST http://localhost:8080/v1/live-activity/tokens \
     "topicId": "orders",
     "activityId": "order-123",
     "platform": "apns",
-    "tokenType": "start",
-    "token": "live-activity-token"
+    "tokenType": "update",
+    "token": "live-activity-update-token"
   }'
 ```
 
