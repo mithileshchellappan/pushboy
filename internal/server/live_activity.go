@@ -15,12 +15,13 @@ import (
 )
 
 type registerLiveActivityTokenRequest struct {
-	UserID    string `json:"userId"`
-	TopicID   string `json:"topicId,omitempty"`
-	Platform  string `json:"platform"`
-	TokenType string `json:"tokenType"`
-	Token     string `json:"token"`
-	ExpiresAt string `json:"expiresAt,omitempty"`
+	UserID     string `json:"userId"`
+	TopicID    string `json:"topicId,omitempty"`
+	ActivityID string `json:"activityId,omitempty"`
+	Platform   string `json:"platform"`
+	TokenType  string `json:"tokenType"`
+	Token      string `json:"token"`
+	ExpiresAt  string `json:"expiresAt,omitempty"`
 }
 
 type deleteLiveActivityTokenRequest struct {
@@ -88,6 +89,7 @@ func (s *Server) handleRegisterLAToken(w http.ResponseWriter, r *http.Request) {
 		req.Token,
 		req.TopicID,
 		req.ExpiresAt,
+		req.ActivityID,
 	)
 	if err != nil {
 		switch {

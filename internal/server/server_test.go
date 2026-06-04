@@ -152,6 +152,58 @@ func TestHandleSendToUserNotificationValidation(t *testing.T) {
 	})
 }
 
+func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
+	now := time.Now().UTC()
+	store := &serverStoreStub{t: t}
+	store.getUserFunc = func(ctx context.Context, userID string) (*storage.User, error) {
+		if userID != "user-1" {
+			t.Fatalf("GetUser userID = %q, want user-1", userID)
+		}
+		return &storage.User{ID: userID, CreatedAt: now}, nil
+	}
+	store.getTopicByIDFunc = func(ctx context.Context, topicID string) (*storage.Topic, error) {
+		if topicID != "broadcast" {
+			t.Fatalf("GetTopicByID topicID = %q, want broadcast", topicID)
+		}
+		return &storage.Topic{ID: topicID, Name: topicID}, nil
+	}
+	store.subscribeUserToLATopicFunc = func(ctx context.Context, sub *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error) {
+		if sub.UserID != "user-1" || sub.TopicID != "broadcast" {
+			t.Fatalf("SubscribeUserToLATopic sub = %+v", sub)
+		}
+		return sub, nil
+	}
+	store.upsertLiveActivityTokenFunc = func(ctx context.Context, token *storage.LiveActivityToken) (*storage.LiveActivityToken, error) {
+		if token.UserID != "user-1" || token.Platform != model.APNS || token.TokenType != model.LiveActivityTokenTypeUpdate || token.Token != "la-token" {
+			t.Fatalf("UpsertLiveActivityToken token = %+v", token)
+		}
+		if token.ActivityID != "session-1_2026" {
+			t.Fatalf("UpsertLiveActivityToken ActivityID = %q, want session-1_2026", token.ActivityID)
+		}
+		token.ID = "token-id"
+		token.CreatedAt = now
+		token.LastSeenAt = now
+		return token, nil
+	}
+
+	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true})
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
+		"userId":"user-1",
+		"topicId":"broadcast",
+		"activityId":"session-1_2026",
+		"platform":"apns",
+		"tokenType":"update",
+		"token":"la-token"
+	}`))
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+}
+
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem]) http.Handler {
 	t.Helper()
 
@@ -188,11 +240,14 @@ func (p *serverJobPipeline) Close(ctx context.Context) error {
 type serverStoreStub struct {
 	t *testing.T
 
-	getUserFunc              func(context.Context, string) (*storage.User, error)
-	createUserFunc           func(context.Context, *storage.User) (*storage.User, error)
-	createTokenFunc          func(context.Context, *storage.Token) (*storage.Token, error)
-	createUserPublishJobFunc func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
-	updateJobStatusFunc      func(context.Context, string, model.NotificationJobStatus) error
+	getUserFunc                 func(context.Context, string) (*storage.User, error)
+	getTopicByIDFunc            func(context.Context, string) (*storage.Topic, error)
+	createUserFunc              func(context.Context, *storage.User) (*storage.User, error)
+	createTokenFunc             func(context.Context, *storage.Token) (*storage.Token, error)
+	upsertLiveActivityTokenFunc func(context.Context, *storage.LiveActivityToken) (*storage.LiveActivityToken, error)
+	subscribeUserToLATopicFunc  func(context.Context, *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error)
+	createUserPublishJobFunc    func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
+	updateJobStatusFunc         func(context.Context, string, model.NotificationJobStatus) error
 }
 
 func (s *serverStoreStub) unused(method string) {
@@ -267,6 +322,9 @@ func (s *serverStoreStub) ListTopics(ctx context.Context) ([]storage.Topic, erro
 }
 
 func (s *serverStoreStub) GetTopicByID(ctx context.Context, topicID string) (*storage.Topic, error) {
+	if s.getTopicByIDFunc != nil {
+		return s.getTopicByIDFunc(ctx, topicID)
+	}
 	s.unused("GetTopicByID")
 	return nil, errors.New("unexpected GetTopicByID")
 }
@@ -398,6 +456,9 @@ func (s *serverStoreStub) GetScheduledJobs(ctx context.Context) ([]storage.Publi
 }
 
 func (s *serverStoreStub) UpsertLiveActivityToken(ctx context.Context, token *storage.LiveActivityToken) (*storage.LiveActivityToken, error) {
+	if s.upsertLiveActivityTokenFunc != nil {
+		return s.upsertLiveActivityTokenFunc(ctx, token)
+	}
 	s.unused("UpsertLiveActivityToken")
 	return nil, errors.New("unexpected UpsertLiveActivityToken")
 }
@@ -408,6 +469,9 @@ func (s *serverStoreStub) InvalidateLiveActivityToken(ctx context.Context, userI
 }
 
 func (s *serverStoreStub) SubscribeUserToLATopic(ctx context.Context, sub *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error) {
+	if s.subscribeUserToLATopicFunc != nil {
+		return s.subscribeUserToLATopicFunc(ctx, sub)
+	}
 	s.unused("SubscribeUserToLATopic")
 	return nil, errors.New("unexpected SubscribeUserToLATopic")
 }

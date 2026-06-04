@@ -13,6 +13,7 @@ func TestIsLAInvalidToken(t *testing.T) {
 	}{
 		{reason: "APNs error: 400 Bad Request (reason: BadDeviceToken)", want: true},
 		{reason: "APNs error: 410 Gone (reason: Unregistered)", want: true},
+		{reason: "APNs error: 400 Bad Request (reason: ExpiredToken)", want: true},
 		{reason: "FCM error: registration-token-not-registered", want: true},
 		{reason: "FCM error: backend unavailable", want: false},
 		{reason: "rate limited after 3 retries: 429 Too Many Requests", want: false},

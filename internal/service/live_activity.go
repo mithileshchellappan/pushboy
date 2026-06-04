@@ -56,13 +56,14 @@ func laExpired(expiresAt *time.Time, now time.Time) bool {
 	return !expiresAt.After(now)
 }
 
-func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string) (*storage.LiveActivityToken, *storage.User, error) {
+func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string, activityID string) (*storage.LiveActivityToken, *storage.User, error) {
 	if userID == "" {
 		return nil, nil, fmt.Errorf("userId is required")
 	}
 	if tokenValue == "" {
 		return nil, nil, fmt.Errorf("token is required")
 	}
+	activityID = strings.TrimSpace(activityID)
 
 	now := time.Now().UTC()
 	expiryTime, err := parseLAExpiry(expiresAt, now)
@@ -108,6 +109,7 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 		Platform:   platform,
 		TokenType:  tokenType,
 		Token:      tokenValue,
+		ActivityID: activityID,
 		ExpiresAt:  expiryTime,
 		CreatedAt:  now,
 		LastSeenAt: now,
