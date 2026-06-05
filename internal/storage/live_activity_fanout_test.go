@@ -26,9 +26,7 @@ func init() {
 	sql.Register(liveActivityFanoutTestDriverName, liveActivityFanoutDriver{})
 }
 
-func TestGetLATokenBatchForDispatchDefersScopedFilteringWhileStartPending(t *testing.T) {
-	t.Setenv("LIVE_ACTIVITY_SCOPED_UPDATE_FANOUT", "true")
-
+func TestGetLATokenBatchForDispatchDefersAssociationFilteringWhileStartPending(t *testing.T) {
 	scenario := &liveActivityFanoutScenario{
 		scope: liveActivityDispatchFanoutScope{
 			action:               model.LiveActivityActionUpdate,
@@ -53,8 +51,6 @@ func TestGetLATokenBatchForDispatchDefersScopedFilteringWhileStartPending(t *tes
 }
 
 func TestGetLATokenBatchForDispatchRequiresAssociationAfterStartCompletes(t *testing.T) {
-	t.Setenv("LIVE_ACTIVITY_SCOPED_UPDATE_FANOUT", "true")
-
 	scenario := &liveActivityFanoutScenario{
 		scope: liveActivityDispatchFanoutScope{
 			action:     model.LiveActivityActionUpdate,
@@ -78,8 +74,6 @@ func TestGetLATokenBatchForDispatchRequiresAssociationAfterStartCompletes(t *tes
 }
 
 func TestGetLATokenBatchForDispatchReturnsAssociatedTokensAfterStartCompletes(t *testing.T) {
-	t.Setenv("LIVE_ACTIVITY_SCOPED_UPDATE_FANOUT", "true")
-
 	scenario := &liveActivityFanoutScenario{
 		scope: liveActivityDispatchFanoutScope{
 			action:     model.LiveActivityActionUpdate,

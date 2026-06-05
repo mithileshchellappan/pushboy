@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
-	"os"
 	"strings"
 	"time"
 
@@ -122,11 +120,6 @@ func laConstraint(err error) string {
 	return ""
 }
 
-func liveActivityScopedUpdateFanoutEnabled() bool {
-	value := strings.TrimSpace(os.Getenv("LIVE_ACTIVITY_SCOPED_UPDATE_FANOUT"))
-	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
-}
-
 type liveActivityDispatchFanoutScope struct {
 	action               model.LiveActivityAction
 	activityID           string
@@ -135,9 +128,8 @@ type liveActivityDispatchFanoutScope struct {
 	startDispatchPending bool
 }
 
-func (scope liveActivityDispatchFanoutScope) requiresActivityAssociation(scopedFanout bool) bool {
-	return scopedFanout &&
-		scope.action != model.LiveActivityActionStart &&
+func (scope liveActivityDispatchFanoutScope) requiresActivityAssociation() bool {
+	return scope.action != model.LiveActivityActionStart &&
 		!scope.startDispatchPending
 }
 
@@ -645,11 +637,6 @@ func (s *PostgresStore) getLADispatchFanoutScope(ctx context.Context, dispatchID
 }
 
 func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error) {
-	scopedFanout := liveActivityScopedUpdateFanoutEnabled()
-	if cursor == "" && !scopedFanout {
-		s.logLAScopedFanoutShadow(ctx, dispatchID)
-	}
-
 	scope, err := s.getLADispatchFanoutScope(ctx, dispatchID)
 	if err != nil {
 		return nil, err
@@ -698,7 +685,7 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		cursor,
 		scope.userID,
 		scope.topicID,
-		scope.requiresActivityAssociation(scopedFanout),
+		scope.requiresActivityAssociation(),
 		scope.activityID,
 		batchSize+1,
 	)
@@ -726,73 +713,6 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		batch.NextCursor = tokens[batchSize-1].ID
 	}
 	return batch, nil
-}
-
-func (s *PostgresStore) logLAScopedFanoutShadow(ctx context.Context, dispatchID string) {
-	var action string
-	var activityID string
-	var broadcastCandidates int
-	var associatedCandidates int
-
-	err := s.db.QueryRowContext(
-		ctx,
-		`WITH dispatch AS (
-			 SELECT lad.action, laj.activity_id, laj.user_id, laj.topic_id
-			 FROM live_activity_dispatches lad
-			 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
-			 WHERE lad.id = $1
-			   AND lad.action <> 'start'
-		),
-		scoped_tokens AS (
-			 SELECT d.activity_id, lat.id
-			 FROM dispatch d
-			 JOIN live_activity_tokens lat
-			   ON lat.invalidated_at IS NULL
-			  AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-			  AND (
-				(lat.platform = 'apns' AND lat.token_type = 'update')
-				OR
-				(lat.platform = 'fcm' AND lat.token_type = 'update')
-			  )
-			 WHERE (d.user_id IS NOT NULL AND lat.user_id = d.user_id)
-			    OR (
-				d.topic_id IS NOT NULL
-				AND lat.user_id IN (
-					SELECT user_id
-					FROM live_activity_user_topic_subscriptions
-					WHERE topic_id = d.topic_id
-				)
-			    )
-		)
-		SELECT d.action,
-		       d.activity_id,
-		       (SELECT COUNT(*) FROM scoped_tokens) AS broadcast_candidates,
-		       (
-			SELECT COUNT(*)
-			FROM scoped_tokens st
-			JOIN live_activity_token_activities lata
-			  ON lata.token_id = st.id
-			 AND lata.activity_id = st.activity_id
-		       ) AS associated_candidates
-		FROM dispatch d`,
-		dispatchID,
-	).Scan(&action, &activityID, &broadcastCandidates, &associatedCandidates)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return
-		}
-		log.Printf("live_activity_scoped_update_fanout_shadow_error dispatch_id=%s error=%v", dispatchID, err)
-		return
-	}
-
-	log.Printf(
-		"live_activity_scoped_update_fanout_shadow dispatch_id=%s action=%s activity_id=%s broadcast_candidates=%d associated_candidates=%d",
-		dispatchID,
-		action,
-		activityID,
-		broadcastCandidates,
-		associatedCandidates,
-	)
 }
 
 type laOutcomeDelta struct {
