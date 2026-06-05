@@ -127,6 +127,20 @@ func liveActivityScopedUpdateFanoutEnabled() bool {
 	return value == "1" || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
 }
 
+type liveActivityDispatchFanoutScope struct {
+	action               model.LiveActivityAction
+	activityID           string
+	userID               string
+	topicID              string
+	startDispatchPending bool
+}
+
+func (scope liveActivityDispatchFanoutScope) requiresActivityAssociation(scopedFanout bool) bool {
+	return scopedFanout &&
+		scope.action != model.LiveActivityActionStart &&
+		!scope.startDispatchPending
+}
+
 func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error) {
 	now := time.Now().UTC()
 	if token.ID == "" {
@@ -598,58 +612,94 @@ func (s *PostgresStore) UpdateLADispatchStatus(ctx context.Context, dispatchID s
 	return nil
 }
 
+func (s *PostgresStore) getLADispatchFanoutScope(ctx context.Context, dispatchID string) (*liveActivityDispatchFanoutScope, error) {
+	var action string
+	scope := &liveActivityDispatchFanoutScope{}
+	err := s.db.QueryRowContext(
+		ctx,
+		`SELECT lad.action,
+		        laj.activity_id,
+		        COALESCE(laj.user_id, ''),
+		        COALESCE(laj.topic_id, ''),
+		        EXISTS (
+			SELECT 1
+			FROM live_activity_dispatches start_lad
+			WHERE start_lad.live_activity_job_id = laj.id
+			  AND start_lad.action = 'start'
+			  AND start_lad.status IN ('QUEUED', 'IN_PROGRESS', 'DISPATCHED')
+		        ) AS start_dispatch_pending
+		 FROM live_activity_dispatches lad
+		 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
+		 WHERE lad.id = $1`,
+		dispatchID,
+	).Scan(&action, &scope.activityID, &scope.userID, &scope.topicID, &scope.startDispatchPending)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, Errors.NotFound
+		}
+		return nil, fmt.Errorf("error loading LA dispatch fanout scope: %w", err)
+	}
+
+	scope.action = model.LiveActivityAction(action)
+	return scope, nil
+}
+
 func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error) {
 	scopedFanout := liveActivityScopedUpdateFanoutEnabled()
 	if cursor == "" && !scopedFanout {
 		s.logLAScopedFanoutShadow(ctx, dispatchID)
 	}
 
-	activityFilter := ""
-	if scopedFanout {
-		activityFilter = `
-	   AND (
-		lad.action = 'start'
-		OR EXISTS (
-			SELECT 1
-			FROM live_activity_token_activities lata
-			WHERE lata.activity_id = laj.activity_id
-			  AND lata.token_id = lat.id
-		)
-	   )`
+	scope, err := s.getLADispatchFanoutScope(ctx, dispatchID)
+	if err != nil {
+		return nil, err
 	}
 
-	query := `SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
-	 FROM live_activity_dispatches lad
-	 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
-	 JOIN live_activity_tokens lat
-	   ON lat.invalidated_at IS NULL
-	  AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-	  AND (
-		(lat.platform = 'apns' AND lat.token_type = CASE WHEN lad.action = 'start' THEN 'start' ELSE 'update' END)
-		OR
-		(lat.platform = 'fcm' AND lat.token_type = 'update')
-	  )
-	 WHERE lad.id = $1
-	   AND lat.id > $2
-	   AND (
-		(laj.user_id IS NOT NULL AND lat.user_id = laj.user_id)
-		OR (
-			laj.topic_id IS NOT NULL
-			AND lat.user_id IN (
-				SELECT user_id
-				FROM live_activity_user_topic_subscriptions
-				WHERE topic_id = laj.topic_id
-			)
-		)
-	   )` + activityFilter + `
-	 ORDER BY lat.id
-	 LIMIT $3`
+	apnsTokenType := model.LiveActivityTokenTypeUpdate
+	if scope.action == model.LiveActivityActionStart {
+		apnsTokenType = model.LiveActivityTokenTypeStart
+	}
 
 	rows, err := s.db.QueryContext(
 		ctx,
-		query,
-		dispatchID,
+		`SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+		 FROM live_activity_tokens lat
+		 WHERE lat.invalidated_at IS NULL
+		   AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+		   AND (
+			(lat.platform = 'apns' AND lat.token_type = $1)
+			OR
+			(lat.platform = 'fcm' AND lat.token_type = 'update')
+		   )
+		   AND lat.id > $2
+		   AND (
+			($3 <> '' AND lat.user_id = $3)
+			OR (
+				$4 <> ''
+				AND lat.user_id IN (
+					SELECT user_id
+					FROM live_activity_user_topic_subscriptions
+					WHERE topic_id = $4
+				)
+			)
+		   )
+		   AND (
+			NOT $5
+			OR EXISTS (
+				SELECT 1
+				FROM live_activity_token_activities lata
+				WHERE lata.activity_id = $6
+				  AND lata.token_id = lat.id
+			)
+		   )
+		 ORDER BY lat.id
+		 LIMIT $7`,
+		apnsTokenType,
 		cursor,
+		scope.userID,
+		scope.topicID,
+		scope.requiresActivityAssociation(scopedFanout),
+		scope.activityID,
 		batchSize+1,
 	)
 	if err != nil {
