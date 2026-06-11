@@ -44,7 +44,7 @@ func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispat
 	enqueueCtx, cancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 	defer cancel()
 
-	if err := s.jobPipeline.Submit(enqueueCtx, jobItem); err != nil {
+	if err := s.laJobPipeline.Submit(enqueueCtx, jobItem); err != nil {
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 

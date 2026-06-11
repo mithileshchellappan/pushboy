@@ -114,6 +114,10 @@ func main() {
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
+	laJobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.LAQueueSize)
+	laTaskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.LAQueueSize)
+	laDlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
+
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start(workerCtx)
 
@@ -122,6 +126,12 @@ func main() {
 
 	var senderWg sync.WaitGroup
 	var senders = make(map[int]workers.SenderWorker)
+
+	var laMasterWg sync.WaitGroup
+	var laMasters = make(map[int]workers.MasterWorker)
+
+	var laSendersWg sync.WaitGroup
+	var laSenders = make(map[int]workers.SenderWorker)
 
 	for i := range cfg.WorkerCount {
 		masterWg.Add(1)
@@ -134,12 +144,32 @@ func main() {
 
 	}
 
+	for i := range cfg.LAWorkerCount {
+		laMasterWg.Add(1)
+		master := workers.NewMaster(store, laJobPipeline, laTaskPipeline, cfg.BatchSize)
+		laMasters[i] = master
+		go func(m workers.MasterWorker) {
+			defer laMasterWg.Done()
+			m.Start(workerCtx)
+		}(master)
+	}
+
 	for i := range cfg.SenderCount {
 		senderWg.Add(1)
 		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, cfg.BatchSize)
 		senders[i] = sender
 		go func(m workers.SenderWorker) {
 			defer senderWg.Done()
+			m.Start(workerCtx)
+		}(sender)
+	}
+
+	for i := range cfg.LASenderCount {
+		laSendersWg.Add(1)
+		sender := workers.NewSender(store, laTaskPipeline, laDlqPipeline, dispatchers, cfg.BatchSize)
+		laSenders[i] = sender
+		go func(m workers.SenderWorker) {
+			defer laSendersWg.Done()
 			m.Start(workerCtx)
 		}(sender)
 	}
@@ -153,7 +183,16 @@ func main() {
 		o.Start(workerCtx)
 	}(outcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline)
+	laOutcomeWorker := workers.NewOutcomeWorker(store, laDlqPipeline, 1000, 10)
+	var laOutcomeWg sync.WaitGroup
+
+	laOutcomeWg.Add(1)
+	go func(o workers.OutcomeWorker) {
+		defer laOutcomeWg.Done()
+		o.Start(workerCtx)
+	}(laOutcomeWorker)
+
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
@@ -173,23 +212,34 @@ func main() {
 
 	scheduler.Stop()
 	gracefulDone := make(chan struct{})
+
+	var drainWg sync.WaitGroup
+	drainWg.Add(2)
+
 	go func() {
-		defer close(gracefulDone)
-		if err := jobPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("Job pipeline shutdown error: %v", err)
-		}
-		masterWg.Wait()
-		if err := taskPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("Task pipeline shutdown error: %v", err)
-		}
-		senderWg.Wait()
-		if err := dlqPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("DLQ pipeline shutdown error: %v", err)
-		}
-		outcomeWg.Wait()
+		defer drainWg.Done()
+		drainChain(shutdownCtx, []drainStage{
+			{name: "job pipeline", pipe: jobPipeline, workers: &masterWg},
+			{name: "task pipeline", pipe: taskPipeline, workers: &senderWg},
+			{name: "DLQ pipeline", pipe: dlqPipeline, workers: &outcomeWg},
+		})
+	}()
+
+	go func() {
+		defer drainWg.Done()
+		drainChain(shutdownCtx, []drainStage{
+			{name: "LA job pipeline", pipe: laJobPipeline, workers: &laMasterWg},
+			{name: "LA task pipeline", pipe: laTaskPipeline, workers: &laSendersWg},
+			{name: "LA DLQ pipeline", pipe: laDlqPipeline, workers: &laOutcomeWg},
+		})
+	}()
+
+	go func() {
+		drainWg.Wait()
 		if err := store.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
 		}
+		close(gracefulDone)
 	}()
 
 	select {
