@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -28,7 +27,6 @@ type SendTarget struct {
 type SendTask struct {
 	Target SendTarget
 	Job    *JobItem
-	LAJob *LAJobItem
 }
 
 type JobItem struct {
@@ -36,22 +34,6 @@ type JobItem struct {
 	JobType  JobType
 	Payload  *NotificationPayload
 	MaxRetry int
-
-	TopicID    string
-	UserID     string
-	TotalCount int
-}
-
-
-type LAJobItem struct {
-	ID string
-	Action     LiveActivityAction
-	JobID      string
-	DispatchID string
-	ActivityID string
-	Activity   string
-	Payload    json.RawMessage
-	Options    json.RawMessage
 
 	TopicID    string
 	UserID     string
