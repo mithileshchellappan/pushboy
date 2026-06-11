@@ -14,7 +14,7 @@ import (
 
 type outcomeWriter interface {
 	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
-	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+	// ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
 }
 
 type OutcomeWorker struct {
@@ -145,13 +145,13 @@ func (o *OutcomeWorker) processOutcome(ctx context.Context, deliveries []pipelin
 		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
 		// }
 	}
-	if len(liveActivityOutcomeBatch) > 0 {
-		if err := o.store.ApplyLAOutcomeBatch(ctx, liveActivityOutcomeBatch); err != nil {
-			log.Printf("Error applying live activity outcome batch %v", err.Error())
-			retryDeliveries = append(retryDeliveries, liveActivityOutcomeDeliveries...)
-			errs = append(errs, err)
-		}
-	}
+	// if len(liveActivityOutcomeBatch) > 0 {
+	// 	if err := o.store.ApplyLAOutcomeBatch(ctx, liveActivityOutcomeBatch); err != nil {
+	// 		log.Printf("Error applying live activity outcome batch %v", err.Error())
+	// 		retryDeliveries = append(retryDeliveries, liveActivityOutcomeDeliveries...)
+	// 		errs = append(errs, err)
+	// 	}
+	// }
 
 	return retryDeliveries, errors.Join(errs...)
 }

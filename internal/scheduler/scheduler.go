@@ -48,7 +48,7 @@ func (s *Scheduler) Start(ctx context.Context) {
 			select {
 			case <-ticker.C:
 				s.processScheduledJobs(ctx)
-				s.sweepLiveActivityState(ctx)
+				// s.sweepLiveActivityState(ctx)
 			case <-s.stopChan:
 				return
 			}
@@ -90,21 +90,21 @@ func (s *Scheduler) processScheduledJobs(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) sweepLiveActivityState(ctx context.Context) {
-	if err := s.runLiveActivitySweep(ctx, s.store.InvalidateExpiredLAUpdateTokens); err != nil {
-		log.Printf("Error invalidating expired live activity update tokens: %v", err)
-	}
-}
+// func (s *Scheduler) sweepLiveActivityState(ctx context.Context) {
+// 	if err := s.runLiveActivitySweep(ctx, s.store.InvalidateExpiredLAUpdateTokens); err != nil {
+// 		log.Printf("Error invalidating expired live activity update tokens: %v", err)
+// 	}
+// }
 
-func (s *Scheduler) runLiveActivitySweep(ctx context.Context, sweep func(context.Context, int) (int, error)) error {
-	for i := 0; i < liveActivitySweepMaxBatches; i++ {
-		count, err := sweep(ctx, liveActivitySweepBatchSize)
-		if err != nil {
-			return err
-		}
-		if count < liveActivitySweepBatchSize {
-			return nil
-		}
-	}
-	return nil
-}
+// func (s *Scheduler) runLiveActivitySweep(ctx context.Context, sweep func(context.Context, int) (int, error)) error {
+// 	for i := 0; i < liveActivitySweepMaxBatches; i++ {
+// 		count, err := sweep(ctx, liveActivitySweepBatchSize)
+// 		if err != nil {
+// 			return err
+// 		}
+// 		if count < liveActivitySweepBatchSize {
+// 			return nil
+// 		}
+// 	}
+// 	return nil
+// }
