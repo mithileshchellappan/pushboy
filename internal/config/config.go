@@ -14,6 +14,11 @@ type Config struct {
 	JobQueueSize int // Size of the job queue buffer
 	BatchSize    int // Number of tokens to fetch per batch from DB
 
+	// Live Activity worker pool configuration (separate lane from push notifications)
+	LAWorkerCount int // Number of LA master goroutines
+	LASenderCount int // Number of LA sender goroutines
+	LAQueueSize   int // Size of the LA job/task/outcome queue buffers
+
 	//Retry
 	MaxRetryNotification int
 	//TODO: LA Add separate retry count for LA
@@ -41,6 +46,9 @@ func Load() *Config {
 		SenderCount:          getIntEnv("SENDER_COUNT", 200),
 		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
 		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
+		LAWorkerCount:        getIntEnv("LA_WORKER_COUNT", 5),
+		LASenderCount:        getIntEnv("LA_SENDER_COUNT", 300),
+		LAQueueSize:          getIntEnv("LA_QUEUE_SIZE", 1000),
 		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/pushboy?sslmode=disable"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
