@@ -8,24 +8,22 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 )
 
-
-
 type MasterWorker[J any, T any] struct {
 	jobPipeline  pipeline.Pipeline[J]
 	taskPipeline pipeline.Pipeline[T]
-	fanout FanoutFunc[J, T]
+	fanout       FanoutFunc[J, T]
 	// workPipeline
 }
 
 func NewMaster[J any, T any](jobPipeline pipeline.Pipeline[J], taskPipeline pipeline.Pipeline[T], fanout FanoutFunc[J, T]) MasterWorker[J, T] {
-	return MasterWorker[J,T]{
+	return MasterWorker[J, T]{
 		jobPipeline:  jobPipeline,
 		taskPipeline: taskPipeline,
-		fanout: fanout,
+		fanout:       fanout,
 	}
 }
 
-func (m *MasterWorker[J,T]) Start(ctx context.Context) {
+func (m *MasterWorker[J, T]) Start(ctx context.Context) {
 	for {
 		delivery, err := m.jobPipeline.Receive(ctx)
 		if err != nil {
@@ -49,11 +47,9 @@ func (m *MasterWorker[J,T]) Start(ctx context.Context) {
 	}
 }
 
-func (m *MasterWorker[J,T]) Stop() {
+func (m *MasterWorker[J, T]) Stop() {
 
 }
-
-
 
 // func (m *MasterWorker[J,T]) fetchAndPushLATokens(ctx context.Context, job model.JobItem) error {
 // 	if err := m.store.UpdateLADispatchStatus(ctx, job.LADispatchID, "IN_PROGRESS"); err != nil {

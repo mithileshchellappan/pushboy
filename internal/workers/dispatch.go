@@ -13,11 +13,11 @@ import (
 )
 
 type DispatchFunc[T any, O any] func(
-    ctx context.Context,
-    task T,
+	ctx context.Context,
+	task T,
 ) error
 
-func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers  map[model.Platform]dispatch.Dispatcher, dlqPipeline pipeline.Pipeline[model.SendOutcome] ) error {
+func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[model.Platform]dispatch.Dispatcher, dlqPipeline pipeline.Pipeline[model.SendOutcome]) error {
 	dispatcher, ok := dispatchers[task.Target.Platform]
 	receipt := model.DeliveryReceipt{
 		ID:           uuid.New().String(),
@@ -29,7 +29,7 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers  map
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
 		pushToDLQ(ctx, receipt, task, dlqPipeline)
-		return fmt.Errorf(receipt.StatusReason)
+		return errors.New(receipt.StatusReason)
 	}
 
 	pushDispatcher, ok := dispatcher.(dispatch.Dispatcher)
@@ -37,7 +37,7 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers  map
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
 		pushToDLQ(ctx, receipt, task, dlqPipeline)
-		return fmt.Errorf(receipt.StatusReason)
+		return errors.New(receipt.StatusReason)
 	}
 
 	err := pushDispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
@@ -46,14 +46,14 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers  map
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
 		pushToDLQ(ctx, receipt, task, dlqPipeline)
-		return fmt.Errorf(receipt.StatusReason)
+		return errors.New(receipt.StatusReason)
 	}
 	receipt.Status = model.DeliveryStatusSuccess
 	pushToDLQ(ctx, receipt, task, dlqPipeline)
 	return nil
 }
 
-func  pushToDLQ(ctx context.Context, receipt model.DeliveryReceipt, task model.SendTask, dlqPipeline pipeline.Pipeline[model.SendOutcome]) {
+func pushToDLQ(ctx context.Context, receipt model.DeliveryReceipt, task model.SendTask, dlqPipeline pipeline.Pipeline[model.SendOutcome]) {
 	outcome := model.SendOutcome{
 		Receipt: receipt,
 		Task:    task,

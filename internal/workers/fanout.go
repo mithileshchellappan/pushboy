@@ -10,9 +10,9 @@ import (
 )
 
 type FanoutFunc[J any, T any] func(
-    ctx context.Context,
-    job J,
-    emit func(context.Context, T) error,
+	ctx context.Context,
+	job J,
+	emit func(context.Context, T) error,
 ) error
 
 func FanoutPushToken(ctx context.Context, store storage.Store, batchSize int, job model.JobItem, emit func(context.Context, model.SendTask) error) error {
@@ -46,9 +46,9 @@ func FanoutPushToken(ctx context.Context, store storage.Store, batchSize int, jo
 				},
 				Job: &job,
 			}
-		  if err := emit(ctx, task); err != nil {
-					return err
-				}
+			if err := emit(ctx, task); err != nil {
+				return err
+			}
 		}
 
 		if !batch.HasMore {

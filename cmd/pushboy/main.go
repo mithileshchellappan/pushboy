@@ -114,9 +114,9 @@ func main() {
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
-	// laJobPipeline := pipeline.NewMemoryPipeline[model.LAJobItem](cfg.LAQueueSize)
-	// laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LAQueueSize)
-	// laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
+	laJobPipeline := pipeline.NewMemoryPipeline[model.LAJobItem](cfg.LAQueueSize)
+	laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LAQueueSize)
+	laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
 
 	// scheduler := scheduler.New(store, jobPipeline, 10)
 	// scheduler.Start(workerCtx)
@@ -124,13 +124,13 @@ func main() {
 	var masterWg sync.WaitGroup
 	var senderWg sync.WaitGroup
 
-	// var laMasterWg sync.WaitGroup
-	// var laSendersWg sync.WaitGroup
+	var laMasterWg sync.WaitGroup
+	var laSendersWg sync.WaitGroup
 
 	for range cfg.WorkerCount {
 		masterWg.Add(1)
 		master := workers.NewMaster[model.JobItem, model.SendTask](jobPipeline, taskPipeline, func(ctx context.Context,
-			job model.JobItem, emit func(context.Context, model.SendTask) error ) error {
+			job model.JobItem, emit func(context.Context, model.SendTask) error) error {
 			return workers.FanoutPushToken(ctx, store, cfg.BatchSize, job, emit)
 		})
 		go func(m workers.MasterWorker[model.JobItem, model.SendTask]) {
@@ -139,55 +139,57 @@ func main() {
 		}(master)
 	}
 
-	// for i := range cfg.LAWorkerCount {
-	// 	laMasterWg.Add(1)
-	// 	master := workers.NewMaster[model.LAJobItem, model.LASendTask](store, laJobPipeline, laTaskPipeline, func(ctx context.Context, job model.LAJobItem) error {
-	// 		return workers.FanoutLATokens(ctx, store, job, cfg.BatchSize, laTaskPipeline)
-	// 	})
-	// 	go func(m workers.MasterWorker[model.LAJobItem, model.LASendTask]) {
-	// 		defer laMasterWg.Done()
-	// 		m.Start(workerCtx)
-	// 	}(master)
-	// }
+	for range cfg.LAWorkerCount {
+		laMasterWg.Add(1)
+		master := workers.NewMaster[model.LAJobItem, model.LASendTask](laJobPipeline, laTaskPipeline,
+			func(ctx context.Context, job model.LAJobItem, emit func(context.Context, model.LASendTask) error) error {
+				return workers.FanoutLATokens(ctx, store, job, cfg.BatchSize, emit)
+			})
+		go func(m workers.MasterWorker[model.LAJobItem, model.LASendTask]) {
+			defer laMasterWg.Done()
+			m.Start(workerCtx)
+		}(master)
+	}
 
 	for range cfg.SenderCount {
 		senderWg.Add(1)
 		sender := workers.NewSender[model.SendTask, model.SendOutcome](taskPipeline, dlqPipeline, func(ctx context.Context, task model.SendTask) error {
 			return workers.DispatchPushTask(ctx, task, dispatchers, dlqPipeline)
-		} )
+		})
 		go func(m workers.SenderWorker[model.SendTask, model.SendOutcome]) {
 			defer senderWg.Done()
 			m.Start(workerCtx)
 		}(sender)
 	}
 
-	// for i := range cfg.LASenderCount {
-	// 	laSendersWg.Add(1)
-	// 	sender := workers.NewSender(store, laTaskPipeline, laDlqPipeline, dispatchers, cfg.BatchSize)
-	// 	laSenders[i] = sender
-	// 	go func(m workers.SenderWorker) {
-	// 		defer laSendersWg.Done()
-	// 		m.Start(workerCtx)
-	// 	}(sender)
-	// }
+	for range cfg.LASenderCount {
+		laSendersWg.Add(1)
+		sender := workers.NewSender(laTaskPipeline, laDlqPipeline, func(ctx context.Context, task model.LASendTask) error {
+			return nil //TODO
+		})
+		go func(m workers.SenderWorker[model.LASendTask, model.LASendOutcome]) {
+			defer laSendersWg.Done()
+			m.Start(workerCtx)
+		}(sender)
+	}
 
-	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
+	outcomeWorker := workers.NewPushOutcomeWorker(store, dlqPipeline, 1000, 10)
 	var outcomeWg sync.WaitGroup
 	//If required more DLQ outcome workers change it into a looped go routines
 	outcomeWg.Add(1)
-	go func(o workers.OutcomeWorker) {
+	go func(o workers.OutcomeWorker[model.SendOutcome]) {
 		defer outcomeWg.Done()
 		o.Start(workerCtx)
 	}(outcomeWorker)
 
-	// laOutcomeWorker := workers.NewOutcomeWorker(store, laDlqPipeline, 1000, 10)
-	// var laOutcomeWg sync.WaitGroup
+	laOutcomeWorker := workers.NewLAOutcomeWorker(store, laDlqPipeline, 1000, 10)
+	var laOutcomeWg sync.WaitGroup
 
-	// laOutcomeWg.Add(1)
-	// go func(o workers.OutcomeWorker) {
-	// 	defer laOutcomeWg.Done()
-	// 	o.Start(workerCtx)
-	// }(laOutcomeWorker)
+	laOutcomeWg.Add(1)
+	go func(o workers.OutcomeWorker[model.LASendOutcome]) {
+		defer laOutcomeWg.Done()
+		o.Start(workerCtx)
+	}(laOutcomeWorker)
 
 	httpServer := server.New(pushboyService, jobPipeline, jobPipeline)
 
@@ -222,14 +224,14 @@ func main() {
 		})
 	}()
 
-	// go func() {
-	// 	defer drainWg.Done()
-	// 	drainChain(shutdownCtx, []drainStage{
-	// 		{name: "LA job pipeline", pipe: laJobPipeline, workers: &laMasterWg},
-	// 		{name: "LA task pipeline", pipe: laTaskPipeline, workers: &laSendersWg},
-	// 		{name: "LA DLQ pipeline", pipe: laDlqPipeline, workers: &laOutcomeWg},
-	// 	})
-	// }()
+	go func() {
+		defer drainWg.Done()
+		drainChain(shutdownCtx, []drainStage{
+			{name: "LA job pipeline", pipe: laJobPipeline, workers: &laMasterWg},
+			{name: "LA task pipeline", pipe: laTaskPipeline, workers: &laSendersWg},
+			{name: "LA DLQ pipeline", pipe: laDlqPipeline, workers: &laOutcomeWg},
+		})
+	}()
 
 	go func() {
 		drainWg.Wait()

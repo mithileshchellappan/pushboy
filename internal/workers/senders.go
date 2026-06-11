@@ -11,18 +11,18 @@ import (
 type SenderWorker[T any, O any] struct {
 	taskPipeline pipeline.Pipeline[T]
 	dlqPipeline  pipeline.Pipeline[O]
-	dispatch DispatchFunc[T, O]
+	dispatch     DispatchFunc[T, O]
 }
 
-func NewSender[T any, O any]( taskPipeline pipeline.Pipeline[T], dlqPipeline pipeline.Pipeline[O], dispatchFunc DispatchFunc[T, O] ) SenderWorker[T,O] {
+func NewSender[T any, O any](taskPipeline pipeline.Pipeline[T], dlqPipeline pipeline.Pipeline[O], dispatchFunc DispatchFunc[T, O]) SenderWorker[T, O] {
 	return SenderWorker[T, O]{
 		taskPipeline: taskPipeline,
 		dlqPipeline:  dlqPipeline,
-		dispatch: dispatchFunc,
+		dispatch:     dispatchFunc,
 	}
 }
 
-func (s *SenderWorker[T,O]) Start(ctx context.Context) {
+func (s *SenderWorker[T, O]) Start(ctx context.Context) {
 	for {
 		delivery, err := s.taskPipeline.Receive(ctx)
 
@@ -44,8 +44,6 @@ func (s *SenderWorker[T,O]) Start(ctx context.Context) {
 	}
 
 }
-
-
 
 // func (s *SenderWorker) sendLATask(ctx context.Context, task model.SendTask) {
 // 	dispatcher, ok := s.dispatchers[task.Target.Platform]
