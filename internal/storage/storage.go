@@ -194,24 +194,24 @@ type Store interface {
 	GetScheduledJobs(ctx context.Context) ([]PublishJob, error)
 
 	// Live Activity operations
-	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
-	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
-	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
-	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
-	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
-	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
-	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
-	FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
-	UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt time.Time) error
-	RollbackLAStartJob(ctx context.Context, jobID string) error
-	CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt time.Time) error
-	FailLAJobIfActive(ctx context.Context, jobID string) error
-	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
-	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
-	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
-	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
-	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error
-	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
+	// UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
+	// InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
+	// SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	// CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
+	// GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
+	// GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
+	// FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
+	// FindLAJobByTopicScope(ctx context.Context, activityType string, topicID string) (*LiveActivityJob, error)
+	// UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt time.Time) error
+	// RollbackLAStartJob(ctx context.Context, jobID string) error
+	// CloseLAJobIfActive(ctx context.Context, jobID string, updatedAt time.Time) error
+	// FailLAJobIfActive(ctx context.Context, jobID string) error
+	// CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
+	// UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
+	// GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	// CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
+	// ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error
+	// InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 
 	// Lifecycle
 	Close() error

@@ -7,21 +7,15 @@ import (
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
-	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 )
 
 type FanoutFunc[J any, T any] func(
     ctx context.Context,
     job J,
-    // emit func(context.Context, T) error,
+    emit func(context.Context, T) error,
 ) error
 
-type Emit[T any] func(
-	ctx context.Context,
-	task T,
-) error
-
-func FanoutPushToken(ctx context.Context, store storage.Store, batchSize int, job model.JobItem, pipeline pipeline.Pipeline[model.SendTask]) error {
+func FanoutPushToken(ctx context.Context, store storage.Store, batchSize int, job model.JobItem, emit func(context.Context, model.SendTask) error) error {
 	store.UpdateJobStatus(ctx, job.ID, model.NotificationJobStatusInProgress)
 	cursor := ""
 	totalTokenCount := 0
@@ -52,7 +46,7 @@ func FanoutPushToken(ctx context.Context, store storage.Store, batchSize int, jo
 				},
 				Job: &job,
 			}
-		  if err := pipeline.Submit(ctx, task); err != nil {
+		  if err := emit(ctx, task); err != nil {
 					return err
 				}
 		}

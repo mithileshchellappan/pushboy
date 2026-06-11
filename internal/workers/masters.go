@@ -3,28 +3,22 @@ package workers
 import (
 	"context"
 	"errors"
-	// "fmt"
 	"log"
-	// "time"
 
-	// "github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 
 
 type MasterWorker[J any, T any] struct {
-	store        storage.Store
 	jobPipeline  pipeline.Pipeline[J]
 	taskPipeline pipeline.Pipeline[T]
 	fanout FanoutFunc[J, T]
 	// workPipeline
 }
 
-func NewMaster[J any, T any](store storage.Store, jobPipeline pipeline.Pipeline[J], taskPipeline pipeline.Pipeline[T], fanout FanoutFunc[J, T]) MasterWorker[J, T] {
+func NewMaster[J any, T any](jobPipeline pipeline.Pipeline[J], taskPipeline pipeline.Pipeline[T], fanout FanoutFunc[J, T]) MasterWorker[J, T] {
 	return MasterWorker[J,T]{
-		store:        store,
 		jobPipeline:  jobPipeline,
 		taskPipeline: taskPipeline,
 		fanout: fanout,
@@ -44,7 +38,11 @@ func (m *MasterWorker[J,T]) Start(ctx context.Context) {
 
 		job := delivery.Get()
 
-		if err := m.fanout(ctx, job); err != nil {
+		emit := func(ctx context.Context, item T) error {
+			return m.taskPipeline.Submit(ctx, item)
+		}
+
+		if err := m.fanout(ctx, job, emit); err != nil {
 			log.Printf("Master Fanout error: %v", err)
 		}
 		continue
