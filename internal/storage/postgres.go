@@ -231,12 +231,11 @@ func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([
 func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error) {
 	query := `
 		SELECT t.id, t.token, t.platform
-		FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
-		)
-		AND t.is_deleted = FALSE
-		AND t.id > $2
+		FROM user_topic_subscriptions uts
+		JOIN tokens t ON t.user_id = uts.user_id
+		WHERE uts.topic_id = $1
+			AND t.is_deleted = FALSE
+			AND t.id > $2
 		ORDER BY t.id
 		LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, topicID, cursor, batchSize+1)

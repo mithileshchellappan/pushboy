@@ -45,7 +45,7 @@ func (m *MasterWorker[J,T]) Start(ctx context.Context) {
 		job := delivery.Get()
 
 		if err := m.fanout(ctx, job); err != nil {
-			log.Printf("Master Fanout error: %v")
+			log.Printf("Master Fanout error: %v", err)
 		}
 		continue
 	}
