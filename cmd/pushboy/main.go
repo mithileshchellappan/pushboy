@@ -165,7 +165,7 @@ func main() {
 	for range cfg.LASenderCount {
 		laSendersWg.Add(1)
 		sender := workers.NewSender(laTaskPipeline, laDlqPipeline, func(ctx context.Context, task model.LASendTask) error {
-			return nil //TODO
+			return workers.DispatchLATask(ctx, task, dispatchers, laDlqPipeline)
 		})
 		go func(m workers.SenderWorker[model.LASendTask, model.LASendOutcome]) {
 			defer laSendersWg.Done()

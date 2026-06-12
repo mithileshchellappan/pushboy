@@ -69,11 +69,11 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 	return nil
 }
 
-func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[model.Platform]dispatch.Dispatcher, dlqPipeline pipeline.Pipeline[model.LASendOutcome]) {
+func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[model.Platform]dispatch.Dispatcher, dlqPipeline pipeline.Pipeline[model.LASendOutcome]) error {
 	dispatcher, ok := dispatchers[task.Target.Platform]
 	receipt := model.DeliveryReceipt{
 		ID:           uuid.New().String(),
-		JobID:        task.LAJob.JobID,
+		JobID:        task.LAJob.DispatchID,
 		TokenID:      task.Target.TokenID,
 		DispatchedAt: time.Now().UTC(),
 	}
@@ -85,7 +85,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return
+		return errors.New(receipt.StatusReason)
 	}
 
 	laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
@@ -97,7 +97,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return
+		return errors.New(receipt.StatusReason)
 	}
 
 	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, &model.LiveActivityRequest{
@@ -116,7 +116,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return
+		return errors.New(receipt.StatusReason)
 	}
 
 	receipt.Status = model.DeliveryStatusSuccess
@@ -125,6 +125,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 		Receipt: receipt,
 	}
 	pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
+	return nil
 }
 
 

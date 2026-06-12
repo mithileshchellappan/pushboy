@@ -647,48 +647,61 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		apnsTokenType = model.LiveActivityTokenTypeStart
 	}
 
-	rows, err := s.db.QueryContext(
-		ctx,
-		`SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
-		 FROM live_activity_tokens lat
-		 WHERE lat.invalidated_at IS NULL
-		   AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-		   AND (
-			(lat.platform = 'apns' AND lat.token_type = $1)
-			OR
-			(lat.platform = 'fcm' AND lat.token_type = 'update')
-		   )
-		   AND lat.id > $2
-		   AND (
-			($3 <> '' AND lat.user_id = $3)
-			OR (
-				$4 <> ''
-				AND lat.user_id IN (
-					SELECT user_id
-					FROM live_activity_user_topic_subscriptions
-					WHERE topic_id = $4
-				)
-			)
-		   )
-		   AND (
-			NOT $5
-			OR EXISTS (
-				SELECT 1
-				FROM live_activity_token_activities lata
-				WHERE lata.activity_id = $6
-				  AND lata.token_id = lat.id
-			)
-		   )
-		 ORDER BY lat.id
-		 LIMIT $7`,
-		apnsTokenType,
-		cursor,
-		scope.userID,
-		scope.topicID,
-		scope.requiresActivityAssociation(),
-		scope.activityID,
-		batchSize+1,
-	)
+
+    var rows *sql.Rows
+
+    switch {
+        case scope.requiresActivityAssociation():
+        	rows, err = s.db.QueryContext(ctx, laTokenBatchByActivityQuery, scope.activityID, cursor, batchSize + 1)
+        case scope.userID != "":
+         	rows, err = s.db.QueryContext(ctx, laTokenBatchByUserQuery, scope.userID, cursor, apnsTokenType, batchSize + 1)
+        default:
+        	rows, err = s.db.QueryContext(ctx, laTokenBatchByTopicQuery, scope.topicID, cursor, apnsTokenType, batchSize + 1)
+        }
+
+	// rows, err := s.db.QueryContext(
+	// 	ctx,
+	// 	`SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+	// 	 FROM live_activity_tokens lat
+	// 	 WHERE lat.invalidated_at IS NULL
+	// 	   AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+	// 	   AND (
+	// 		(lat.platform = 'apns' AND lat.token_type = $1)
+	// 		OR
+	// 		(lat.platform = 'fcm' AND lat.token_type = 'update')
+	// 	   )
+	// 	   AND lat.id > $2
+	// 	   AND (
+	// 		($3 <> '' AND lat.user_id = $3)
+	// 		OR (
+	// 			$4 <> ''
+	// 			AND lat.user_id IN (
+	// 				SELECT user_id
+	// 				FROM live_activity_user_topic_subscriptions
+	// 				WHERE topic_id = $4
+	// 			)
+	// 		)
+	// 	   )
+	// 	   AND (
+	// 		NOT $5
+	// 		OR EXISTS (
+	// 			SELECT 1
+	// 			FROM live_activity_token_activities lata
+	// 			WHERE lata.activity_id = $6
+	// 			  AND lata.token_id = lat.id
+	// 		)
+	// 	   )
+	// 	 ORDER BY lat.id
+	// 	 LIMIT $7`,
+	// 	apnsTokenType,
+	// 	cursor,
+	// 	scope.userID,
+	// 	scope.topicID,
+	// 	scope.requiresActivityAssociation(),
+	// 	scope.activityID,
+	// 	batchSize+1,
+	// )
+
 	if err != nil {
 		return nil, fmt.Errorf("error getting LA token batch: %w", err)
 	}
@@ -961,3 +974,48 @@ func (s *PostgresStore) InvalidateExpiredLAUpdateTokens(ctx context.Context, lim
 	rowsAffected, _ := result.RowsAffected()
 	return int(rowsAffected), nil
 }
+
+const laTokenBatchByActivityQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_token_activities lata
+       JOIN live_activity_tokens lat ON lat.id = lata.token_id
+       WHERE lata.activity_id = $1
+         AND lata.token_id > $2
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND lat.token_type = 'update'
+       ORDER BY lata.token_id
+       LIMIT $3`
+
+ const laTokenBatchByUserQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       WHERE lat.user_id = $1
+         AND lat.id > $2
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND (
+               (lat.platform = 'apns' AND lat.token_type = $3)
+               OR (lat.platform = 'fcm' AND lat.token_type = 'update')
+         )
+       ORDER BY lat.id
+       LIMIT $4`
+
+ const laTokenBatchByTopicQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       JOIN live_activity_user_topic_subscriptions sub
+         ON sub.user_id = lat.user_id
+         AND sub.topic_id = $1
+       WHERE lat.id > $2
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND (
+               (lat.platform = 'apns' AND lat.token_type = $3)
+               OR (lat.platform = 'fcm' AND lat.token_type = 'update')
+         )
+       ORDER BY lat.id
+       LIMIT $4`
