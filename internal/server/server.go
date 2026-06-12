@@ -20,14 +20,14 @@ import (
 type Server struct {
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
-	laJobPipeline pipeline.Pipeline[model.JobItem]
+	laJobPipeline pipeline.Pipeline[model.LAJobItem]
 	httpServer    *http.Server
 	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.JobItem]) *Server {
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
 	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
@@ -89,12 +89,12 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/{topicID}/publish", s.handlePublishToTopic)
 		})
 
-		// r.Route("/live-activity", func(r chi.Router) {
-		// 	r.Post("/tokens", s.handleRegisterLAToken)
-		// 	r.Delete("/tokens", s.handleDeleteLAToken)
-		// 	r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLATopic)
-		// 	r.Post("/jobs", s.handleCreateLAJob)
-		// })
+		r.Route("/live-activity", func(r chi.Router) {
+			r.Post("/tokens", s.handleRegisterLAToken)
+			r.Delete("/tokens", s.handleDeleteLAToken)
+			r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLATopic)
+			r.Post("/jobs", s.handleCreateLAJob)
+		})
 	})
 
 	return r

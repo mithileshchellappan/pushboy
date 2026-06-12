@@ -28,7 +28,11 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 	if !ok {
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
-		pushToDLQ(ctx, receipt, task, dlqPipeline)
+		outcome := model.SendOutcome{
+					Task: task,
+					Receipt: receipt,
+		}
+		pushToDLQ(ctx, outcome, dlqPipeline)
 		return errors.New(receipt.StatusReason)
 	}
 
@@ -36,7 +40,11 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 	if !ok {
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
-		pushToDLQ(ctx, receipt, task, dlqPipeline)
+		outcome := model.SendOutcome{
+					Task: task,
+					Receipt: receipt,
+		}
+		pushToDLQ(ctx, outcome, dlqPipeline)
 		return errors.New(receipt.StatusReason)
 	}
 
@@ -45,20 +53,82 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
-		pushToDLQ(ctx, receipt, task, dlqPipeline)
+		outcome := model.SendOutcome{
+					Task: task,
+					Receipt: receipt,
+		}
+		pushToDLQ(ctx, outcome, dlqPipeline)
 		return errors.New(receipt.StatusReason)
 	}
 	receipt.Status = model.DeliveryStatusSuccess
-	pushToDLQ(ctx, receipt, task, dlqPipeline)
+	outcome := model.SendOutcome{
+				Task: task,
+				Receipt: receipt,
+	}
+	pushToDLQ(ctx, outcome, dlqPipeline)
 	return nil
 }
 
-func pushToDLQ(ctx context.Context, receipt model.DeliveryReceipt, task model.SendTask, dlqPipeline pipeline.Pipeline[model.SendOutcome]) {
-	outcome := model.SendOutcome{
-		Receipt: receipt,
-		Task:    task,
+func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[model.Platform]dispatch.Dispatcher, dlqPipeline pipeline.Pipeline[model.LASendOutcome]) {
+	dispatcher, ok := dispatchers[task.Target.Platform]
+	receipt := model.DeliveryReceipt{
+		ID:           uuid.New().String(),
+		JobID:        task.LAJob.JobID,
+		TokenID:      task.Target.TokenID,
+		DispatchedAt: time.Now().UTC(),
+	}
+	if !ok {
+		receipt.Status = model.DeliveryStatusFailed
+		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
+		outcome := model.LASendOutcome{
+			Task: task,
+			Receipt: receipt,
+		}
+		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
+		return
 	}
 
+	laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
+	if !ok {
+		receipt.Status = model.DeliveryStatusFailed
+		receipt.StatusReason = fmt.Sprintf("No live activity dispatcher configured for platform: %s", task.Target.Platform)
+		outcome := model.LASendOutcome{
+			Task: task,
+			Receipt: receipt,
+		}
+		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
+		return
+	}
+
+	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, &model.LiveActivityRequest{
+		Action:       task.LAJob.Action,
+		ActivityID:   task.LAJob.ActivityID,
+		ActivityType: task.LAJob.Activity,
+		Payload:      task.LAJob.Payload,
+		Options:      task.LAJob.Options,
+	})
+	if err != nil {
+		fmt.Printf("Error sending %s live activity, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
+		receipt.Status = model.DeliveryStatusFailed
+		receipt.StatusReason = err.Error()
+		outcome := model.LASendOutcome{
+			Task: task,
+			Receipt: receipt,
+		}
+		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
+		return
+	}
+
+	receipt.Status = model.DeliveryStatusSuccess
+	outcome := model.LASendOutcome{
+		Task: task,
+		Receipt: receipt,
+	}
+	pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
+}
+
+
+func pushToDLQ[O any](ctx context.Context, outcome O, dlqPipeline pipeline.Pipeline[O]) {
 	err := dlqPipeline.Submit(ctx, outcome)
 
 	if errors.Is(err, context.Canceled) {

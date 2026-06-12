@@ -191,7 +191,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, jobPipeline)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
