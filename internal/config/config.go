@@ -30,10 +30,13 @@ type Config struct {
 	APNSBundleID   string
 	APNSKeyPath    string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
 	APNSUseSandbox bool
+	APNSEndpoint   string // test override; empty = real APNs
 
 	FCMProjectID      string
 	FCMServiceAccount string
-	FCMKeyPath        string // Path to FCM service account JSON file
+	FCMKeyPath        string
+	FCMClientPool     int // HTTP clients in the FCM pool (~100 streams each)
+	FCMMaxConcurrent  int // cap on in-flight FCM requests // Path to FCM service account JSON file
 
 	// Broadcast topic configuration
 	BroadcastTopicName string // Name of the broadcast topic (all users auto-subscribe)
@@ -56,9 +59,12 @@ func Load() *Config {
 		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
 		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
+		APNSEndpoint:         getEnv("APNS_ENDPOINT", ""),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
 		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
+		FCMClientPool:        getIntEnv("FCM_CLIENT_POOL", 4),
+		FCMMaxConcurrent:     getIntEnv("FCM_MAX_CONCURRENT", 360),
 		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
 	}
 }

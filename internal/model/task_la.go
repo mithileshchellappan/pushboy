@@ -2,10 +2,11 @@ package model
 
 import (
 	"encoding/json"
+	"time"
 )
 
 type LAJobItem struct {
-	ID string
+	ID         string
 	Action     LiveActivityAction
 	JobID      string
 	DispatchID string
@@ -17,11 +18,12 @@ type LAJobItem struct {
 	TopicID    string
 	UserID     string
 	TotalCount int
+	CreatedAt  time.Time
 }
 
 type LASendTask struct {
 	Target SendTarget
-	LAJob    *LAJobItem
+	LAJob  *LAJobItem
 }
 
 type LASendOutcome struct {

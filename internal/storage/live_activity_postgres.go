@@ -647,17 +647,16 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		apnsTokenType = model.LiveActivityTokenTypeStart
 	}
 
+	var rows *sql.Rows
 
-    var rows *sql.Rows
-
-    switch {
-        case scope.requiresActivityAssociation():
-        	rows, err = s.db.QueryContext(ctx, laTokenBatchByActivityQuery, scope.activityID, cursor, batchSize + 1)
-        case scope.userID != "":
-         	rows, err = s.db.QueryContext(ctx, laTokenBatchByUserQuery, scope.userID, cursor, apnsTokenType, batchSize + 1)
-        default:
-        	rows, err = s.db.QueryContext(ctx, laTokenBatchByTopicQuery, scope.topicID, cursor, apnsTokenType, batchSize + 1)
-        }
+	switch {
+	case scope.requiresActivityAssociation():
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByActivityQuery, scope.activityID, cursor, batchSize+1)
+	case scope.userID != "":
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByUserQuery, scope.userID, cursor, apnsTokenType, batchSize+1)
+	default:
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByTopicQuery, scope.topicID, cursor, apnsTokenType, batchSize+1)
+	}
 
 	if err != nil {
 		return nil, fmt.Errorf("error getting LA token batch: %w", err)
@@ -737,7 +736,7 @@ func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatch
 					AND newer.created_at > d.created_at
 			)`, dispatchID)
 
-	if err!=nil {
+	if err != nil {
 		return false, fmt.Errorf("error superseding LA dispatch: %v", err)
 	}
 	rowsAffected, _ := result.RowsAffected()
@@ -967,7 +966,7 @@ const laTokenBatchByActivityQuery = `
        ORDER BY lata.token_id
        LIMIT $3`
 
- const laTokenBatchByUserQuery = `
+const laTokenBatchByUserQuery = `
        SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_tokens lat
@@ -982,7 +981,7 @@ const laTokenBatchByActivityQuery = `
        ORDER BY lat.id
        LIMIT $4`
 
- const laTokenBatchByTopicQuery = `
+const laTokenBatchByTopicQuery = `
        SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_tokens lat

@@ -60,9 +60,11 @@ type ApsPayload struct {
 
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string) *Client {
 	var endpoint string
-	if useSandbox {
+	if endpointOverride != "" {
+		endpoint = endpointOverride
+	} else if useSandbox {
 		endpoint = DevelopmentEndpoint
 	} else {
 		endpoint = ProductionEndpoint

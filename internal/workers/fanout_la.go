@@ -11,15 +11,15 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
-func  FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
-	superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID);
-	if err!= nil {
-		return fmt.Errorf("Error getting supersede state: %w", err)
+func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
+	superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID)
+	if err != nil {
+		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
 	}
 	if superseded {
-      log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
-      return nil
-  	}
+		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
+		return nil
+	}
 
 	if err := store.UpdateLADispatchStatus(ctx, job.DispatchID, "IN_PROGRESS"); err != nil {
 		return fmt.Errorf("error marking live activity dispatch in progress: %w", err)
@@ -30,12 +30,12 @@ func  FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIt
 	totalFailedOutcomes := make([]model.LASendOutcome, 0)
 	for {
 		superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID)
-  		if err != nil {
-      		log.Printf("Error checking supersede state for dispatch %s: %v", job.DispatchID, err)
-  		} else if superseded {
-      		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
-       		return nil
-   		}
+		if err != nil {
+			log.Printf("Error checking supersede state for dispatch %s: %v", job.DispatchID, err)
+		} else if superseded {
+			log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
+			return nil
+		}
 		batch, err := store.GetLATokenBatchForDispatch(ctx, job.DispatchID, cursor, batchSize)
 		if err != nil {
 			_ = store.UpdateLADispatchStatus(ctx, job.DispatchID, "FAILED")
@@ -43,7 +43,7 @@ func  FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIt
 			return fmt.Errorf("error fetching live activity tokens: %w", err)
 		}
 
-		outcomes := pushLATokensToPipeline(ctx, batch, emit,  &job)
+		outcomes := pushLATokensToPipeline(ctx, batch, emit, &job)
 		totalFailedOutcomes = append(totalFailedOutcomes, outcomes...)
 
 		totalTokenCount += len(batch.Tokens)

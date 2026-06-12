@@ -185,12 +185,11 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error creating live activity dispatch: %v", err)
 		return
 	}
-
 	if result.Dispatch != nil {
 		jobItem := model.LAJobItem{
-			ID:           result.Dispatch.ID,
-			TopicID:      result.Job.TopicID,
-			UserID:       result.Job.UserID,
+			ID:         result.Dispatch.ID,
+			TopicID:    result.Job.TopicID,
+			UserID:     result.Job.UserID,
 			Action:     result.Dispatch.Action,
 			JobID:      result.Job.ID,
 			DispatchID: result.Dispatch.ID,
@@ -198,6 +197,7 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 			Activity:   result.Job.ActivityType,
 			Payload:    result.Dispatch.Payload,
 			Options:    result.Dispatch.Options,
+			CreatedAt:  result.Dispatch.CreatedAt,
 		}
 
 		if err := s.enqueueImmediateLADispatch(result.Job, result.Dispatch, jobItem); err != nil {

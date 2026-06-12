@@ -20,7 +20,7 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/fcm"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
-	// "github.com/mithileshchellappan/pushboy/internal/scheduler"
+	"github.com/mithileshchellappan/pushboy/internal/scheduler"
 	"github.com/mithileshchellappan/pushboy/internal/server"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
@@ -54,7 +54,7 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox)
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
 			dispatchers[model.APNS] = apnsClient
 			log.Println("APNS dispatcher initialized")
 		}
@@ -67,7 +67,7 @@ func main() {
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
-		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes)
+		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
@@ -118,8 +118,8 @@ func main() {
 	laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LAQueueSize)
 	laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
 
-	// scheduler := scheduler.New(store, jobPipeline, 10)
-	// scheduler.Start(workerCtx)
+	scheduler := scheduler.New(store, jobPipeline, 10)
+	scheduler.Start(workerCtx)
 
 	var masterWg sync.WaitGroup
 	var senderWg sync.WaitGroup
@@ -209,7 +209,7 @@ func main() {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
-	// scheduler.Stop()
+	scheduler.Stop()
 	gracefulDone := make(chan struct{})
 
 	var drainWg sync.WaitGroup
