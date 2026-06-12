@@ -43,6 +43,7 @@ func main() {
 
 	// Initialize dispatchers - only add successfully created clients
 	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
+	laDispatchers := make(map[model.Platform]dispatch.Dispatcher)
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -55,7 +56,9 @@ func main() {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
 			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
+			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
 			dispatchers[model.APNS] = apnsClient
+			laDispatchers[model.APNS] = laApnsClient
 			log.Println("APNS dispatcher initialized")
 		}
 	} else {
@@ -68,10 +71,12 @@ func main() {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
 		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
+		laFcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
 			dispatchers[model.FCM] = fcmClient
+			laDispatchers[model.FCM] = laFcmClient
 			log.Println("FCM dispatcher initialized")
 		}
 	}
@@ -165,7 +170,7 @@ func main() {
 	for range cfg.LASenderCount {
 		laSendersWg.Add(1)
 		sender := workers.NewSender(laTaskPipeline, laDlqPipeline, func(ctx context.Context, task model.LASendTask) error {
-			return workers.DispatchLATask(ctx, task, dispatchers, laDlqPipeline)
+			return workers.DispatchLATask(ctx, task, laDispatchers, laDlqPipeline)
 		})
 		go func(m workers.SenderWorker[model.LASendTask, model.LASendOutcome]) {
 			defer laSendersWg.Done()
