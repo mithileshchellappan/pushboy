@@ -659,49 +659,6 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
         	rows, err = s.db.QueryContext(ctx, laTokenBatchByTopicQuery, scope.topicID, cursor, apnsTokenType, batchSize + 1)
         }
 
-	// rows, err := s.db.QueryContext(
-	// 	ctx,
-	// 	`SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
-	// 	 FROM live_activity_tokens lat
-	// 	 WHERE lat.invalidated_at IS NULL
-	// 	   AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-	// 	   AND (
-	// 		(lat.platform = 'apns' AND lat.token_type = $1)
-	// 		OR
-	// 		(lat.platform = 'fcm' AND lat.token_type = 'update')
-	// 	   )
-	// 	   AND lat.id > $2
-	// 	   AND (
-	// 		($3 <> '' AND lat.user_id = $3)
-	// 		OR (
-	// 			$4 <> ''
-	// 			AND lat.user_id IN (
-	// 				SELECT user_id
-	// 				FROM live_activity_user_topic_subscriptions
-	// 				WHERE topic_id = $4
-	// 			)
-	// 		)
-	// 	   )
-	// 	   AND (
-	// 		NOT $5
-	// 		OR EXISTS (
-	// 			SELECT 1
-	// 			FROM live_activity_token_activities lata
-	// 			WHERE lata.activity_id = $6
-	// 			  AND lata.token_id = lat.id
-	// 		)
-	// 	   )
-	// 	 ORDER BY lat.id
-	// 	 LIMIT $7`,
-	// 	apnsTokenType,
-	// 	cursor,
-	// 	scope.userID,
-	// 	scope.topicID,
-	// 	scope.requiresActivityAssociation(),
-	// 	scope.activityID,
-	// 	batchSize+1,
-	// )
-
 	if err != nil {
 		return nil, fmt.Errorf("error getting LA token batch: %w", err)
 	}
@@ -764,6 +721,28 @@ func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchI
 		return fmt.Errorf("error committing LA dispatch enqueue completion: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE live_activity_dispatches d
+		SET status = 'SUPERSEDED', completed_at = NOW()
+		WHERE d.id = $1
+			AND d.action = 'update'
+			AND d.status IN ('QUEUED', 'IN_PROGRESS')
+			AND EXISTS (
+				SELECT 1 FROM live_activity_dispatches newer
+				WHERE newer.live_activity_job_id = d.live_activity_job_id
+					AND newer.action = 'update'
+					AND newer.created_at > d.created_at
+			)`, dispatchID)
+
+	if err!=nil {
+		return false, fmt.Errorf("error superseding LA dispatch: %v", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	return rowsAffected > 0, nil
+
 }
 
 func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error {
