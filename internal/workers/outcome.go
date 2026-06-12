@@ -4,37 +4,57 @@ import (
 	"context"
 	"errors"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
-	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
-type outcomeWriter interface {
+type pushOutcomeWriter interface {
 	ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error
-	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
 }
 
-type OutcomeWorker struct {
-	store          outcomeWriter
-	dlqPipeline    pipeline.Pipeline[model.SendOutcome]
+type laOutcomeWriter interface {
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error
+}
+
+type OutcomeApplyFunc[O any] func(ctx context.Context, outcomes []O) error
+
+type OutcomeWorker[O any] struct {
+	dlqPipeline    pipeline.Pipeline[O]
+	apply          OutcomeApplyFunc[O]
 	queueSize      int
 	queueFlushTime int
 }
 
-func NewOutcomeWorker(store storage.Store, dlqPipeline pipeline.Pipeline[model.SendOutcome], queueSize int, queueFlushTime int) OutcomeWorker {
-	return OutcomeWorker{
-		store:          store,
+func NewPushOutcomeWorker(store pushOutcomeWriter, dlqPipeline pipeline.Pipeline[model.SendOutcome], queueSize int, queueFlushTime int) OutcomeWorker[model.SendOutcome] {
+	return OutcomeWorker[model.SendOutcome]{
 		dlqPipeline:    dlqPipeline,
 		queueSize:      queueSize,
 		queueFlushTime: queueFlushTime,
+		apply: func(ctx context.Context, outcomes []model.SendOutcome) error {
+			receipts := make([]model.DeliveryReceipt, 0, len(outcomes))
+			for _, outcome := range outcomes {
+				receipts = append(receipts, outcome.Receipt)
+			}
+			return store.ApplyPushOutcomeBatch(ctx, receipts)
+		},
 	}
 }
 
-func (o *OutcomeWorker) Start(ctx context.Context) {
-	deliveryCh := make(chan pipeline.Delivery[model.SendOutcome])
+func NewLAOutcomeWorker(store laOutcomeWriter, dlqPipeline pipeline.Pipeline[model.LASendOutcome], queueSize int, queueFlushTime int) OutcomeWorker[model.LASendOutcome] {
+	return OutcomeWorker[model.LASendOutcome]{
+		dlqPipeline:    dlqPipeline,
+		queueSize:      queueSize,
+		queueFlushTime: queueFlushTime,
+		apply: func(ctx context.Context, outcomes []model.LASendOutcome) error {
+			return store.ApplyLAOutcomeBatch(ctx, outcomes)
+		},
+	}
+}
+
+func (o *OutcomeWorker[O]) Start(ctx context.Context) {
+	deliveryCh := make(chan pipeline.Delivery[O])
 
 	go func() {
 		defer close(deliveryCh)
@@ -54,9 +74,11 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 			}
 		}
 	}()
-	outcomeBatch := make([]pipeline.Delivery[model.SendOutcome], 0, o.queueSize)
+
+	outcomeBatch := make([]pipeline.Delivery[O], 0, o.queueSize)
 	ticker := time.NewTicker(time.Duration(o.queueFlushTime) * time.Second)
 	defer ticker.Stop()
+
 	flush := func() {
 		if len(outcomeBatch) == 0 {
 			return
@@ -69,16 +91,13 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 		}
 		defer cancel()
 
-		retryDeliveries, err := o.processOutcome(flushCtx, outcomeBatch)
-		if err != nil {
-			log.Printf("Error processing outcome: %v", err)
-			clear(outcomeBatch)
-			outcomeBatch = retryDeliveries
-		} else {
-			clear(outcomeBatch)
-			outcomeBatch = outcomeBatch[:0]
+		if err := o.processOutcome(flushCtx, outcomeBatch); err != nil {
+			log.Printf("Error processing outcome batch: %v", err)
+			return
 		}
+		outcomeBatch = outcomeBatch[:0]
 	}
+
 	for {
 		select {
 		case delivery, ok := <-deliveryCh:
@@ -87,71 +106,22 @@ func (o *OutcomeWorker) Start(ctx context.Context) {
 				return
 			}
 			outcomeBatch = append(outcomeBatch, delivery)
-			if len(outcomeBatch) == o.queueSize {
+			if len(outcomeBatch) >= o.queueSize {
 				flush()
 			}
 		case <-ticker.C:
-			if len(outcomeBatch) > 0 {
-				flush()
-			}
+			flush()
 		case <-ctx.Done():
 			flush()
 			return
 		}
-
 	}
 }
 
-func (o *OutcomeWorker) processOutcome(ctx context.Context, deliveries []pipeline.Delivery[model.SendOutcome]) ([]pipeline.Delivery[model.SendOutcome], error) {
-	//TODO: handle retry with maxRetries and retryExp (check apple docs)
-	pushOutcomeDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0, len(deliveries))
-	pushReceiptBatch := make([]model.DeliveryReceipt, 0, len(deliveries))
-	liveActivityOutcomeDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0)
-	liveActivityOutcomeBatch := make([]model.SendOutcome, 0)
-	softDeleteTokenBatch := make([]string, 0)
-
-	for i := range len(deliveries) {
-		delivery := deliveries[i]
-		outcome := delivery.Get()
-		if outcome.Task.Job.JobType == model.JobTypeLA {
-			liveActivityOutcomeDeliveries = append(liveActivityOutcomeDeliveries, delivery)
-			liveActivityOutcomeBatch = append(liveActivityOutcomeBatch, outcome)
-			continue
-		}
-
-		pushOutcomeDeliveries = append(pushOutcomeDeliveries, delivery)
-		reason := outcome.Receipt.StatusReason
-
-		if strings.Contains(reason, "BadDeviceToken") {
-			softDeleteTokenBatch = append(softDeleteTokenBatch, outcome.Receipt.TokenID)
-		}
-
-		pushReceiptBatch = append(pushReceiptBatch, outcome.Receipt)
+func (o *OutcomeWorker[O]) processOutcome(ctx context.Context, deliveries []pipeline.Delivery[O]) error {
+	outcomes := make([]O, 0, len(deliveries))
+	for _, delivery := range deliveries {
+		outcomes = append(outcomes, delivery.Get())
 	}
-
-	retryDeliveries := make([]pipeline.Delivery[model.SendOutcome], 0)
-	errs := make([]error, 0, 2)
-
-	if len(pushReceiptBatch) > 0 {
-		if err := o.store.ApplyPushOutcomeBatch(ctx, pushReceiptBatch); err != nil {
-			log.Printf("Error applying push outcome batch %v", err.Error())
-			retryDeliveries = append(retryDeliveries, pushOutcomeDeliveries...)
-			errs = append(errs, err)
-		}
-	}
-	if len(softDeleteTokenBatch) > 0 {
-		// err := o.store.BulkSoftDeleteToken(ctx, softDeleteTokenBatch) TODO: Bring this back up after fixing android issue
-		// if err != nil {
-		// 	log.Printf("Error bulk soft deleting dead tokens %v", err.Error())
-		// }
-	}
-	if len(liveActivityOutcomeBatch) > 0 {
-		if err := o.store.ApplyLAOutcomeBatch(ctx, liveActivityOutcomeBatch); err != nil {
-			log.Printf("Error applying live activity outcome batch %v", err.Error())
-			retryDeliveries = append(retryDeliveries, liveActivityOutcomeDeliveries...)
-			errs = append(errs, err)
-		}
-	}
-
-	return retryDeliveries, errors.Join(errs...)
+	return o.apply(ctx, outcomes)
 }

@@ -43,6 +43,7 @@ func main() {
 
 	// Initialize dispatchers - only add successfully created clients
 	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
+	laDispatchers := make(map[model.Platform]dispatch.Dispatcher)
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -54,8 +55,10 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox)
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
+			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
 			dispatchers[model.APNS] = apnsClient
+			laDispatchers[model.APNS] = laApnsClient
 			log.Println("APNS dispatcher initialized")
 		}
 	} else {
@@ -67,11 +70,13 @@ func main() {
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
-		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes)
+		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
+		laFcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
 			dispatchers[model.FCM] = fcmClient
+			laDispatchers[model.FCM] = laFcmClient
 			log.Println("FCM dispatcher initialized")
 		}
 	}
@@ -114,46 +119,84 @@ func main() {
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
 	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
 
+	laJobPipeline := pipeline.NewMemoryPipeline[model.LAJobItem](cfg.LAQueueSize)
+	laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LAQueueSize)
+	laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
+
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start(workerCtx)
 
 	var masterWg sync.WaitGroup
-	var masters = make(map[int]workers.MasterWorker)
-
 	var senderWg sync.WaitGroup
-	var senders = make(map[int]workers.SenderWorker)
 
-	for i := range cfg.WorkerCount {
+	var laMasterWg sync.WaitGroup
+	var laSendersWg sync.WaitGroup
+
+	for range cfg.WorkerCount {
 		masterWg.Add(1)
-		master := workers.NewMaster(store, jobPipeline, taskPipeline, cfg.BatchSize)
-		masters[i] = master
-		go func(m workers.MasterWorker) {
+		master := workers.NewMaster[model.JobItem, model.SendTask](jobPipeline, taskPipeline, func(ctx context.Context,
+			job model.JobItem, emit func(context.Context, model.SendTask) error) error {
+			return workers.FanoutPushToken(ctx, store, cfg.BatchSize, job, emit)
+		})
+		go func(m workers.MasterWorker[model.JobItem, model.SendTask]) {
 			defer masterWg.Done()
 			m.Start(workerCtx)
 		}(master)
-
 	}
 
-	for i := range cfg.SenderCount {
+	for range cfg.LAWorkerCount {
+		laMasterWg.Add(1)
+		master := workers.NewMaster[model.LAJobItem, model.LASendTask](laJobPipeline, laTaskPipeline,
+			func(ctx context.Context, job model.LAJobItem, emit func(context.Context, model.LASendTask) error) error {
+				return workers.FanoutLATokens(ctx, store, job, cfg.BatchSize, emit)
+			})
+		go func(m workers.MasterWorker[model.LAJobItem, model.LASendTask]) {
+			defer laMasterWg.Done()
+			m.Start(workerCtx)
+		}(master)
+	}
+
+	for range cfg.SenderCount {
 		senderWg.Add(1)
-		sender := workers.NewSender(store, taskPipeline, dlqPipeline, dispatchers, cfg.BatchSize)
-		senders[i] = sender
-		go func(m workers.SenderWorker) {
+		sender := workers.NewSender[model.SendTask, model.SendOutcome](taskPipeline, dlqPipeline, func(ctx context.Context, task model.SendTask) error {
+			return workers.DispatchPushTask(ctx, task, dispatchers, dlqPipeline)
+		})
+		go func(m workers.SenderWorker[model.SendTask, model.SendOutcome]) {
 			defer senderWg.Done()
 			m.Start(workerCtx)
 		}(sender)
 	}
 
-	outcomeWorker := workers.NewOutcomeWorker(store, dlqPipeline, 1000, 10)
+	for range cfg.LASenderCount {
+		laSendersWg.Add(1)
+		sender := workers.NewSender(laTaskPipeline, laDlqPipeline, func(ctx context.Context, task model.LASendTask) error {
+			return workers.DispatchLATask(ctx, task, laDispatchers, laDlqPipeline)
+		})
+		go func(m workers.SenderWorker[model.LASendTask, model.LASendOutcome]) {
+			defer laSendersWg.Done()
+			m.Start(workerCtx)
+		}(sender)
+	}
+
+	outcomeWorker := workers.NewPushOutcomeWorker(store, dlqPipeline, 1000, 10)
 	var outcomeWg sync.WaitGroup
 	//If required more DLQ outcome workers change it into a looped go routines
 	outcomeWg.Add(1)
-	go func(o workers.OutcomeWorker) {
+	go func(o workers.OutcomeWorker[model.SendOutcome]) {
 		defer outcomeWg.Done()
 		o.Start(workerCtx)
 	}(outcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline)
+	laOutcomeWorker := workers.NewLAOutcomeWorker(store, laDlqPipeline, 1000, 10)
+	var laOutcomeWg sync.WaitGroup
+
+	laOutcomeWg.Add(1)
+	go func(o workers.OutcomeWorker[model.LASendOutcome]) {
+		defer laOutcomeWg.Done()
+		o.Start(workerCtx)
+	}(laOutcomeWorker)
+
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
@@ -173,23 +216,34 @@ func main() {
 
 	scheduler.Stop()
 	gracefulDone := make(chan struct{})
+
+	var drainWg sync.WaitGroup
+	drainWg.Add(2)
+
 	go func() {
-		defer close(gracefulDone)
-		if err := jobPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("Job pipeline shutdown error: %v", err)
-		}
-		masterWg.Wait()
-		if err := taskPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("Task pipeline shutdown error: %v", err)
-		}
-		senderWg.Wait()
-		if err := dlqPipeline.Close(shutdownCtx); err != nil {
-			log.Printf("DLQ pipeline shutdown error: %v", err)
-		}
-		outcomeWg.Wait()
+		defer drainWg.Done()
+		drainChain(shutdownCtx, []drainStage{
+			{name: "job pipeline", pipe: jobPipeline, workers: &masterWg},
+			{name: "task pipeline", pipe: taskPipeline, workers: &senderWg},
+			{name: "DLQ pipeline", pipe: dlqPipeline, workers: &outcomeWg},
+		})
+	}()
+
+	go func() {
+		defer drainWg.Done()
+		drainChain(shutdownCtx, []drainStage{
+			{name: "LA job pipeline", pipe: laJobPipeline, workers: &laMasterWg},
+			{name: "LA task pipeline", pipe: laTaskPipeline, workers: &laSendersWg},
+			{name: "LA DLQ pipeline", pipe: laDlqPipeline, workers: &laOutcomeWg},
+		})
+	}()
+
+	go func() {
+		drainWg.Wait()
 		if err := store.Close(); err != nil {
 			log.Printf("Error closing database: %v", err)
 		}
+		close(gracefulDone)
 	}()
 
 	select {

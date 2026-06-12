@@ -28,7 +28,7 @@ func TestHandleRegisterTokenValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true})
+			router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(tt.body))
 
@@ -65,7 +65,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 			token.CreatedAt = now
 			return token, nil
 		}
-		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(`{"id":"user-1","platform":"apns","token":"device-token"}`))
 
@@ -97,7 +97,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 		store.createTokenFunc = func(ctx context.Context, token *storage.Token) (*storage.Token, error) {
 			return nil, storage.Errors.AlreadyExists
 		}
-		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(`{"id":"user-1","platform":"fcm","token":"device-token"}`))
 
@@ -111,7 +111,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 
 func TestHandleSendToUserNotificationValidation(t *testing.T) {
 	t.Run("empty visible notification is rejected before service", func(t *testing.T) {
-		router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/user-1/send", bytes.NewBufferString(`{}`))
 
@@ -134,7 +134,7 @@ func TestHandleSendToUserNotificationValidation(t *testing.T) {
 			return job, nil
 		}
 		jobPipeline := &serverJobPipeline{t: t}
-		router := testRouter(t, store, jobPipeline)
+		router := testRouter(t, store, jobPipeline, &serverJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/user-1/send", bytes.NewBufferString(`{"silent":true}`))
 
@@ -186,7 +186,7 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 		return token, nil
 	}
 
-	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true})
+	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
 		"userId":"user-1",
@@ -204,10 +204,66 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 	}
 }
 
-func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem]) http.Handler {
+func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
+	now := time.Now().UTC()
+	store := &serverStoreStub{t: t}
+	store.getLAJobByActivityIDFunc = func(ctx context.Context, activityID string) (*storage.LiveActivityJob, error) {
+		if activityID != "race-42" {
+			t.Fatalf("GetLAJobByActivityID activityID = %q, want race-42", activityID)
+		}
+		return &storage.LiveActivityJob{
+			ID:           "la-job-1",
+			ActivityID:   "race-42",
+			ActivityType: "RaceAttributes",
+			TopicID:      "broadcast",
+			Status:       model.LiveActivityJobStatusActive,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}, nil
+	}
+	store.updateLAJobPayloadIfActiveFunc = func(ctx context.Context, jobID string, payload, options json.RawMessage, updatedAt time.Time) error {
+		if jobID != "la-job-1" {
+			t.Fatalf("UpdateLAJobPayloadIfActive jobID = %q, want la-job-1", jobID)
+		}
+		return nil
+	}
+	store.createLADispatchFunc = func(ctx context.Context, dispatch *storage.LiveActivityDispatch) (*storage.LiveActivityDispatch, error) {
+		return dispatch, nil
+	}
+
+	// the push lane must never see a Live Activity job
+	pushPipeline := &serverJobPipeline{t: t, failOnSubmit: true}
+	laPipeline := &serverJobPipeline{t: t}
+	router := testRouter(t, store, pushPipeline, laPipeline)
+
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", bytes.NewBufferString(`{
+		"action":"update",
+		"activityId":"race-42",
+		"payload":{"lap":12}
+	}`))
+
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	if len(laPipeline.submitted) != 1 {
+		t.Fatalf("LA pipeline submissions = %d, want 1", len(laPipeline.submitted))
+	}
+	got := laPipeline.submitted[0]
+	if got.JobType != model.JobTypeLA {
+		t.Fatalf("submitted JobType = %q, want %q", got.JobType, model.JobTypeLA)
+	}
+	if got.LAActivityID != "race-42" || got.LAJobID != "la-job-1" || got.LADispatchID == "" {
+		t.Fatalf("submitted job = %+v, want LA fields populated", got)
+	}
+}
+
+func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.JobItem]) http.Handler {
 	t.Helper()
 
-	return New(service.NewPushBoyService(store, ""), jobPipeline).setupRouter()
+	return New(service.NewPushBoyService(store, ""), jobPipeline, laJobPipeline).setupRouter()
 }
 
 type serverJobPipeline struct {
@@ -248,6 +304,10 @@ type serverStoreStub struct {
 	subscribeUserToLATopicFunc  func(context.Context, *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error)
 	createUserPublishJobFunc    func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
 	updateJobStatusFunc         func(context.Context, string, model.NotificationJobStatus) error
+
+	getLAJobByActivityIDFunc       func(context.Context, string) (*storage.LiveActivityJob, error)
+	updateLAJobPayloadIfActiveFunc func(context.Context, string, json.RawMessage, json.RawMessage, time.Time) error
+	createLADispatchFunc           func(context.Context, *storage.LiveActivityDispatch) (*storage.LiveActivityDispatch, error)
 }
 
 func (s *serverStoreStub) unused(method string) {
@@ -487,6 +547,9 @@ func (s *serverStoreStub) GetLAJob(ctx context.Context, jobID string) (*storage.
 }
 
 func (s *serverStoreStub) GetLAJobByActivityID(ctx context.Context, activityID string) (*storage.LiveActivityJob, error) {
+	if s.getLAJobByActivityIDFunc != nil {
+		return s.getLAJobByActivityIDFunc(ctx, activityID)
+	}
 	s.unused("GetLAJobByActivityID")
 	return nil, errors.New("unexpected GetLAJobByActivityID")
 }
@@ -502,6 +565,9 @@ func (s *serverStoreStub) FindLAJobByTopicScope(ctx context.Context, activityTyp
 }
 
 func (s *serverStoreStub) UpdateLAJobPayloadIfActive(ctx context.Context, jobID string, payload json.RawMessage, options json.RawMessage, updatedAt time.Time) error {
+	if s.updateLAJobPayloadIfActiveFunc != nil {
+		return s.updateLAJobPayloadIfActiveFunc(ctx, jobID, payload, options, updatedAt)
+	}
 	s.unused("UpdateLAJobPayloadIfActive")
 	return errors.New("unexpected UpdateLAJobPayloadIfActive")
 }
@@ -522,6 +588,9 @@ func (s *serverStoreStub) FailLAJobIfActive(ctx context.Context, jobID string) e
 }
 
 func (s *serverStoreStub) CreateLADispatch(ctx context.Context, dispatch *storage.LiveActivityDispatch) (*storage.LiveActivityDispatch, error) {
+	if s.createLADispatchFunc != nil {
+		return s.createLADispatchFunc(ctx, dispatch)
+	}
 	s.unused("CreateLADispatch")
 	return nil, errors.New("unexpected CreateLADispatch")
 }

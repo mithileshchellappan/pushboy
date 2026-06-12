@@ -14,6 +14,11 @@ type Config struct {
 	JobQueueSize int // Size of the job queue buffer
 	BatchSize    int // Number of tokens to fetch per batch from DB
 
+	// Live Activity worker pool configuration (separate lane from push notifications)
+	LAWorkerCount int // Number of LA master goroutines
+	LASenderCount int // Number of LA sender goroutines
+	LAQueueSize   int // Size of the LA job/task/outcome queue buffers
+
 	//Retry
 	MaxRetryNotification int
 	//TODO: LA Add separate retry count for LA
@@ -25,10 +30,13 @@ type Config struct {
 	APNSBundleID   string
 	APNSKeyPath    string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
 	APNSUseSandbox bool
+	APNSEndpoint   string // test override; empty = real APNs
 
 	FCMProjectID      string
 	FCMServiceAccount string
-	FCMKeyPath        string // Path to FCM service account JSON file
+	FCMKeyPath        string
+	FCMClientPool     int // HTTP clients in the FCM pool (~100 streams each)
+	FCMMaxConcurrent  int // cap on in-flight FCM requests // Path to FCM service account JSON file
 
 	// Broadcast topic configuration
 	BroadcastTopicName string // Name of the broadcast topic (all users auto-subscribe)
@@ -41,6 +49,9 @@ func Load() *Config {
 		SenderCount:          getIntEnv("SENDER_COUNT", 200),
 		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
 		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
+		LAWorkerCount:        getIntEnv("LA_WORKER_COUNT", 5),
+		LASenderCount:        getIntEnv("LA_SENDER_COUNT", 300),
+		LAQueueSize:          getIntEnv("LA_QUEUE_SIZE", 1000),
 		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/pushboy?sslmode=disable"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
@@ -48,9 +59,12 @@ func Load() *Config {
 		APNSBundleID:         getEnv("APNS_BUNDLE_ID", getEnv("APNS_TOPIC_ID", "")),
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
 		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
+		APNSEndpoint:         getEnv("APNS_ENDPOINT", ""),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
 		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
+		FCMClientPool:        getIntEnv("FCM_CLIENT_POOL", 4),
+		FCMMaxConcurrent:     getIntEnv("FCM_MAX_CONCURRENT", 360),
 		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
 	}
 }

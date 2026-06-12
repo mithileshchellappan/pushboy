@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"time"
 )
 
@@ -39,14 +38,6 @@ type JobItem struct {
 	TopicID    string
 	UserID     string
 	TotalCount int
-
-	LAAction     LiveActivityAction
-	LAJobID      string
-	LADispatchID string
-	LAActivityID string
-	LAActivity   string
-	LAPayload    json.RawMessage
-	LAOptions    json.RawMessage
 }
 
 type SendOutcome struct {

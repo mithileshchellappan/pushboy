@@ -52,6 +52,9 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options mode
 	}
 	if !ok {
 		timestamp = now.Unix()
+		if !request.CreatedAt.IsZero() {
+			timestamp = request.CreatedAt.Unix()
+		}
 	}
 
 	contentState, err := decodeOptionalJSON(request.Payload)

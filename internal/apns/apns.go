@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -31,12 +32,13 @@ const (
 )
 
 type Client struct {
-	httpClient *http.Client
-	keyID      string
-	teamID     string
-	bundleID   string
-	signingKey []byte
-	endpoint   string
+	httpClients []*http.Client
+	next        atomic.Uint32
+	keyID       string
+	teamID      string
+	bundleID    string
+	signingKey  []byte
+	endpoint    string
 
 	jwtMutex  sync.RWMutex
 	cachedJWT string
@@ -60,33 +62,41 @@ type ApsPayload struct {
 
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string) *Client {
 	var endpoint string
-	if useSandbox {
+	if endpointOverride != "" {
+		endpoint = endpointOverride
+	} else if useSandbox {
 		endpoint = DevelopmentEndpoint
 	} else {
 		endpoint = ProductionEndpoint
 	}
 
-	transport := &http.Transport{
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	// Pool of transports: each owns its TCP connection(s) to APNs, so streams
+	// spread across congestion windows instead of sharing one pipe.
+	const apnsClientPool = 4
+	clients := make([]*http.Client, apnsClientPool)
+	for i := range clients {
+		clients[i] = &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				MaxIdleConnsPerHost:   100,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+			},
+		}
 	}
 
 	return &Client{
-		httpClient: &http.Client{
-			Timeout:   10 * time.Second,
-			Transport: transport,
-		},
-		keyID:      keyID,
-		teamID:     teamID,
-		bundleID:   bundleID,
-		signingKey: p8KeyBytes,
-		endpoint:   endpoint,
+		httpClients: clients,
+		keyID:       keyID,
+		teamID:      teamID,
+		bundleID:    bundleID,
+		signingKey:  p8KeyBytes,
+		endpoint:    endpoint,
 	}
 }
 
@@ -249,7 +259,7 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			}
 		}
 
-		resp, err := c.httpClient.Do(req)
+		resp, err := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))].Do(req)
 		if err != nil {
 			if attempt < maxRetries && isRetryableError(err) {
 				select {

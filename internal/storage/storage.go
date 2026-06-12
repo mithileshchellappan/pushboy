@@ -210,8 +210,9 @@ type Store interface {
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
 	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
 	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
-	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error
+	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error
 	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
+	SupersedeLADispatchIfStale(ctx context.Context, dispatchID string) (bool, error)
 
 	// Lifecycle
 	Close() error

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type LiveActivityTokenType string
@@ -142,4 +143,5 @@ type LiveActivityRequest struct {
 	ActivityType string
 	Payload      LiveActivityPayload
 	Options      LiveActivityOptions
+	CreatedAt    time.Time
 }
