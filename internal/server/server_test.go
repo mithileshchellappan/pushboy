@@ -28,7 +28,7 @@ func TestHandleRegisterTokenValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
+			router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
 			recorder := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(tt.body))
 
@@ -65,7 +65,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 			token.CreatedAt = now
 			return token, nil
 		}
-		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(`{"id":"user-1","platform":"apns","token":"device-token"}`))
 
@@ -97,7 +97,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 		store.createTokenFunc = func(ctx context.Context, token *storage.Token) (*storage.Token, error) {
 			return nil, storage.Errors.AlreadyExists
 		}
-		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/tokens", bytes.NewBufferString(`{"id":"user-1","platform":"fcm","token":"device-token"}`))
 
@@ -111,7 +111,7 @@ func TestHandleRegisterTokenSuccessAndConflict(t *testing.T) {
 
 func TestHandleSendToUserNotificationValidation(t *testing.T) {
 	t.Run("empty visible notification is rejected before service", func(t *testing.T) {
-		router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, &serverStoreStub{t: t}, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/user-1/send", bytes.NewBufferString(`{}`))
 
@@ -134,7 +134,7 @@ func TestHandleSendToUserNotificationValidation(t *testing.T) {
 			return job, nil
 		}
 		jobPipeline := &serverJobPipeline{t: t}
-		router := testRouter(t, store, jobPipeline, &serverJobPipeline{t: t, failOnSubmit: true})
+		router := testRouter(t, store, jobPipeline, &serverLAJobPipeline{t: t, failOnSubmit: true})
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/v1/users/user-1/send", bytes.NewBufferString(`{"silent":true}`))
 
@@ -186,7 +186,7 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 		return token, nil
 	}
 
-	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverJobPipeline{t: t, failOnSubmit: true})
+	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
 		"userId":"user-1",
@@ -233,7 +233,7 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 
 	// the push lane must never see a Live Activity job
 	pushPipeline := &serverJobPipeline{t: t, failOnSubmit: true}
-	laPipeline := &serverJobPipeline{t: t}
+	laPipeline := &serverLAJobPipeline{t: t}
 	router := testRouter(t, store, pushPipeline, laPipeline)
 
 	recorder := httptest.NewRecorder()
@@ -252,15 +252,17 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		t.Fatalf("LA pipeline submissions = %d, want 1", len(laPipeline.submitted))
 	}
 	got := laPipeline.submitted[0]
-	if got.JobType != model.JobTypeLA {
-		t.Fatalf("submitted JobType = %q, want %q", got.JobType, model.JobTypeLA)
-	}
-	if got.LAActivityID != "race-42" || got.LAJobID != "la-job-1" || got.LADispatchID == "" {
+	if got.Action != model.LiveActivityActionUpdate ||
+		got.ActivityID != "race-42" ||
+		got.JobID != "la-job-1" ||
+		got.DispatchID == "" ||
+		got.TopicID != "broadcast" ||
+		string(got.Payload) != `{"lap":12}` {
 		t.Fatalf("submitted job = %+v, want LA fields populated", got)
 	}
 }
 
-func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.JobItem]) http.Handler {
+func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) http.Handler {
 	t.Helper()
 
 	return New(service.NewPushBoyService(store, ""), jobPipeline, laJobPipeline).setupRouter()
@@ -290,6 +292,33 @@ func (p *serverJobPipeline) Receive(ctx context.Context) (pipeline.Delivery[mode
 }
 
 func (p *serverJobPipeline) Close(ctx context.Context) error {
+	return nil
+}
+
+type serverLAJobPipeline struct {
+	t            *testing.T
+	failOnSubmit bool
+	submitErr    error
+	submitted    []model.LAJobItem
+}
+
+func (p *serverLAJobPipeline) Submit(ctx context.Context, item model.LAJobItem) error {
+	if p.failOnSubmit {
+		p.t.Helper()
+		p.t.Fatalf("LA job pipeline Submit should not be called")
+	}
+	if p.submitErr != nil {
+		return p.submitErr
+	}
+	p.submitted = append(p.submitted, item)
+	return nil
+}
+
+func (p *serverLAJobPipeline) Receive(ctx context.Context) (pipeline.Delivery[model.LAJobItem], error) {
+	return nil, pipeline.ErrClosed
+}
+
+func (p *serverLAJobPipeline) Close(ctx context.Context) error {
 	return nil
 }
 
@@ -610,7 +639,7 @@ func (s *serverStoreStub) CompleteLADispatchEnqueue(ctx context.Context, dispatc
 	return errors.New("unexpected CompleteLADispatchEnqueue")
 }
 
-func (s *serverStoreStub) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error {
+func (s *serverStoreStub) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error {
 	s.unused("ApplyLAOutcomeBatch")
 	return errors.New("unexpected ApplyLAOutcomeBatch")
 }
@@ -618,6 +647,11 @@ func (s *serverStoreStub) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mo
 func (s *serverStoreStub) InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error) {
 	s.unused("InvalidateExpiredLAUpdateTokens")
 	return 0, errors.New("unexpected InvalidateExpiredLAUpdateTokens")
+}
+
+func (s *serverStoreStub) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string) (bool, error) {
+	s.unused("SupersedeLADispatchIfStale")
+	return false, errors.New("unexpected SupersedeLADispatchIfStale")
 }
 
 func (s *serverStoreStub) Close() error {

@@ -43,7 +43,7 @@ func TestSendWithRetryClassifiesNonRetryableResponses(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := &Client{httpClient: server.Client()}
+			client := &Client{httpClients: []*http.Client{server.Client()}}
 			err := client.sendWithRetry(context.Background(), server.URL, []byte(`{}`), "jwt", map[string]string{"apns-topic": "bundle"})
 			if err == nil {
 				t.Fatalf("sendWithRetry error = nil, want error")
@@ -61,7 +61,7 @@ func TestSendWithRetrySuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{httpClient: server.Client()}
+	client := &Client{httpClients: []*http.Client{server.Client()}}
 	if err := client.sendWithRetry(context.Background(), server.URL, []byte(`{}`), "jwt", nil); err != nil {
 		t.Fatalf("sendWithRetry error = %v", err)
 	}

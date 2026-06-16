@@ -45,8 +45,8 @@ func TestGetLATokenBatchForDispatchDefersAssociationFilteringWhileStartPending(t
 	if len(batch.Tokens) != 1 {
 		t.Fatalf("tokens len = %d, want 1", len(batch.Tokens))
 	}
-	if got := scenario.requireActivityAssociationArgs(); len(got) != 1 || got[0] {
-		t.Fatalf("require activity association args = %v, want [false]", got)
+	if got := scenario.tokenQueryKinds(); len(got) != 1 || got[0] != "user" {
+		t.Fatalf("token query kinds = %v, want [user]", got)
 	}
 }
 
@@ -68,8 +68,8 @@ func TestGetLATokenBatchForDispatchRequiresAssociationAfterStartCompletes(t *tes
 	if len(batch.Tokens) != 0 {
 		t.Fatalf("tokens len = %d, want 0 for unassociated token after start completion", len(batch.Tokens))
 	}
-	if got := scenario.requireActivityAssociationArgs(); len(got) != 1 || !got[0] {
-		t.Fatalf("require activity association args = %v, want [true]", got)
+	if got := scenario.tokenQueryKinds(); len(got) != 1 || got[0] != "activity" {
+		t.Fatalf("token query kinds = %v, want [activity]", got)
 	}
 }
 
@@ -92,26 +92,26 @@ func TestGetLATokenBatchForDispatchReturnsAssociatedTokensAfterStartCompletes(t 
 	if len(batch.Tokens) != 1 {
 		t.Fatalf("tokens len = %d, want 1", len(batch.Tokens))
 	}
-	if got := scenario.requireActivityAssociationArgs(); len(got) != 1 || !got[0] {
-		t.Fatalf("require activity association args = %v, want [true]", got)
+	if got := scenario.tokenQueryKinds(); len(got) != 1 || got[0] != "activity" {
+		t.Fatalf("token query kinds = %v, want [activity]", got)
 	}
 }
 
 type liveActivityFanoutScenario struct {
-	mu                         sync.Mutex
-	scope                      liveActivityDispatchFanoutScope
-	tokenRows                  [][]driver.Value
-	tokenHasAssociation        bool
-	requireAssociationRequests []bool
+	mu                  sync.Mutex
+	scope               liveActivityDispatchFanoutScope
+	tokenRows           [][]driver.Value
+	tokenHasAssociation bool
+	tokenQueries        []string
 }
 
-func (s *liveActivityFanoutScenario) requireActivityAssociationArgs() []bool {
+func (s *liveActivityFanoutScenario) tokenQueryKinds() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	args := make([]bool, len(s.requireAssociationRequests))
-	copy(args, s.requireAssociationRequests)
-	return args
+	kinds := make([]string, len(s.tokenQueries))
+	copy(kinds, s.tokenQueries)
+	return kinds
 }
 
 func newLiveActivityFanoutTestStore(t *testing.T, scenario *liveActivityFanoutScenario) *PostgresStore {
@@ -196,19 +196,23 @@ func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string,
 			}},
 		}, nil
 	case strings.Contains(query, "SELECT lat.id"):
-		if len(args) != 7 {
-			return nil, fmt.Errorf("token query args len = %d, want 7", len(args))
+		queryKind := "user"
+		wantArgs := 4
+		if strings.Contains(query, "live_activity_token_activities") {
+			queryKind = "activity"
+			wantArgs = 3
+		} else if strings.Contains(query, "live_activity_user_topic_subscriptions") {
+			queryKind = "topic"
 		}
-		requireAssociation, ok := args[4].Value.(bool)
-		if !ok {
-			return nil, fmt.Errorf("require association arg type = %T, want bool", args[4].Value)
+		if len(args) != wantArgs {
+			return nil, fmt.Errorf("%s token query args len = %d, want %d", queryKind, len(args), wantArgs)
 		}
 		c.scenario.mu.Lock()
-		c.scenario.requireAssociationRequests = append(c.scenario.requireAssociationRequests, requireAssociation)
+		c.scenario.tokenQueries = append(c.scenario.tokenQueries, queryKind)
 		c.scenario.mu.Unlock()
 
 		values := c.scenario.tokenRows
-		if requireAssociation && !c.scenario.tokenHasAssociation {
+		if queryKind == "activity" && !c.scenario.tokenHasAssociation {
 			values = nil
 		}
 		return &liveActivityFanoutRows{
