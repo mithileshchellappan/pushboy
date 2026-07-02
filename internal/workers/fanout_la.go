@@ -14,9 +14,8 @@ import (
 func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
 	superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID)
 	if err != nil {
-		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
-	}
-	if superseded {
+		log.Printf("Error checking supersede state for dispatch %s: %v", job.DispatchID, err)
+	} else if superseded {
 		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
 		return nil
 	}

@@ -36,19 +36,7 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 		return errors.New(receipt.StatusReason)
 	}
 
-	pushDispatcher, ok := dispatcher.(dispatch.Dispatcher)
-	if !ok {
-		receipt.Status = model.DeliveryStatusFailed
-		receipt.StatusReason = fmt.Sprintf("Unknown dispatcher platform: %s", task.Target.Platform)
-		outcome := model.SendOutcome{
-			Task:    task,
-			Receipt: receipt,
-		}
-		pushToDLQ(ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
-	}
-
-	err := pushDispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
+	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
 		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = model.DeliveryStatusFailed
