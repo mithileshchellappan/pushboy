@@ -80,6 +80,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		clients[i] = &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
 				ForceAttemptHTTP2:     true,
 				MaxIdleConns:          100,
 				MaxIdleConnsPerHost:   100,

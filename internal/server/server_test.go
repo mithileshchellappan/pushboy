@@ -649,7 +649,7 @@ func (s *serverStoreStub) InvalidateExpiredLAUpdateTokens(ctx context.Context, l
 	return 0, errors.New("unexpected InvalidateExpiredLAUpdateTokens")
 }
 
-func (s *serverStoreStub) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string) (bool, error) {
+func (s *serverStoreStub) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string, emittedCount int) (bool, error) {
 	s.unused("SupersedeLADispatchIfStale")
 	return false, errors.New("unexpected SupersedeLADispatchIfStale")
 }

@@ -722,10 +722,10 @@ func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchI
 	return nil
 }
 
-func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string) (bool, error) {
+func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string, emittedCount int) (bool, error) {
 	result, err := s.db.ExecContext(ctx,
 		`UPDATE live_activity_dispatches d
-		SET status = 'SUPERSEDED', completed_at = NOW()
+		SET status = 'SUPERSEDED', completed_at = NOW(), total_count = $2
 		WHERE d.id = $1
 			AND d.action = 'update'
 			AND d.status IN ('QUEUED', 'IN_PROGRESS')
@@ -734,7 +734,8 @@ func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatch
 				WHERE newer.live_activity_job_id = d.live_activity_job_id
 					AND newer.action = 'update'
 					AND newer.created_at > d.created_at
-			)`, dispatchID)
+					AND newer.status NOT IN ('FAILED', 'SUPERSEDED')
+			)`, dispatchID, emittedCount)
 
 	if err != nil {
 		return false, fmt.Errorf("error superseding LA dispatch: %v", err)

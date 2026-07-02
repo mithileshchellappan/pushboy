@@ -41,19 +41,23 @@ func (p *MemoryPipeline[T]) Submit(ctx context.Context, item T) error {
 }
 
 func (p *MemoryPipeline[T]) Receive(ctx context.Context) (Delivery[T], error) {
-	for {
+	select {
+	case <-ctx.Done():
+		return nil, ErrClosed
+	case <-p.done:
+		// Closed pipelines still drain buffered items so graceful shutdown
+		// does not drop queued work; ErrClosed only once the buffer is empty.
 		select {
-		case <-ctx.Done():
-			return nil, ErrClosed
-		case <-p.done:
-			return nil, ErrClosed
-		case item, ok := <-p.channel:
-			if !ok {
-				return nil, ErrClosed
-			}
+		case item := <-p.channel:
 			return memoryDelivery[T]{pipe: p, item: item, retryCount: 0}, nil
-
+		default:
+			return nil, ErrClosed
 		}
+	case item, ok := <-p.channel:
+		if !ok {
+			return nil, ErrClosed
+		}
+		return memoryDelivery[T]{pipe: p, item: item, retryCount: 0}, nil
 	}
 }
 

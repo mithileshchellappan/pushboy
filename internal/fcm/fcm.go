@@ -91,6 +91,7 @@ func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, max
 			Transport: &oauth2.Transport{
 				Source: tokenSource,
 				Base: &http.Transport{
+					Proxy:               http.ProxyFromEnvironment,
 					ForceAttemptHTTP2:   true,
 					MaxIdleConns:        100,
 					MaxIdleConnsPerHost: 100,
