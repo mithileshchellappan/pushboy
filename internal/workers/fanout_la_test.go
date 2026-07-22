@@ -24,6 +24,7 @@ type fanoutLAStoreStub struct {
 	tokenBatchCall int
 
 	completedEnqueues []int
+	failedEnqueues    []int
 	appliedOutcomes   [][]model.LASendOutcome
 }
 
@@ -63,6 +64,11 @@ func (s *fanoutLAStoreStub) GetLATokenBatchForDispatch(ctx context.Context, disp
 
 func (s *fanoutLAStoreStub) CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
 	s.completedEnqueues = append(s.completedEnqueues, totalCount)
+	return nil
+}
+
+func (s *fanoutLAStoreStub) FailLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
+	s.failedEnqueues = append(s.failedEnqueues, totalCount)
 	return nil
 }
 
@@ -112,14 +118,17 @@ func TestFanoutLATokensFailsClosedWhenInitialSupersedeCheckErrors(t *testing.T) 
 	if len(emitted) != 0 {
 		t.Fatalf("emitted %d tasks, want 0", len(emitted))
 	}
-	if len(store.statusUpdates) != 1 || store.statusUpdates[0] != "FAILED" {
-		t.Fatalf("status updates = %v, want [FAILED]", store.statusUpdates)
+	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 0 {
+		t.Fatalf("failed enqueues = %v, want [0]", store.failedEnqueues)
 	}
 }
 
-func TestFanoutLATokensFailsStartJobWhenInitialSupersedeCheckErrors(t *testing.T) {
+func TestFanoutLATokensDoesNotRunSupersedeChecksForStart(t *testing.T) {
 	store := &fanoutLAStoreStub{
 		supersedeResults: []supersedeResult{{err: errors.New("db down")}},
+		tokenBatches: []*storage.LiveActivityTokenBatch{
+			laTokenBatch(false, "t1"),
+		},
 	}
 	job := laFanoutJob()
 	job.Action = model.LiveActivityActionStart
@@ -128,11 +137,14 @@ func TestFanoutLATokensFailsStartJobWhenInitialSupersedeCheckErrors(t *testing.T
 		return nil
 	})
 
-	if err == nil {
-		t.Fatal("expected error when supersede check fails, got nil")
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v", err)
 	}
-	if len(store.failedLAJobs) != 1 || store.failedLAJobs[0] != job.JobID {
-		t.Fatalf("failed LA jobs = %v, want [%s]", store.failedLAJobs, job.JobID)
+	if len(store.supersedeCalls) != 0 {
+		t.Fatalf("supersede calls = %v, want none for start", store.supersedeCalls)
+	}
+	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 1 {
+		t.Fatalf("completed enqueues = %v, want [1]", store.completedEnqueues)
 	}
 }
 
@@ -259,5 +271,45 @@ func TestFanoutLATokensFlushesEnqueueFailuresWhenSupersededMidFanout(t *testing.
 	}
 	if outcomes[0].Receipt.Status != model.DeliveryStatusFailed {
 		t.Fatalf("receipt status = %s, want FAILED", outcomes[0].Receipt.Status)
+	}
+}
+
+func TestFanoutLATokensFailsAndAccountsWhenMidFanoutSupersedeCheckErrors(t *testing.T) {
+	guardErr := errors.New("db timeout")
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{
+			{},              // initial guard: not stale
+			{},              // before batch 1: not stale
+			{err: guardErr}, // before batch 2: unknown, stop fanout
+		},
+		tokenBatches: []*storage.LiveActivityTokenBatch{
+			laTokenBatch(true, "t1", "t2"),
+			laTokenBatch(false, "t3"),
+		},
+	}
+
+	var emitted []model.LASendTask
+	err := FanoutLATokens(context.Background(), store, laFanoutJob(), 2, func(ctx context.Context, task model.LASendTask) error {
+		emitted = append(emitted, task)
+		if task.Target.TokenID == "t2" {
+			return errors.New("queue full")
+		}
+		return nil
+	})
+
+	if err == nil || !errors.Is(err, guardErr) {
+		t.Fatalf("FanoutLATokens error = %v, want supersede-check failure", err)
+	}
+	if len(emitted) != 2 {
+		t.Fatalf("emitted %d tasks, want first batch only", len(emitted))
+	}
+	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 2 {
+		t.Fatalf("failed enqueues = %v, want [2]", store.failedEnqueues)
+	}
+	if len(store.completedEnqueues) != 0 {
+		t.Fatalf("completed enqueues = %v, want none", store.completedEnqueues)
+	}
+	if len(store.appliedOutcomes) != 1 || len(store.appliedOutcomes[0]) != 1 || store.appliedOutcomes[0][0].Task.Target.TokenID != "t2" {
+		t.Fatalf("applied outcomes = %+v, want the t2 enqueue failure", store.appliedOutcomes)
 	}
 }

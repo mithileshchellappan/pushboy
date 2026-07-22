@@ -181,6 +181,10 @@ func (s *PushboyService) UpdateLADispatchStatus(ctx context.Context, dispatchID 
 	return s.store.UpdateLADispatchStatus(ctx, dispatchID, status)
 }
 
+func (s *PushboyService) MarkLADispatchEnqueued(ctx context.Context, dispatchID string) error {
+	return s.store.MarkLADispatchEnqueued(ctx, dispatchID)
+}
+
 func (s *PushboyService) FailLAJobIfActive(ctx context.Context, jobID string) error {
 	if err := s.store.FailLAJobIfActive(ctx, jobID); err != nil && !errors.Is(err, storage.Errors.NotFound) {
 		return err
@@ -395,7 +399,7 @@ func (s *PushboyService) createLADispatchRow(ctx context.Context, job *storage.L
 		Action:            action,
 		Payload:           dispatchPayload,
 		Options:           options,
-		Status:            "QUEUED",
+		Status:            model.LiveActivityDispatchStatusEnqueuePending,
 		CreatedAt:         now,
 	}
 	return s.store.CreateLADispatch(ctx, dispatch)

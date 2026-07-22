@@ -33,12 +33,11 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ(ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
+		return fmt.Errorf("notification tokenId %s: %s", task.Target.TokenID, receipt.StatusReason)
 	}
 
 	err := dispatcher.Send(ctx, task.Target.Token, task.Job.Payload)
 	if err != nil {
-		fmt.Printf("Error sending %s notification, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
 		outcome := model.SendOutcome{
@@ -46,7 +45,7 @@ func DispatchPushTask(ctx context.Context, task model.SendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ(ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
+		return fmt.Errorf("sending %s notification to tokenId %s: %w", task.Target.Platform, task.Target.TokenID, err)
 	}
 	receipt.Status = model.DeliveryStatusSuccess
 	outcome := model.SendOutcome{
@@ -73,7 +72,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
+		return fmt.Errorf("live activity tokenId %s: %s", task.Target.TokenID, receipt.StatusReason)
 	}
 
 	laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
@@ -85,7 +84,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
+		return fmt.Errorf("live activity tokenId %s: %s", task.Target.TokenID, receipt.StatusReason)
 	}
 
 	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, &model.LiveActivityRequest{
@@ -97,7 +96,6 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 		CreatedAt:    task.LAJob.CreatedAt,
 	})
 	if err != nil {
-		fmt.Printf("Error sending %s live activity, tokenId: %s, error: %v", task.Target.Platform, task.Target.TokenID, err)
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
 		outcome := model.LASendOutcome{
@@ -105,7 +103,7 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 			Receipt: receipt,
 		}
 		pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
-		return errors.New(receipt.StatusReason)
+		return fmt.Errorf("sending %s live activity to tokenId %s: %w", task.Target.Platform, task.Target.TokenID, err)
 	}
 
 	receipt.Status = model.DeliveryStatusSuccess

@@ -185,3 +185,17 @@ func TestParallelDrainJoinWaitsForBothChains(t *testing.T) {
 		t.Fatalf("slow chain never drained before join: %v", got)
 	}
 }
+
+func TestShutdownPhasesReceiveIndependentTimeoutBudgets(t *testing.T) {
+	const timeout = 20 * time.Millisecond
+
+	httpCtx, httpCancel := newShutdownPhaseContext(timeout)
+	<-httpCtx.Done()
+	httpCancel()
+
+	drainCtx, drainCancel := newShutdownPhaseContext(timeout)
+	defer drainCancel()
+	if err := drainCtx.Err(); err != nil {
+		t.Fatalf("drain context started expired after HTTP phase: %v", err)
+	}
+}

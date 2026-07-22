@@ -53,8 +53,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.LAJobQueueSize != 1000 || cfg.LATaskQueueSize != 5000 || cfg.LADLQQueueSize != 50000 {
 		t.Fatalf("LA queue defaults = %d/%d/%d, want 1000/5000/50000", cfg.LAJobQueueSize, cfg.LATaskQueueSize, cfg.LADLQQueueSize)
 	}
-	if cfg.APNSClientPool != 8 || cfg.APNSMaxConcurrent != 0 {
-		t.Fatalf("APNs pool defaults = %d/%d, want 8/0", cfg.APNSClientPool, cfg.APNSMaxConcurrent)
+	if cfg.APNSClientPool != 8 || cfg.APNSMaxConcurrent != 0 || cfg.LAAPNSClientPool != 8 || cfg.LAAPNSMaxConcurrent != 0 {
+		t.Fatalf("APNs lane defaults = %d/%d and %d/%d, want 8/0 for both lanes", cfg.APNSClientPool, cfg.APNSMaxConcurrent, cfg.LAAPNSClientPool, cfg.LAAPNSMaxConcurrent)
+	}
+	if cfg.FCMClientPool != 4 || cfg.FCMMaxConcurrent != 360 || cfg.LAFCMClientPool != 4 || cfg.LAFCMMaxConcurrent != 360 {
+		t.Fatalf("FCM lane defaults = %d/%d and %d/%d, want 4/360 for both lanes", cfg.FCMClientPool, cfg.FCMMaxConcurrent, cfg.LAFCMClientPool, cfg.LAFCMMaxConcurrent)
 	}
 	if cfg.MaxRetryNotification != 3 {
 		t.Fatalf("MaxRetryNotification = %d, want 3", cfg.MaxRetryNotification)
@@ -98,9 +101,15 @@ func TestLoadEnvOverrides(t *testing.T) {
 		"APNS_USE_SANDBOX":         "true",
 		"APNS_CLIENT_POOL":         "12",
 		"APNS_MAX_CONCURRENT":      "345",
+		"LA_APNS_CLIENT_POOL":      "13",
+		"LA_APNS_MAX_CONCURRENT":   "346",
 		"FCM_PROJECT_ID":           "project",
 		"FCM_SERVICE_ACCOUNT":      "service-account-json",
 		"FCM_KEY_PATH":             "keys/fcm.json",
+		"FCM_CLIENT_POOL":          "14",
+		"FCM_MAX_CONCURRENT":       "347",
+		"LA_FCM_CLIENT_POOL":       "15",
+		"LA_FCM_MAX_CONCURRENT":    "348",
 		"BROADCAST_TOPIC_NAME":     "everyone",
 	})
 
@@ -128,9 +137,15 @@ func TestLoadEnvOverrides(t *testing.T) {
 		!cfg.APNSUseSandbox ||
 		cfg.APNSClientPool != 12 ||
 		cfg.APNSMaxConcurrent != 345 ||
+		cfg.LAAPNSClientPool != 13 ||
+		cfg.LAAPNSMaxConcurrent != 346 ||
 		cfg.FCMProjectID != "project" ||
 		cfg.FCMServiceAccount != "service-account-json" ||
 		cfg.FCMKeyPath != "keys/fcm.json" ||
+		cfg.FCMClientPool != 14 ||
+		cfg.FCMMaxConcurrent != 347 ||
+		cfg.LAFCMClientPool != 15 ||
+		cfg.LAFCMMaxConcurrent != 348 ||
 		cfg.BroadcastTopicName != "everyone" {
 		t.Fatalf("Load() did not apply expected env overrides: %+v", cfg)
 	}
@@ -151,6 +166,15 @@ func TestLoadInvalidEnvFallsBack(t *testing.T) {
 		"LA_JOB_QUEUE_SIZE":        "-1",
 		"LA_TASK_QUEUE_SIZE":       "-1",
 		"LA_DLQ_QUEUE_SIZE":        "-1",
+		"MAX_RETRY_NOTIFICATION":   "-1",
+		"APNS_CLIENT_POOL":         "0",
+		"APNS_MAX_CONCURRENT":      "-1",
+		"LA_APNS_CLIENT_POOL":      "-1",
+		"LA_APNS_MAX_CONCURRENT":   "-1",
+		"FCM_CLIENT_POOL":          "0",
+		"FCM_MAX_CONCURRENT":       "-1",
+		"LA_FCM_CLIENT_POOL":       "-1",
+		"LA_FCM_MAX_CONCURRENT":    "-1",
 		"APNS_USE_SANDBOX":         "not-a-bool",
 	})
 
@@ -168,8 +192,44 @@ func TestLoadInvalidEnvFallsBack(t *testing.T) {
 	if cfg.LAJobQueueSize != 1000 || cfg.LATaskQueueSize != 5000 || cfg.LADLQQueueSize != 50000 {
 		t.Fatalf("invalid LA queue envs should fall back, got %d/%d/%d", cfg.LAJobQueueSize, cfg.LATaskQueueSize, cfg.LADLQQueueSize)
 	}
+	if cfg.MaxRetryNotification != 3 {
+		t.Fatalf("invalid retry count should fall back, got %d", cfg.MaxRetryNotification)
+	}
+	if cfg.APNSClientPool != 8 || cfg.APNSMaxConcurrent != 0 || cfg.LAAPNSClientPool != 8 || cfg.LAAPNSMaxConcurrent != 0 {
+		t.Fatalf("invalid APNs lane settings should fall back, got %d/%d and %d/%d", cfg.APNSClientPool, cfg.APNSMaxConcurrent, cfg.LAAPNSClientPool, cfg.LAAPNSMaxConcurrent)
+	}
+	if cfg.FCMClientPool != 4 || cfg.FCMMaxConcurrent != 360 || cfg.LAFCMClientPool != 4 || cfg.LAFCMMaxConcurrent != 360 {
+		t.Fatalf("invalid FCM lane settings should fall back, got %d/%d and %d/%d", cfg.FCMClientPool, cfg.FCMMaxConcurrent, cfg.LAFCMClientPool, cfg.LAFCMMaxConcurrent)
+	}
 	if cfg.APNSUseSandbox {
 		t.Fatalf("invalid bool env should fall back to false")
+	}
+}
+
+func TestLoadAllowsZeroProviderRetries(t *testing.T) {
+	isolateEnv(t)
+	setEnv(t, map[string]string{"MAX_RETRY_NOTIFICATION": "0"})
+
+	if got := Load().MaxRetryNotification; got != 0 {
+		t.Fatalf("MaxRetryNotification = %d, want 0", got)
+	}
+}
+
+func TestLAProviderCapacityFallsBackToPushLaneSettings(t *testing.T) {
+	isolateEnv(t)
+	setEnv(t, map[string]string{
+		"APNS_CLIENT_POOL":    "12",
+		"APNS_MAX_CONCURRENT": "345",
+		"FCM_CLIENT_POOL":     "14",
+		"FCM_MAX_CONCURRENT":  "347",
+	})
+
+	cfg := Load()
+	if cfg.LAAPNSClientPool != 12 || cfg.LAAPNSMaxConcurrent != 345 {
+		t.Fatalf("LA APNs fallback = %d/%d, want 12/345", cfg.LAAPNSClientPool, cfg.LAAPNSMaxConcurrent)
+	}
+	if cfg.LAFCMClientPool != 14 || cfg.LAFCMMaxConcurrent != 347 {
+		t.Fatalf("LA FCM fallback = %d/%d, want 14/347", cfg.LAFCMClientPool, cfg.LAFCMMaxConcurrent)
 	}
 }
 

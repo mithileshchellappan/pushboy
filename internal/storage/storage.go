@@ -208,8 +208,10 @@ type Store interface {
 	FailLAJobIfActive(ctx context.Context, jobID string) error
 	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
+	MarkLADispatchEnqueued(ctx context.Context, dispatchID string) error
 	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
 	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
+	FailLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
 	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error
 	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
 	SupersedeLADispatchIfStale(ctx context.Context, dispatchID string, emittedCount int) (bool, error)

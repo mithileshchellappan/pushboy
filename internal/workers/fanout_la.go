@@ -12,41 +12,52 @@ import (
 )
 
 func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
-	superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, 0)
-	if err != nil {
-		// Fail closed: without the stale check we cannot know this update is
-		// still current, so do not fan out a potentially superseded payload.
-		_ = store.UpdateLADispatchStatus(ctx, job.DispatchID, "FAILED")
-		failLAStartAfterDispatchFailure(ctx, store, job)
-		return fmt.Errorf("error checking supersede state for dispatch %s: %w", job.DispatchID, err)
-	}
-	if superseded {
-		log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
-		return nil
+	if job.Action == model.LiveActivityActionUpdate {
+		superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, 0)
+		if err != nil {
+			return failLADispatchFanout(
+				ctx,
+				store,
+				job,
+				0,
+				nil,
+				fmt.Errorf("error checking supersede state for dispatch %s: %w", job.DispatchID, err),
+			)
+		}
+		if superseded {
+			log.Printf("LA dispatch %s superseded by newer update, skipping", job.DispatchID)
+			return nil
+		}
 	}
 
 	if err := store.UpdateLADispatchStatus(ctx, job.DispatchID, "IN_PROGRESS"); err != nil {
-		return fmt.Errorf("error marking live activity dispatch in progress: %w", err)
+		return failLADispatchFanout(ctx, store, job, 0, nil, fmt.Errorf("error marking live activity dispatch in progress: %w", err))
 	}
 
 	cursor := ""
 	totalTokenCount := 0
 	totalFailedOutcomes := make([]model.LASendOutcome, 0)
 	for {
-		superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, totalTokenCount)
-		if err != nil {
-			// Tasks may already be emitted; aborting here would strand them,
-			// so treat the mid-fanout check as best-effort and keep going.
-			log.Printf("Error checking supersede state for dispatch %s: %v", job.DispatchID, err)
-		} else if superseded {
-			log.Printf("LA dispatch %s superseded by newer update after %d emitted tasks, skipping rest", job.DispatchID, totalTokenCount)
-			return applyLAEnqueueFailures(ctx, store, totalFailedOutcomes)
+		if job.Action == model.LiveActivityActionUpdate {
+			superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, totalTokenCount)
+			if err != nil {
+				return failLADispatchFanout(
+					ctx,
+					store,
+					job,
+					totalTokenCount,
+					totalFailedOutcomes,
+					fmt.Errorf("error checking supersede state for dispatch %s after %d emitted tasks: %w", job.DispatchID, totalTokenCount, err),
+				)
+			}
+			if superseded {
+				log.Printf("LA dispatch %s superseded by newer update after %d emitted tasks, skipping rest", job.DispatchID, totalTokenCount)
+				return applyLAEnqueueFailures(ctx, store, totalFailedOutcomes)
+			}
 		}
 		batch, err := store.GetLATokenBatchForDispatch(ctx, job.DispatchID, cursor, batchSize)
 		if err != nil {
-			_ = store.UpdateLADispatchStatus(ctx, job.DispatchID, "FAILED")
-			failLAStartAfterDispatchFailure(ctx, store, job)
-			return fmt.Errorf("error fetching live activity tokens: %w", err)
+			return failLADispatchFanout(ctx, store, job, totalTokenCount, totalFailedOutcomes, fmt.Errorf("error fetching live activity tokens: %w", err))
 		}
 
 		outcomes := pushLATokensToPipeline(ctx, batch, emit, &job)
@@ -60,12 +71,29 @@ func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIte
 	}
 
 	if err := store.CompleteLADispatchEnqueue(ctx, job.DispatchID, totalTokenCount); err != nil {
-		_ = store.UpdateLADispatchStatus(ctx, job.DispatchID, "FAILED")
-		failLAStartAfterDispatchFailure(ctx, store, job)
-		return fmt.Errorf("error completing live activity dispatch enqueue: %w", err)
+		return failLADispatchFanout(ctx, store, job, totalTokenCount, totalFailedOutcomes, fmt.Errorf("error completing live activity dispatch enqueue: %w", err))
 	}
 
 	return applyLAEnqueueFailures(ctx, store, totalFailedOutcomes)
+}
+
+func failLADispatchFanout(
+	ctx context.Context,
+	store storage.Store,
+	job model.LAJobItem,
+	totalTokenCount int,
+	failedOutcomes []model.LASendOutcome,
+	cause error,
+) error {
+	errs := []error{cause}
+	if err := store.FailLADispatchEnqueue(ctx, job.DispatchID, totalTokenCount); err != nil {
+		errs = append(errs, err)
+	}
+	if err := applyLAEnqueueFailures(ctx, store, failedOutcomes); err != nil {
+		errs = append(errs, err)
+	}
+	failLAStartAfterDispatchFailure(ctx, store, job)
+	return errors.Join(errs...)
 }
 
 func applyLAEnqueueFailures(ctx context.Context, store storage.Store, failedOutcomes []model.LASendOutcome) error {

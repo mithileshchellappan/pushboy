@@ -48,6 +48,11 @@ const (
 	LiveActivityJobStatusFailed LiveActivityJobStatus = "FAILED"
 )
 
+const (
+	LiveActivityDispatchStatusEnqueuePending = "ENQUEUE_PENDING"
+	LiveActivityDispatchStatusQueued         = "QUEUED"
+)
+
 type LiveActivityPayload = json.RawMessage
 type LiveActivityOptions = json.RawMessage
 

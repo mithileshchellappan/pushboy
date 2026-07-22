@@ -155,9 +155,15 @@ The main runtime settings are:
 | `OUTCOME_BATCH_SIZE` | Outcomes persisted per database flush. |
 | `OUTCOME_FLUSH_SECONDS` | Maximum seconds between outcome flushes. |
 | `SHUTDOWN_TIMEOUT_SECONDS` | Maximum seconds spent draining in-memory work on shutdown. |
-| `APNS_CLIENT_POOL` | Number of APNs HTTP/2 client transports. |
-| `APNS_MAX_CONCURRENT` | Cap on in-flight APNs requests; `0` derives from the pool size. |
-| `MAX_RETRY_NOTIFICATION` | Retry count used by notification outcome paths. |
+| `APNS_CLIENT_POOL` | Number of push-lane APNs HTTP/2 client transports. |
+| `APNS_MAX_CONCURRENT` | Push-lane APNs in-flight cap; `0` derives from the pool size. |
+| `LA_APNS_CLIENT_POOL` | Live Activity APNs transports; defaults to `APNS_CLIENT_POOL`. |
+| `LA_APNS_MAX_CONCURRENT` | Live Activity APNs in-flight cap; defaults to `APNS_MAX_CONCURRENT`. |
+| `FCM_CLIENT_POOL` | Number of push-lane FCM HTTP client transports. |
+| `FCM_MAX_CONCURRENT` | Push-lane FCM in-flight cap; `0` derives from the pool size. |
+| `LA_FCM_CLIENT_POOL` | Live Activity FCM transports; defaults to `FCM_CLIENT_POOL`. |
+| `LA_FCM_MAX_CONCURRENT` | Live Activity FCM in-flight cap; defaults to `FCM_MAX_CONCURRENT`. |
+| `MAX_RETRY_NOTIFICATION` | Provider retries after the initial APNS or FCM attempt. |
 | `BROADCAST_TOPIC_NAME` | Topic auto-created on startup and assigned to new users. |
 
 See `.env.example` for the complete list.

@@ -59,6 +59,14 @@ func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispat
 		return err
 	}
 
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+	defer statusCancel()
+	if err := s.service.MarkLADispatchEnqueued(statusCtx, dispatch.ID); err != nil {
+		// The pipeline already owns this dispatch. Returning an error here would
+		// invite a duplicate retry while a worker may already be processing it.
+		log.Printf("Failed to mark live activity dispatch %s as QUEUED after enqueue: %v", dispatch.ID, err)
+	}
+
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 )
 
 type pipelineCloser interface {
@@ -17,6 +18,10 @@ type drainStage struct {
 	name    string
 	pipe    pipelineCloser
 	workers *sync.WaitGroup
+}
+
+func newShutdownPhaseContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // drainChain shuts a worker chain down upstream-first: each stage's pipeline

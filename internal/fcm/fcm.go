@@ -31,6 +31,7 @@ type Client struct {
 	next        atomic.Uint32
 	sem         chan struct{}
 	projectID   string
+	maxRetries  int
 }
 
 type FcmRequest struct {
@@ -63,7 +64,7 @@ type AndroidNotification struct {
 	ClickAction string `json:"click_action,omitempty"`
 }
 
-func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, maxConcurrent int) (*Client, error) {
+func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, maxConcurrent int, maxRetries int) (*Client, error) {
 	creds, err := google.CredentialsFromJSON(ctx, serviceAccountJson, fcmScope)
 	if err != nil {
 		return nil, err
@@ -81,6 +82,9 @@ func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, max
 	}
 	if maxConcurrent < 1 {
 		maxConcurrent = poolSize * 90
+	}
+	if maxRetries < 0 {
+		maxRetries = 0
 	}
 
 	tokenSource := oauth2.ReuseTokenSource(nil, creds.TokenSource)
@@ -106,6 +110,7 @@ func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, max
 		httpClients: httpClients,
 		sem:         make(chan struct{}, maxConcurrent),
 		projectID:   projectID,
+		maxRetries:  maxRetries,
 	}, nil
 }
 
@@ -199,7 +204,6 @@ func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
 		return err
 	}
 
-	const maxRetries = 2
 	backoff := 500 * time.Millisecond
 
 	for attempt := 0; ; attempt++ {
@@ -222,7 +226,7 @@ func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
 		if err != nil {
 			// dropped connections (GOAWAY, reset, timeout) are retryable;
 			// the next attempt round-robins onto a different transport
-			if attempt < maxRetries && isRetryableTransportError(err) {
+			if attempt < c.maxRetries && isRetryableTransportError(err) {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -241,7 +245,7 @@ func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
 		if resp.StatusCode == http.StatusOK {
 			return nil
 		}
-		if attempt < maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
+		if attempt < c.maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusInternalServerError) {
 			select {

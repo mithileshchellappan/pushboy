@@ -143,15 +143,21 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 | `OUTCOME_BATCH_SIZE` | `1000` | Outcomes persisted per database flush. |
 | `OUTCOME_FLUSH_SECONDS` | `10` | Maximum delay between outcome flushes. |
 | `SHUTDOWN_TIMEOUT_SECONDS` | `120` | Maximum time to drain in-memory work during shutdown. |
-| `MAX_RETRY_NOTIFICATION` | `3` | Number of notification retry attempts. |
+| `MAX_RETRY_NOTIFICATION` | `3` | Provider retries after the initial APNS or FCM attempt. |
 | `APNS_KEY_ID` | empty | Apple Developer key id. Enables APNS when present and readable. |
 | `APNS_TEAM_ID` | empty | Apple Developer team id. |
 | `APNS_BUNDLE_ID` | `APNS_TOPIC_ID` fallback | iOS bundle id. Live Activities use `<bundle>.push-type.liveactivity`. |
 | `APNS_KEY_PATH` | derived from key id | Path to the APNS `.p8` file. |
 | `APNS_USE_SANDBOX` | `false` | Set `true` for sandbox APNS. |
-| `APNS_CLIENT_POOL` | `8` | Number of APNs HTTP/2 client transports. |
-| `APNS_MAX_CONCURRENT` | `0` | APNs in-flight cap; `0` derives from the client pool. |
+| `APNS_CLIENT_POOL` | `8` | Push-lane APNs HTTP/2 client transports. |
+| `APNS_MAX_CONCURRENT` | `0` | Push-lane APNs in-flight cap; `0` derives from its pool. |
+| `LA_APNS_CLIENT_POOL` | `APNS_CLIENT_POOL` | Live Activity APNs HTTP/2 client transports. |
+| `LA_APNS_MAX_CONCURRENT` | `APNS_MAX_CONCURRENT` | Live Activity APNs in-flight cap. |
 | `FCM_KEY_PATH` | `keys/service-account.json` | Firebase service-account JSON. `project_id` is read from this file. |
+| `FCM_CLIENT_POOL` | `4` | Push-lane FCM HTTP client transports. |
+| `FCM_MAX_CONCURRENT` | `360` | Push-lane FCM in-flight cap; `0` derives from its pool. |
+| `LA_FCM_CLIENT_POOL` | `FCM_CLIENT_POOL` | Live Activity FCM HTTP client transports. |
+| `LA_FCM_MAX_CONCURRENT` | `FCM_MAX_CONCURRENT` | Live Activity FCM in-flight cap. |
 | `BROADCAST_TOPIC_NAME` | `broadcast` | New users are subscribed to this topic when configured. |
 
 ## API Examples

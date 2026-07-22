@@ -70,6 +70,27 @@ func TestSendWithRetrySuccess(t *testing.T) {
 	}
 }
 
+func TestSendWithRetryUsesConfiguredRetryLimit(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClients: []*http.Client{server.Client()},
+		maxRetries:  1,
+	}
+	err := client.sendWithRetry(context.Background(), server.URL, []byte(`{}`), "jwt", nil)
+	if err == nil || !strings.Contains(err.Error(), "after 1 retries") {
+		t.Fatalf("sendWithRetry error = %v, want configured retry exhaustion", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want initial attempt plus one retry", got)
+	}
+}
+
 func TestSendWithRetryRespectsMaxConcurrent(t *testing.T) {
 	const maxConcurrent = 3
 	const totalRequests = 12
@@ -122,15 +143,18 @@ func TestSendWithRetryRespectsMaxConcurrent(t *testing.T) {
 }
 
 func TestNewClientPoolAndConcurrencyDefaults(t *testing.T) {
-	client := NewClient([]byte("key"), "kid", "team", "bundle", false, "", 8, 0)
+	client := NewClient([]byte("key"), "kid", "team", "bundle", false, "", 8, 0, 2)
 	if got := len(client.httpClients); got != 8 {
 		t.Fatalf("pool size = %d, want 8", got)
 	}
 	if got := cap(client.sem); got != 8*900 {
 		t.Fatalf("max concurrent = %d, want %d", got, 8*900)
 	}
+	if got := client.maxRetries; got != 2 {
+		t.Fatalf("max retries = %d, want 2", got)
+	}
 
-	client = NewClient([]byte("key"), "kid", "team", "bundle", false, "", 0, 50)
+	client = NewClient([]byte("key"), "kid", "team", "bundle", false, "", 0, 50, 0)
 	if got := len(client.httpClients); got != 1 {
 		t.Fatalf("pool size = %d, want 1 when configured below minimum", got)
 	}

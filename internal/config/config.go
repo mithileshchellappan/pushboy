@@ -34,20 +34,24 @@ type Config struct {
 
 	DatabaseURL string
 
-	APNSKeyID         string
-	APNSTeamID        string
-	APNSBundleID      string
-	APNSKeyPath       string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
-	APNSUseSandbox    bool
-	APNSEndpoint      string // test override; empty = real APNs
-	APNSClientPool    int    // HTTP clients in the APNs pool (~1000 streams each)
-	APNSMaxConcurrent int    // cap on in-flight APNs requests; 0 = pool * 900
+	APNSKeyID           string
+	APNSTeamID          string
+	APNSBundleID        string
+	APNSKeyPath         string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSUseSandbox      bool
+	APNSEndpoint        string // test override; empty = real APNs
+	APNSClientPool      int    // HTTP clients in the push APNs pool (~1000 streams each)
+	APNSMaxConcurrent   int    // cap on in-flight push APNs requests; 0 = pool * 900
+	LAAPNSClientPool    int    // HTTP clients in the Live Activity APNs pool
+	LAAPNSMaxConcurrent int    // cap on in-flight Live Activity APNs requests; 0 = pool * 900
 
-	FCMProjectID      string
-	FCMServiceAccount string
-	FCMKeyPath        string
-	FCMClientPool     int // HTTP clients in the FCM pool (~100 streams each)
-	FCMMaxConcurrent  int // cap on in-flight FCM requests // Path to FCM service account JSON file
+	FCMProjectID       string
+	FCMServiceAccount  string
+	FCMKeyPath         string
+	FCMClientPool      int // HTTP clients in the push FCM pool (~100 streams each)
+	FCMMaxConcurrent   int // cap on in-flight push FCM requests
+	LAFCMClientPool    int // HTTP clients in the Live Activity FCM pool
+	LAFCMMaxConcurrent int // cap on in-flight Live Activity FCM requests
 
 	// Broadcast topic configuration
 	BroadcastTopicName string // Name of the broadcast topic (all users auto-subscribe)
@@ -62,6 +66,11 @@ func Load() *Config {
 		laTaskQueueDefault = legacyQueueSize
 		laDLQQueueDefault = legacyQueueSize
 	}
+
+	apnsClientPool := getPositiveIntEnv("APNS_CLIENT_POOL", 8)
+	apnsMaxConcurrent := getNonNegativeIntEnv("APNS_MAX_CONCURRENT", 0)
+	fcmClientPool := getPositiveIntEnv("FCM_CLIENT_POOL", 4)
+	fcmMaxConcurrent := getNonNegativeIntEnv("FCM_MAX_CONCURRENT", 360)
 
 	return &Config{
 		ServerPort:           getEnv("SERVER_PORT", ":8080"),
@@ -79,7 +88,7 @@ func Load() *Config {
 		LAJobQueueSize:       getNonNegativeIntEnv("LA_JOB_QUEUE_SIZE", laJobQueueDefault),
 		LATaskQueueSize:      getNonNegativeIntEnv("LA_TASK_QUEUE_SIZE", laTaskQueueDefault),
 		LADLQQueueSize:       getNonNegativeIntEnv("LA_DLQ_QUEUE_SIZE", laDLQQueueDefault),
-		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
+		MaxRetryNotification: getNonNegativeIntEnv("MAX_RETRY_NOTIFICATION", 3),
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/pushboy?sslmode=disable"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
 		APNSTeamID:           getEnv("APNS_TEAM_ID", ""),
@@ -87,13 +96,17 @@ func Load() *Config {
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
 		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
 		APNSEndpoint:         getEnv("APNS_ENDPOINT", ""),
-		APNSClientPool:       getIntEnv("APNS_CLIENT_POOL", 8),
-		APNSMaxConcurrent:    getIntEnv("APNS_MAX_CONCURRENT", 0),
+		APNSClientPool:       apnsClientPool,
+		APNSMaxConcurrent:    apnsMaxConcurrent,
+		LAAPNSClientPool:     getPositiveIntEnv("LA_APNS_CLIENT_POOL", apnsClientPool),
+		LAAPNSMaxConcurrent:  getNonNegativeIntEnv("LA_APNS_MAX_CONCURRENT", apnsMaxConcurrent),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
 		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
-		FCMClientPool:        getIntEnv("FCM_CLIENT_POOL", 4),
-		FCMMaxConcurrent:     getIntEnv("FCM_MAX_CONCURRENT", 360),
+		FCMClientPool:        fcmClientPool,
+		FCMMaxConcurrent:     fcmMaxConcurrent,
+		LAFCMClientPool:      getPositiveIntEnv("LA_FCM_CLIENT_POOL", fcmClientPool),
+		LAFCMMaxConcurrent:   getNonNegativeIntEnv("LA_FCM_MAX_CONCURRENT", fcmMaxConcurrent),
 		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
 	}
 }

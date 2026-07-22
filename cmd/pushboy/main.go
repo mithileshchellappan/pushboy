@@ -55,8 +55,8 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.APNSClientPool, cfg.APNSMaxConcurrent)
-			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.APNSClientPool, cfg.APNSMaxConcurrent)
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.APNSClientPool, cfg.APNSMaxConcurrent, cfg.MaxRetryNotification)
+			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.LAAPNSClientPool, cfg.LAAPNSMaxConcurrent, cfg.MaxRetryNotification)
 			dispatchers[model.APNS] = apnsClient
 			laDispatchers[model.APNS] = laApnsClient
 			log.Println("APNS dispatcher initialized")
@@ -70,8 +70,8 @@ func main() {
 	if err != nil {
 		log.Printf("FCM disabled: cannot read service account: %v", err)
 	} else {
-		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
-		laFcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent)
+		fcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.FCMClientPool, cfg.FCMMaxConcurrent, cfg.MaxRetryNotification)
+		laFcmClient, err := fcm.NewClient(ctx, serviceAccountBytes, cfg.LAFCMClientPool, cfg.LAFCMMaxConcurrent, cfg.MaxRetryNotification)
 		if err != nil {
 			log.Printf("FCM disabled: cannot create client: %v", err)
 		} else {
@@ -207,17 +207,17 @@ func main() {
 
 	log.Println("Shutdown signal received, stopping app")
 
-	shutdownCtx, cancel := context.WithTimeout(
-		context.Background(),
-		time.Duration(cfg.ShutdownTimeoutSecs)*time.Second,
-	)
-	defer cancel()
+	shutdownTimeout := time.Duration(cfg.ShutdownTimeoutSecs) * time.Second
+	httpShutdownCtx, httpShutdownCancel := newShutdownPhaseContext(shutdownTimeout)
 
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
+	httpShutdownCancel()
 
 	scheduler.Stop()
+	shutdownCtx, cancel := newShutdownPhaseContext(shutdownTimeout)
+	defer cancel()
 	gracefulDone := make(chan struct{})
 
 	var drainWg sync.WaitGroup

@@ -26,7 +26,6 @@ const (
 	jwtRefreshBuffer  = 5 * time.Minute
 	jwtValidityPeriod = 1 * time.Hour
 
-	maxRetries     = 3
 	initialBackoff = 100 * time.Millisecond
 	maxBackoff     = 2 * time.Second
 )
@@ -40,6 +39,7 @@ type Client struct {
 	bundleID    string
 	signingKey  []byte
 	endpoint    string
+	maxRetries  int
 
 	jwtMutex  sync.RWMutex
 	cachedJWT string
@@ -63,7 +63,7 @@ type ApsPayload struct {
 
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string, poolSize int, maxConcurrent int) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string, poolSize int, maxConcurrent int, maxRetries int) *Client {
 	var endpoint string
 	if endpointOverride != "" {
 		endpoint = endpointOverride
@@ -80,6 +80,9 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		// APNs allows ~1000 concurrent streams per connection once
 		// authenticated; stay under that per pooled transport.
 		maxConcurrent = poolSize * 900
+	}
+	if maxRetries < 0 {
+		maxRetries = 0
 	}
 
 	// Pool of transports: each owns its TCP connection(s) to APNs, so streams
@@ -115,6 +118,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		bundleID:    bundleID,
 		signingKey:  p8KeyBytes,
 		endpoint:    endpoint,
+		maxRetries:  maxRetries,
 	}
 }
 
@@ -263,7 +267,7 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, headers map[string]string) error {
 	backoff := initialBackoff
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
 		if err != nil {
 			return err
@@ -283,7 +287,7 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 		resp, err := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))].Do(req)
 		c.release()
 		if err != nil {
-			if attempt < maxRetries && isRetryableError(err) {
+			if attempt < c.maxRetries && isRetryableError(err) {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -314,7 +318,7 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
-			if attempt < maxRetries {
+			if attempt < c.maxRetries {
 				if retryAfter := resp.Header.Get("Retry-After"); retryAfter != "" {
 					if seconds, err := strconv.Atoi(retryAfter); err == nil {
 						backoff = time.Duration(seconds) * time.Second
@@ -333,7 +337,7 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 				}
 				continue
 			}
-			return fmt.Errorf("rate limited after %d retries: %s", maxRetries, resp.Status)
+			return fmt.Errorf("rate limited after %d retries: %s", c.maxRetries, resp.Status)
 		}
 
 		var apnsReason struct {
