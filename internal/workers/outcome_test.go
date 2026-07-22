@@ -85,6 +85,18 @@ func TestLAOutcomeWorkerProcessOutcomeAppliesOutcomes(t *testing.T) {
 	}
 }
 
+func TestOutcomeWorkerConstructorsClampInvalidSettings(t *testing.T) {
+	pushWorker := NewPushOutcomeWorker(&fakePushOutcomeWriter{}, nil, -1, 0)
+	if pushWorker.queueSize != 1 || pushWorker.queueFlushTime != 1 {
+		t.Fatalf("push worker settings = %d/%d, want 1/1", pushWorker.queueSize, pushWorker.queueFlushTime)
+	}
+
+	laWorker := NewLAOutcomeWorker(&fakeLAOutcomeWriter{}, nil, 0, -1)
+	if laWorker.queueSize != 1 || laWorker.queueFlushTime != 1 {
+		t.Fatalf("LA worker settings = %d/%d, want 1/1", laWorker.queueSize, laWorker.queueFlushTime)
+	}
+}
+
 type fakePushOutcomeWriter struct {
 	err      error
 	receipts []model.DeliveryReceipt

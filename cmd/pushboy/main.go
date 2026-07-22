@@ -55,8 +55,8 @@ func main() {
 		if err != nil {
 			log.Printf("APNS disabled: cannot read key file: %v", err)
 		} else {
-			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
-			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint)
+			apnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.APNSClientPool, cfg.APNSMaxConcurrent)
+			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.APNSClientPool, cfg.APNSMaxConcurrent)
 			dispatchers[model.APNS] = apnsClient
 			laDispatchers[model.APNS] = laApnsClient
 			log.Println("APNS dispatcher initialized")
@@ -116,12 +116,12 @@ func main() {
 	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
 
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
-	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.JobQueueSize)
-	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.JobQueueSize) //TODO: change this to a different queue size for dlq
+	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.TaskQueueSize)
+	dlqPipeline := pipeline.NewMemoryPipeline[model.SendOutcome](cfg.DLQQueueSize)
 
-	laJobPipeline := pipeline.NewMemoryPipeline[model.LAJobItem](cfg.LAQueueSize)
-	laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LAQueueSize)
-	laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LAQueueSize) //TODO: change this to a different queue size for dlq
+	laJobPipeline := pipeline.NewMemoryPipeline[model.LAJobItem](cfg.LAJobQueueSize)
+	laTaskPipeline := pipeline.NewMemoryPipeline[model.LASendTask](cfg.LATaskQueueSize)
+	laDlqPipeline := pipeline.NewMemoryPipeline[model.LASendOutcome](cfg.LADLQQueueSize)
 
 	scheduler := scheduler.New(store, jobPipeline, 10)
 	scheduler.Start(workerCtx)
@@ -178,7 +178,7 @@ func main() {
 		}(sender)
 	}
 
-	outcomeWorker := workers.NewPushOutcomeWorker(store, dlqPipeline, 1000, 10)
+	outcomeWorker := workers.NewPushOutcomeWorker(store, dlqPipeline, cfg.OutcomeBatchSize, cfg.OutcomeFlushSeconds)
 	var outcomeWg sync.WaitGroup
 	//If required more DLQ outcome workers change it into a looped go routines
 	outcomeWg.Add(1)
@@ -187,7 +187,7 @@ func main() {
 		o.Start(workerCtx)
 	}(outcomeWorker)
 
-	laOutcomeWorker := workers.NewLAOutcomeWorker(store, laDlqPipeline, 1000, 10)
+	laOutcomeWorker := workers.NewLAOutcomeWorker(store, laDlqPipeline, cfg.OutcomeBatchSize, cfg.OutcomeFlushSeconds)
 	var laOutcomeWg sync.WaitGroup
 
 	laOutcomeWg.Add(1)
@@ -207,7 +207,10 @@ func main() {
 
 	log.Println("Shutdown signal received, stopping app")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		time.Duration(cfg.ShutdownTimeoutSecs)*time.Second,
+	)
 	defer cancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {

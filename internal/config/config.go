@@ -9,15 +9,24 @@ type Config struct {
 	ServerPort string
 
 	// Worker pool configuration
-	WorkerCount  int // Number of worker goroutines
-	SenderCount  int // Number of sender goroutines per worker
-	JobQueueSize int // Size of the job queue buffer
-	BatchSize    int // Number of tokens to fetch per batch from DB
+	WorkerCount   int // Number of master (fanout) goroutines
+	SenderCount   int // Number of sender goroutines; sends are synchronous, so this caps in-flight requests
+	JobQueueSize  int // Size of the job queue buffer
+	TaskQueueSize int // Size of the task queue buffer between fanout and senders
+	DLQQueueSize  int // Size of the outcome queue buffer between senders and the outcome worker
+	BatchSize     int // Number of tokens to fetch per batch from DB
+
+	// Outcome persistence batching
+	OutcomeBatchSize    int // Outcomes per DB flush
+	OutcomeFlushSeconds int // Max seconds between DB flushes
+	ShutdownTimeoutSecs int // Max seconds to drain in-memory work during shutdown
 
 	// Live Activity worker pool configuration (separate lane from push notifications)
-	LAWorkerCount int // Number of LA master goroutines
-	LASenderCount int // Number of LA sender goroutines
-	LAQueueSize   int // Size of the LA job/task/outcome queue buffers
+	LAWorkerCount   int // Number of LA master goroutines
+	LASenderCount   int // Number of LA sender goroutines
+	LAJobQueueSize  int // Size of the LA job queue buffer
+	LATaskQueueSize int // Size of the LA task queue buffer between fanout and senders
+	LADLQQueueSize  int // Size of the LA outcome queue buffer
 
 	//Retry
 	MaxRetryNotification int
@@ -25,12 +34,14 @@ type Config struct {
 
 	DatabaseURL string
 
-	APNSKeyID      string
-	APNSTeamID     string
-	APNSBundleID   string
-	APNSKeyPath    string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
-	APNSUseSandbox bool
-	APNSEndpoint   string // test override; empty = real APNs
+	APNSKeyID         string
+	APNSTeamID        string
+	APNSBundleID      string
+	APNSKeyPath       string // Path to APNS key file (e.g., keys/AuthKey_XXX.p8)
+	APNSUseSandbox    bool
+	APNSEndpoint      string // test override; empty = real APNs
+	APNSClientPool    int    // HTTP clients in the APNs pool (~1000 streams each)
+	APNSMaxConcurrent int    // cap on in-flight APNs requests; 0 = pool * 900
 
 	FCMProjectID      string
 	FCMServiceAccount string
@@ -43,15 +54,31 @@ type Config struct {
 }
 
 func Load() *Config {
+	laJobQueueDefault := 1000
+	laTaskQueueDefault := 5000
+	laDLQQueueDefault := 50000
+	if legacyQueueSize, ok := getOptionalNonNegativeIntEnv("LA_QUEUE_SIZE"); ok {
+		laJobQueueDefault = legacyQueueSize
+		laTaskQueueDefault = legacyQueueSize
+		laDLQQueueDefault = legacyQueueSize
+	}
+
 	return &Config{
 		ServerPort:           getEnv("SERVER_PORT", ":8080"),
 		WorkerCount:          getIntEnv("WORKER_COUNT", 10),
-		SenderCount:          getIntEnv("SENDER_COUNT", 200),
+		SenderCount:          getIntEnv("SENDER_COUNT", 2000),
 		JobQueueSize:         getIntEnv("JOB_QUEUE_SIZE", 1000),
+		TaskQueueSize:        getNonNegativeIntEnv("TASK_QUEUE_SIZE", 10000),
+		DLQQueueSize:         getNonNegativeIntEnv("DLQ_QUEUE_SIZE", 50000),
 		BatchSize:            getIntEnv("BATCH_SIZE", 5000),
+		OutcomeBatchSize:     getPositiveIntEnv("OUTCOME_BATCH_SIZE", 1000),
+		OutcomeFlushSeconds:  getPositiveIntEnv("OUTCOME_FLUSH_SECONDS", 10),
+		ShutdownTimeoutSecs:  getPositiveIntEnv("SHUTDOWN_TIMEOUT_SECONDS", 120),
 		LAWorkerCount:        getIntEnv("LA_WORKER_COUNT", 5),
 		LASenderCount:        getIntEnv("LA_SENDER_COUNT", 300),
-		LAQueueSize:          getIntEnv("LA_QUEUE_SIZE", 1000),
+		LAJobQueueSize:       getNonNegativeIntEnv("LA_JOB_QUEUE_SIZE", laJobQueueDefault),
+		LATaskQueueSize:      getNonNegativeIntEnv("LA_TASK_QUEUE_SIZE", laTaskQueueDefault),
+		LADLQQueueSize:       getNonNegativeIntEnv("LA_DLQ_QUEUE_SIZE", laDLQQueueDefault),
 		MaxRetryNotification: getIntEnv("MAX_RETRY_NOTIFICATION", 3),
 		DatabaseURL:          getEnv("DATABASE_URL", "postgres://localhost:5432/pushboy?sslmode=disable"),
 		APNSKeyID:            getEnv("APNS_KEY_ID", ""),
@@ -60,6 +87,8 @@ func Load() *Config {
 		APNSKeyPath:          getEnv("APNS_KEY_PATH", ""),
 		APNSUseSandbox:       getBoolEnv("APNS_USE_SANDBOX", false),
 		APNSEndpoint:         getEnv("APNS_ENDPOINT", ""),
+		APNSClientPool:       getIntEnv("APNS_CLIENT_POOL", 8),
+		APNSMaxConcurrent:    getIntEnv("APNS_MAX_CONCURRENT", 0),
 		FCMProjectID:         getEnv("FCM_PROJECT_ID", ""),
 		FCMServiceAccount:    getEnv("FCM_SERVICE_ACCOUNT", ""),
 		FCMKeyPath:           getEnv("FCM_KEY_PATH", "keys/service-account.json"),
@@ -82,6 +111,34 @@ func getIntEnv(key string, defaultVal int) int {
 		return value
 	}
 	return defaultVal
+}
+
+func getPositiveIntEnv(key string, defaultVal int) int {
+	value := getIntEnv(key, defaultVal)
+	if value < 1 {
+		return defaultVal
+	}
+	return value
+}
+
+func getNonNegativeIntEnv(key string, defaultVal int) int {
+	value := getIntEnv(key, defaultVal)
+	if value < 0 {
+		return defaultVal
+	}
+	return value
+}
+
+func getOptionalNonNegativeIntEnv(key string) (int, bool) {
+	valueStr, ok := os.LookupEnv(key)
+	if !ok {
+		return 0, false
+	}
+	value, err := strconv.Atoi(valueStr)
+	if err != nil || value < 0 {
+		return 0, false
+	}
+	return value, true
 }
 
 func getBoolEnv(key string, defaultVal bool) bool {

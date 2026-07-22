@@ -145,12 +145,30 @@ The main runtime settings are:
 | `DATABASE_URL` | Postgres connection string. |
 | `WORKER_COUNT` | Number of master workers that fan out jobs into token batches. |
 | `SENDER_COUNT` | Number of sender workers that call APNS/FCM. |
-| `JOB_QUEUE_SIZE` | In-process queue buffer size. |
+| `JOB_QUEUE_SIZE` | Pending push-job buffer size. |
+| `TASK_QUEUE_SIZE` | Buffer between push fanout and senders. |
+| `DLQ_QUEUE_SIZE` | Buffer between push senders and outcome persistence. |
+| `LA_JOB_QUEUE_SIZE` | Pending Live Activity job buffer size. |
+| `LA_TASK_QUEUE_SIZE` | Buffer between Live Activity fanout and senders. |
+| `LA_DLQ_QUEUE_SIZE` | Buffer between Live Activity senders and outcome persistence. |
 | `BATCH_SIZE` | Number of tokens loaded per Postgres batch. |
+| `OUTCOME_BATCH_SIZE` | Outcomes persisted per database flush. |
+| `OUTCOME_FLUSH_SECONDS` | Maximum seconds between outcome flushes. |
+| `SHUTDOWN_TIMEOUT_SECONDS` | Maximum seconds spent draining in-memory work on shutdown. |
+| `APNS_CLIENT_POOL` | Number of APNs HTTP/2 client transports. |
+| `APNS_MAX_CONCURRENT` | Cap on in-flight APNs requests; `0` derives from the pool size. |
 | `MAX_RETRY_NOTIFICATION` | Retry count used by notification outcome paths. |
 | `BROADCAST_TOPIC_NAME` | Topic auto-created on startup and assigned to new users. |
 
 See `.env.example` for the complete list.
+
+### Production throughput profile
+
+The non-secret overrides currently validated on the production Pushboy VM are
+versioned in `deploy/production-throughput.env.example`. Merge those values
+into the server's existing `.env`; do not replace database or provider
+credentials. The profile keeps deployment-specific capacity choices separate
+from conservative application defaults.
 
 ## Verify API Setup
 

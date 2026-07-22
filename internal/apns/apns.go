@@ -34,6 +34,7 @@ const (
 type Client struct {
 	httpClients []*http.Client
 	next        atomic.Uint32
+	sem         chan struct{} // caps in-flight requests; nil = unlimited
 	keyID       string
 	teamID      string
 	bundleID    string
@@ -62,7 +63,7 @@ type ApsPayload struct {
 
 type ApnsRequest map[string]interface{}
 
-func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string) *Client {
+func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string, poolSize int, maxConcurrent int) *Client {
 	var endpoint string
 	if endpointOverride != "" {
 		endpoint = endpointOverride
@@ -72,18 +73,33 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		endpoint = ProductionEndpoint
 	}
 
+	if poolSize < 1 {
+		poolSize = 1
+	}
+	if maxConcurrent < 1 {
+		// APNs allows ~1000 concurrent streams per connection once
+		// authenticated; stay under that per pooled transport.
+		maxConcurrent = poolSize * 900
+	}
+
 	// Pool of transports: each owns its TCP connection(s) to APNs, so streams
-	// spread across congestion windows instead of sharing one pipe.
-	const apnsClientPool = 4
-	clients := make([]*http.Client, apnsClientPool)
+	// spread across congestion windows instead of sharing one pipe. The
+	// semaphore keeps excess senders waiting here cheaply instead of queueing
+	// inside a transport until the request timeout kills them.
+	//
+	// Idle pool is sized to the concurrency cap: HTTP/2 multiplexes over a
+	// handful of connections anyway, but HTTP/1.1 paths (proxies, test
+	// endpoints) would otherwise churn sockets into TIME_WAIT under load.
+	idlePerClient := maxConcurrent/poolSize + 10
+	clients := make([]*http.Client, poolSize)
 	for i := range clients {
 		clients[i] = &http.Client{
 			Timeout: 10 * time.Second,
 			Transport: &http.Transport{
 				Proxy:                 http.ProxyFromEnvironment,
 				ForceAttemptHTTP2:     true,
-				MaxIdleConns:          100,
-				MaxIdleConnsPerHost:   100,
+				MaxIdleConns:          idlePerClient,
+				MaxIdleConnsPerHost:   idlePerClient,
 				IdleConnTimeout:       90 * time.Second,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ExpectContinueTimeout: 1 * time.Second,
@@ -93,6 +109,7 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 
 	return &Client{
 		httpClients: clients,
+		sem:         make(chan struct{}, maxConcurrent),
 		keyID:       keyID,
 		teamID:      teamID,
 		bundleID:    bundleID,
@@ -260,7 +277,11 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			}
 		}
 
+		if err := c.acquire(ctx); err != nil {
+			return err
+		}
 		resp, err := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))].Do(req)
+		c.release()
 		if err != nil {
 			if attempt < maxRetries && isRetryableError(err) {
 				select {
@@ -325,6 +346,26 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	}
 
 	return fmt.Errorf("max retries exceeded")
+}
+
+// acquire blocks until an in-flight slot frees up. A nil semaphore (tests
+// constructing Client directly) means unlimited concurrency.
+func (c *Client) acquire(ctx context.Context) error {
+	if c.sem == nil {
+		return nil
+	}
+	select {
+	case c.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) release() {
+	if c.sem != nil {
+		<-c.sem
+	}
 }
 
 func isRetryableError(err error) bool {

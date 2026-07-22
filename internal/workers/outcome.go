@@ -28,6 +28,7 @@ type OutcomeWorker[O any] struct {
 }
 
 func NewPushOutcomeWorker(store pushOutcomeWriter, dlqPipeline pipeline.Pipeline[model.SendOutcome], queueSize int, queueFlushTime int) OutcomeWorker[model.SendOutcome] {
+	queueSize, queueFlushTime = normalizeOutcomeSettings(queueSize, queueFlushTime)
 	return OutcomeWorker[model.SendOutcome]{
 		dlqPipeline:    dlqPipeline,
 		queueSize:      queueSize,
@@ -43,6 +44,7 @@ func NewPushOutcomeWorker(store pushOutcomeWriter, dlqPipeline pipeline.Pipeline
 }
 
 func NewLAOutcomeWorker(store laOutcomeWriter, dlqPipeline pipeline.Pipeline[model.LASendOutcome], queueSize int, queueFlushTime int) OutcomeWorker[model.LASendOutcome] {
+	queueSize, queueFlushTime = normalizeOutcomeSettings(queueSize, queueFlushTime)
 	return OutcomeWorker[model.LASendOutcome]{
 		dlqPipeline:    dlqPipeline,
 		queueSize:      queueSize,
@@ -51,6 +53,16 @@ func NewLAOutcomeWorker(store laOutcomeWriter, dlqPipeline pipeline.Pipeline[mod
 			return store.ApplyLAOutcomeBatch(ctx, outcomes)
 		},
 	}
+}
+
+func normalizeOutcomeSettings(queueSize int, queueFlushTime int) (int, int) {
+	if queueSize < 1 {
+		queueSize = 1
+	}
+	if queueFlushTime < 1 {
+		queueFlushTime = 1
+	}
+	return queueSize, queueFlushTime
 }
 
 func (o *OutcomeWorker[O]) Start(ctx context.Context) {
