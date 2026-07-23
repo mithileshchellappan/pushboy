@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check module tidiness
+        run: go mod tidy -diff
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race test
+        run: go test -race ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build binary
+        run: go build -trimpath -o /tmp/pushboy ./cmd/pushboy
+
+  openapi:
+    name: OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Validate OpenAPI document
+        run: npx --yes @redocly/cli@2.30.6 lint --format=github-actions docs/openapi.yaml
+
+  containers:
+    name: Docker and Compose
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_FILE: compose.ci.yaml
+      COMPOSE_PROJECT_NAME: pushboy-ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Build Docker image
+        run: docker build -t pushboy:ci .
+
+      - name: Start Compose stack
+        run: docker compose up -d --no-build
+
+      - name: Smoke test API
+        run: |
+          set -euo pipefail
+
+          app_container="$(docker compose ps -q pushboy)"
+
+          ready=0
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Status}}' "$app_container")"
+            if [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
+              echo "pushboy container exited before becoming healthy"
+              exit 1
+            fi
+
+            if curl -fsS http://127.0.0.1:18080/v1/ping | grep -qx "pong"; then
+              ready=1
+              break
+            fi
+
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "pushboy did not respond to /v1/ping in time"
+            exit 1
+          fi
+
+          user_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          create_response="$(curl -fsS -X POST http://127.0.0.1:18080/v1/users/ \
+            -H 'Content-Type: application/json' \
+            -d "{\"id\":\"${user_id}\"}")"
+          echo "$create_response" | grep -F "\"ID\":\"${user_id}\""
+
+          get_response="$(curl -fsS "http://127.0.0.1:18080/v1/users/${user_id}")"
+          echo "$get_response" | grep -F "\"ID\":\"${user_id}\""
+
+          topics_response="$(curl -fsS http://127.0.0.1:18080/v1/topics/)"
+          echo "$topics_response" | grep -F '"ID":"broadcast"'
+
+          docker compose exec -T postgres psql -U pushboy -d pushboy -Atc "SELECT MAX(version) FROM schema_migrations;" | grep -E '^[0-9]+$'
+
+      - name: Show Compose status
+        if: always()
+        run: docker compose ps
+
+      - name: Show Compose logs
+        if: always()
+        run: docker compose logs --no-color postgres pushboy
+
+      - name: Stop Compose stack
+        if: always()
+        run: docker compose down -v --remove-orphans
