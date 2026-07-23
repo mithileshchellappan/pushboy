@@ -30,7 +30,7 @@ func TestIsLAInvalidToken(t *testing.T) {
 }
 
 func TestSummarizeLAOutcomes(t *testing.T) {
-	outcomes := []model.SendOutcome{
+	outcomes := []model.LASendOutcome{
 		{
 			Receipt: model.DeliveryReceipt{
 				JobID:   "dispatch-1",

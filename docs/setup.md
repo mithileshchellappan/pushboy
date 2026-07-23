@@ -145,12 +145,36 @@ The main runtime settings are:
 | `DATABASE_URL` | Postgres connection string. |
 | `WORKER_COUNT` | Number of master workers that fan out jobs into token batches. |
 | `SENDER_COUNT` | Number of sender workers that call APNS/FCM. |
-| `JOB_QUEUE_SIZE` | In-process queue buffer size. |
+| `JOB_QUEUE_SIZE` | Pending push-job buffer size. |
+| `TASK_QUEUE_SIZE` | Buffer between push fanout and senders. |
+| `DLQ_QUEUE_SIZE` | Buffer between push senders and outcome persistence. |
+| `LA_JOB_QUEUE_SIZE` | Pending Live Activity job buffer size. |
+| `LA_TASK_QUEUE_SIZE` | Buffer between Live Activity fanout and senders. |
+| `LA_DLQ_QUEUE_SIZE` | Buffer between Live Activity senders and outcome persistence. |
 | `BATCH_SIZE` | Number of tokens loaded per Postgres batch. |
-| `MAX_RETRY_NOTIFICATION` | Retry count used by notification outcome paths. |
+| `OUTCOME_BATCH_SIZE` | Outcomes persisted per database flush. |
+| `OUTCOME_FLUSH_SECONDS` | Maximum seconds between outcome flushes. |
+| `SHUTDOWN_TIMEOUT_SECONDS` | Maximum seconds spent draining in-memory work on shutdown. |
+| `APNS_CLIENT_POOL` | Number of push-lane APNs HTTP/2 client transports. |
+| `APNS_MAX_CONCURRENT` | Push-lane APNs in-flight cap; `0` derives from the pool size. |
+| `LA_APNS_CLIENT_POOL` | Live Activity APNs transports; defaults to `APNS_CLIENT_POOL`. |
+| `LA_APNS_MAX_CONCURRENT` | Live Activity APNs in-flight cap; defaults to `APNS_MAX_CONCURRENT`. |
+| `FCM_CLIENT_POOL` | Number of push-lane FCM HTTP client transports. |
+| `FCM_MAX_CONCURRENT` | Push-lane FCM in-flight cap; `0` derives from the pool size. |
+| `LA_FCM_CLIENT_POOL` | Live Activity FCM transports; defaults to `FCM_CLIENT_POOL`. |
+| `LA_FCM_MAX_CONCURRENT` | Live Activity FCM in-flight cap; defaults to `FCM_MAX_CONCURRENT`. |
+| `MAX_RETRY_NOTIFICATION` | Provider retries after the initial APNS or FCM attempt. |
 | `BROADCAST_TOPIC_NAME` | Topic auto-created on startup and assigned to new users. |
 
 See `.env.example` for the complete list.
+
+### Production throughput profile
+
+The non-secret overrides currently validated on the production Pushboy VM are
+versioned in `deploy/production-throughput.env.example`. Merge those values
+into the server's existing `.env`; do not replace database or provider
+credentials. The profile keeps deployment-specific capacity choices separate
+from conservative application defaults.
 
 ## Verify API Setup
 

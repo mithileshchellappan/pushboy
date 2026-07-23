@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_live_activity_tokens_active_update;
+DROP INDEX IF EXISTS idx_live_activity_dispatches_pending_start;

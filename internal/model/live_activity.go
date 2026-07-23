@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type LiveActivityTokenType string
@@ -45,6 +46,11 @@ const (
 	LiveActivityJobStatusActive LiveActivityJobStatus = "ACTIVE"
 	LiveActivityJobStatusClosed LiveActivityJobStatus = "CLOSED"
 	LiveActivityJobStatusFailed LiveActivityJobStatus = "FAILED"
+)
+
+const (
+	LiveActivityDispatchStatusEnqueuePending = "ENQUEUE_PENDING"
+	LiveActivityDispatchStatusQueued         = "QUEUED"
 )
 
 type LiveActivityPayload = json.RawMessage
@@ -142,4 +148,5 @@ type LiveActivityRequest struct {
 	ActivityType string
 	Payload      LiveActivityPayload
 	Options      LiveActivityOptions
+	CreatedAt    time.Time
 }

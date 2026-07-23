@@ -18,16 +18,17 @@ import (
 )
 
 type Server struct {
-	service     *service.PushboyService
-	jobPipeline pipeline.Pipeline[model.JobItem]
-	httpServer  *http.Server
-	router      chi.Router
+	service       *service.PushboyService
+	jobPipeline   pipeline.Pipeline[model.JobItem]
+	laJobPipeline pipeline.Pipeline[model.LAJobItem]
+	httpServer    *http.Server
+	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem]) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
 func (s *Server) Start(addr string) error {

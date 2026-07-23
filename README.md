@@ -132,16 +132,32 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 | `SERVER_PORT` | `:8080` | HTTP bind address. Use a private network or gateway in production. |
 | `DATABASE_URL` | `postgres://localhost:5432/pushboy?sslmode=disable` | Postgres connection string. |
 | `WORKER_COUNT` | `10` | Master workers that fan out jobs into token batches. |
-| `SENDER_COUNT` | `200` | Sender workers that call APNS/FCM. |
-| `JOB_QUEUE_SIZE` | `1000` | Buffer size for in-process queues. |
+| `SENDER_COUNT` | `2000` | Sender workers that call APNS/FCM. |
+| `JOB_QUEUE_SIZE` | `1000` | Buffer size for pending jobs. |
+| `TASK_QUEUE_SIZE` | `10000` | Buffer between push fanout and senders. |
+| `DLQ_QUEUE_SIZE` | `50000` | Buffer between push senders and outcome persistence. |
+| `LA_JOB_QUEUE_SIZE` | `1000` | Buffer for pending Live Activity jobs. |
+| `LA_TASK_QUEUE_SIZE` | `5000` | Buffer between Live Activity fanout and senders. |
+| `LA_DLQ_QUEUE_SIZE` | `50000` | Buffer between Live Activity senders and outcome persistence. |
 | `BATCH_SIZE` | `5000` | Token batch size read from Postgres. |
-| `MAX_RETRY_NOTIFICATION` | `3` | Number of notification retry attempts. |
+| `OUTCOME_BATCH_SIZE` | `1000` | Outcomes persisted per database flush. |
+| `OUTCOME_FLUSH_SECONDS` | `10` | Maximum delay between outcome flushes. |
+| `SHUTDOWN_TIMEOUT_SECONDS` | `120` | Maximum time to drain in-memory work during shutdown. |
+| `MAX_RETRY_NOTIFICATION` | `3` | Provider retries after the initial APNS or FCM attempt. |
 | `APNS_KEY_ID` | empty | Apple Developer key id. Enables APNS when present and readable. |
 | `APNS_TEAM_ID` | empty | Apple Developer team id. |
 | `APNS_BUNDLE_ID` | `APNS_TOPIC_ID` fallback | iOS bundle id. Live Activities use `<bundle>.push-type.liveactivity`. |
 | `APNS_KEY_PATH` | derived from key id | Path to the APNS `.p8` file. |
 | `APNS_USE_SANDBOX` | `false` | Set `true` for sandbox APNS. |
+| `APNS_CLIENT_POOL` | `8` | Push-lane APNs HTTP/2 client transports. |
+| `APNS_MAX_CONCURRENT` | `0` | Push-lane APNs in-flight cap; `0` derives from its pool. |
+| `LA_APNS_CLIENT_POOL` | `APNS_CLIENT_POOL` | Live Activity APNs HTTP/2 client transports. |
+| `LA_APNS_MAX_CONCURRENT` | `APNS_MAX_CONCURRENT` | Live Activity APNs in-flight cap. |
 | `FCM_KEY_PATH` | `keys/service-account.json` | Firebase service-account JSON. `project_id` is read from this file. |
+| `FCM_CLIENT_POOL` | `4` | Push-lane FCM HTTP client transports. |
+| `FCM_MAX_CONCURRENT` | `360` | Push-lane FCM in-flight cap; `0` derives from its pool. |
+| `LA_FCM_CLIENT_POOL` | `FCM_CLIENT_POOL` | Live Activity FCM HTTP client transports. |
+| `LA_FCM_MAX_CONCURRENT` | `FCM_MAX_CONCURRENT` | Live Activity FCM in-flight cap. |
 | `BROADCAST_TOPIC_NAME` | `broadcast` | New users are subscribed to this topic when configured. |
 
 ## API Examples

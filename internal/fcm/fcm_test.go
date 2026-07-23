@@ -1,7 +1,11 @@
 package fcm
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -61,4 +65,38 @@ func TestParseFCMError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSendMessageUsesConfiguredRetryLimit(t *testing.T) {
+	var attempts atomic.Int32
+	client := &Client{
+		httpClients: []*http.Client{{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Status:     "500 Internal Server Error",
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"temporary"}}`)),
+					Header:     make(http.Header),
+				}, nil
+			}),
+		}},
+		sem:        make(chan struct{}, 1),
+		projectID:  "project",
+		maxRetries: 1,
+	}
+
+	err := client.sendMessage(context.Background(), FcmMessage{Token: "token"})
+	if err == nil {
+		t.Fatal("sendMessage error = nil, want retry exhaustion")
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want initial attempt plus one retry", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

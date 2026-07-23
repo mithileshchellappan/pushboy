@@ -40,11 +40,11 @@ type createLiveActivityJobRequest struct {
 	ExpiresAt    string          `json:"expiresAt,omitempty"`
 }
 
-func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispatch *storage.LiveActivityDispatch, jobItem model.JobItem) error {
+func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispatch *storage.LiveActivityDispatch, jobItem model.LAJobItem) error {
 	enqueueCtx, cancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 	defer cancel()
 
-	if err := s.jobPipeline.Submit(enqueueCtx, jobItem); err != nil {
+	if err := s.laJobPipeline.Submit(enqueueCtx, jobItem); err != nil {
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 
@@ -57,6 +57,14 @@ func (s *Server) enqueueImmediateLADispatch(job *storage.LiveActivityJob, dispat
 			}
 		}
 		return err
+	}
+
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
+	defer statusCancel()
+	if err := s.service.MarkLADispatchEnqueued(statusCtx, dispatch.ID); err != nil {
+		// The pipeline already owns this dispatch. Returning an error here would
+		// invite a duplicate retry while a worker may already be processing it.
+		log.Printf("Failed to mark live activity dispatch %s as QUEUED after enqueue: %v", dispatch.ID, err)
 	}
 
 	return nil
@@ -185,20 +193,19 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Error creating live activity dispatch: %v", err)
 		return
 	}
-
 	if result.Dispatch != nil {
-		jobItem := model.JobItem{
-			ID:           result.Dispatch.ID,
-			JobType:      model.JobTypeLA,
-			TopicID:      result.Job.TopicID,
-			UserID:       result.Job.UserID,
-			LAAction:     result.Dispatch.Action,
-			LAJobID:      result.Job.ID,
-			LADispatchID: result.Dispatch.ID,
-			LAActivityID: result.Job.ActivityID,
-			LAActivity:   result.Job.ActivityType,
-			LAPayload:    result.Dispatch.Payload,
-			LAOptions:    result.Dispatch.Options,
+		jobItem := model.LAJobItem{
+			ID:         result.Dispatch.ID,
+			TopicID:    result.Job.TopicID,
+			UserID:     result.Job.UserID,
+			Action:     result.Dispatch.Action,
+			JobID:      result.Job.ID,
+			DispatchID: result.Dispatch.ID,
+			ActivityID: result.Job.ActivityID,
+			Activity:   result.Job.ActivityType,
+			Payload:    result.Dispatch.Payload,
+			Options:    result.Dispatch.Options,
+			CreatedAt:  result.Dispatch.CreatedAt,
 		}
 
 		if err := s.enqueueImmediateLADispatch(result.Job, result.Dispatch, jobItem); err != nil {

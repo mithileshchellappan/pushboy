@@ -604,6 +604,21 @@ func (s *PostgresStore) UpdateLADispatchStatus(ctx context.Context, dispatchID s
 	return nil
 }
 
+func (s *PostgresStore) MarkLADispatchEnqueued(ctx context.Context, dispatchID string) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE live_activity_dispatches
+		 SET status = 'QUEUED'
+		 WHERE id = $1
+		   AND status = 'ENQUEUE_PENDING'`,
+		dispatchID,
+	)
+	if err != nil {
+		return fmt.Errorf("error marking LA dispatch enqueued: %w", err)
+	}
+	return nil
+}
+
 func (s *PostgresStore) getLADispatchFanoutScope(ctx context.Context, dispatchID string) (*liveActivityDispatchFanoutScope, error) {
 	var action string
 	scope := &liveActivityDispatchFanoutScope{}
@@ -618,7 +633,7 @@ func (s *PostgresStore) getLADispatchFanoutScope(ctx context.Context, dispatchID
 			FROM live_activity_dispatches start_lad
 			WHERE start_lad.live_activity_job_id = laj.id
 			  AND start_lad.action = 'start'
-			  AND start_lad.status IN ('QUEUED', 'IN_PROGRESS', 'DISPATCHED')
+			  AND start_lad.status IN ('ENQUEUE_PENDING', 'QUEUED', 'IN_PROGRESS', 'DISPATCHED')
 		        ) AS start_dispatch_pending
 		 FROM live_activity_dispatches lad
 		 JOIN live_activity_jobs laj ON laj.id = lad.live_activity_job_id
@@ -647,48 +662,19 @@ func (s *PostgresStore) GetLATokenBatchForDispatch(ctx context.Context, dispatch
 		apnsTokenType = model.LiveActivityTokenTypeStart
 	}
 
-	rows, err := s.db.QueryContext(
-		ctx,
-		`SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
-		 FROM live_activity_tokens lat
-		 WHERE lat.invalidated_at IS NULL
-		   AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
-		   AND (
-			(lat.platform = 'apns' AND lat.token_type = $1)
-			OR
-			(lat.platform = 'fcm' AND lat.token_type = 'update')
-		   )
-		   AND lat.id > $2
-		   AND (
-			($3 <> '' AND lat.user_id = $3)
-			OR (
-				$4 <> ''
-				AND lat.user_id IN (
-					SELECT user_id
-					FROM live_activity_user_topic_subscriptions
-					WHERE topic_id = $4
-				)
-			)
-		   )
-		   AND (
-			NOT $5
-			OR EXISTS (
-				SELECT 1
-				FROM live_activity_token_activities lata
-				WHERE lata.activity_id = $6
-				  AND lata.token_id = lat.id
-			)
-		   )
-		 ORDER BY lat.id
-		 LIMIT $7`,
-		apnsTokenType,
-		cursor,
-		scope.userID,
-		scope.topicID,
-		scope.requiresActivityAssociation(),
-		scope.activityID,
-		batchSize+1,
-	)
+	var rows *sql.Rows
+
+	switch {
+	case scope.requiresActivityAssociation() && scope.userID != "":
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByActivityAndUserQuery, scope.activityID, scope.userID, cursor, batchSize+1)
+	case scope.requiresActivityAssociation():
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByActivityAndTopicQuery, scope.activityID, scope.topicID, cursor, batchSize+1)
+	case scope.userID != "":
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByUserQuery, scope.userID, cursor, apnsTokenType, batchSize+1)
+	default:
+		rows, err = s.db.QueryContext(ctx, laTokenBatchByTopicQuery, scope.topicID, cursor, apnsTokenType, batchSize+1)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("error getting LA token batch: %w", err)
 	}
@@ -753,7 +739,48 @@ func (s *PostgresStore) CompleteLADispatchEnqueue(ctx context.Context, dispatchI
 	return nil
 }
 
-func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.SendOutcome) error {
+func (s *PostgresStore) FailLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
+	_, err := s.db.ExecContext(
+		ctx,
+		`UPDATE live_activity_dispatches
+		 SET total_count = $2,
+		     status = 'FAILED',
+		     completed_at = NOW()
+		 WHERE id = $1
+		   AND status IN ('ENQUEUE_PENDING', 'QUEUED', 'IN_PROGRESS')`,
+		dispatchID,
+		totalCount,
+	)
+	if err != nil {
+		return fmt.Errorf("error failing LA dispatch enqueue: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) SupersedeLADispatchIfStale(ctx context.Context, dispatchID string, emittedCount int) (bool, error) {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE live_activity_dispatches d
+		SET status = 'SUPERSEDED', completed_at = NOW(), total_count = $2
+		WHERE d.id = $1
+			AND d.action = 'update'
+			AND d.status IN ('QUEUED', 'IN_PROGRESS')
+			AND EXISTS (
+				SELECT 1 FROM live_activity_dispatches newer
+				WHERE newer.live_activity_job_id = d.live_activity_job_id
+					AND newer.action = 'update'
+					AND newer.created_at > d.created_at
+					AND newer.status IN ('QUEUED', 'IN_PROGRESS', 'DISPATCHED', 'COMPLETED')
+			)`, dispatchID, emittedCount)
+
+	if err != nil {
+		return false, fmt.Errorf("error superseding LA dispatch: %v", err)
+	}
+	rowsAffected, _ := result.RowsAffected()
+	return rowsAffected > 0, nil
+
+}
+
+func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error {
 	if len(outcomes) == 0 {
 		return nil
 	}
@@ -772,15 +799,14 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 	lastSeenAt := time.Now().UTC()
 	for _, outcome := range outcomes {
 		if outcome.Receipt.Status != model.DeliveryStatusSuccess ||
-			outcome.Task.Job == nil ||
-			outcome.Task.Job.LAAction != model.LiveActivityActionStart ||
-			outcome.Task.Job.LAActivityID == "" ||
+			outcome.Task.LAJob.Action != model.LiveActivityActionStart ||
+			outcome.Task.LAJob.ActivityID == "" ||
 			outcome.Task.Target.Platform != model.FCM ||
 			outcome.Receipt.TokenID == "" {
 			continue
 		}
 
-		if err := associateLiveActivityTokenTx(ctx, tx, outcome.Task.Job.LAActivityID, outcome.Receipt.TokenID, lastSeenAt); err != nil {
+		if err := associateLiveActivityTokenTx(ctx, tx, outcome.Task.LAJob.ActivityID, outcome.Receipt.TokenID, lastSeenAt); err != nil {
 			return err
 		}
 	}
@@ -825,7 +851,7 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 	return nil
 }
 
-func summarizeLAOutcomes(outcomes []model.SendOutcome) (map[string]laOutcomeDelta, map[string]struct{}) {
+func summarizeLAOutcomes(outcomes []model.LASendOutcome) (map[string]laOutcomeDelta, map[string]struct{}) {
 	deltas := make(map[string]laOutcomeDelta)
 	invalidTokenIDs := make(map[string]struct{})
 
@@ -962,3 +988,65 @@ func (s *PostgresStore) InvalidateExpiredLAUpdateTokens(ctx context.Context, lim
 	rowsAffected, _ := result.RowsAffected()
 	return int(rowsAffected), nil
 }
+
+const laTokenBatchByActivityAndUserQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_token_activities lata
+       JOIN live_activity_tokens lat ON lat.id = lata.token_id
+       WHERE lata.activity_id = $1
+         AND lat.user_id = $2
+         AND lata.token_id > $3
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND lat.token_type = 'update'
+       ORDER BY lata.token_id
+       LIMIT $4`
+
+const laTokenBatchByActivityAndTopicQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_token_activities lata
+       JOIN live_activity_tokens lat ON lat.id = lata.token_id
+       JOIN live_activity_user_topic_subscriptions sub
+         ON sub.user_id = lat.user_id
+        AND sub.topic_id = $2
+       WHERE lata.activity_id = $1
+         AND lata.token_id > $3
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND lat.token_type = 'update'
+       ORDER BY lata.token_id
+       LIMIT $4`
+
+const laTokenBatchByUserQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       WHERE lat.user_id = $1
+         AND lat.id > $2
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND (
+               (lat.platform = 'apns' AND lat.token_type = $3)
+               OR (lat.platform = 'fcm' AND lat.token_type = 'update')
+         )
+       ORDER BY lat.id
+       LIMIT $4`
+
+const laTokenBatchByTopicQuery = `
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       JOIN live_activity_user_topic_subscriptions sub
+         ON sub.user_id = lat.user_id
+         AND sub.topic_id = $1
+       WHERE lat.id > $2
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND (
+               (lat.platform = 'apns' AND lat.token_type = $3)
+               OR (lat.platform = 'fcm' AND lat.token_type = 'update')
+         )
+       ORDER BY lat.id
+       LIMIT $4`

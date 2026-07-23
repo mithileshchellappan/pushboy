@@ -150,3 +150,30 @@ func waitErr(t *testing.T, errCh <-chan error) error {
 		return nil
 	}
 }
+
+func TestMemoryPipelineReceiveDrainsBufferAfterClose(t *testing.T) {
+	p := NewMemoryPipeline[int](3)
+
+	for i := 1; i <= 3; i++ {
+		if err := p.Submit(context.Background(), i); err != nil {
+			t.Fatalf("Submit(%d) error = %v", i, err)
+		}
+	}
+	if err := p.Close(context.Background()); err != nil {
+		t.Fatalf("Close error = %v", err)
+	}
+
+	for i := 1; i <= 3; i++ {
+		delivery, err := p.Receive(context.Background())
+		if err != nil {
+			t.Fatalf("Receive after close (item %d) error = %v, buffered items must drain", i, err)
+		}
+		if got := delivery.Get(); got != i {
+			t.Fatalf("delivery.Get() = %d, want %d", got, i)
+		}
+	}
+
+	if _, err := p.Receive(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Receive on drained closed pipeline error = %v, want ErrClosed", err)
+	}
+}

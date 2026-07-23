@@ -230,14 +230,13 @@ func (s *PostgresStore) GetTokensByUserID(ctx context.Context, userID string) ([
 
 func (s *PostgresStore) GetTokenBatchForTopic(ctx context.Context, topicID string, cursor string, batchSize int) (*TokenBatch, error) {
 	query := `
-		SELECT t.id, t.token, t.platform 
-		FROM tokens t
-		WHERE t.user_id IN (
-			SELECT user_id FROM user_topic_subscriptions WHERE topic_id = $1
-		) 
-		AND t.is_deleted = FALSE
-		AND t.id > $2 
-		ORDER BY t.id 
+		SELECT t.id, t.token, t.platform
+		FROM user_topic_subscriptions uts
+		JOIN tokens t ON t.user_id = uts.user_id
+		WHERE uts.topic_id = $1
+			AND t.is_deleted = FALSE
+			AND t.id > $2
+		ORDER BY t.id
 		LIMIT $3`
 	rows, err := s.db.QueryContext(ctx, query, topicID, cursor, batchSize+1)
 	if err != nil {
@@ -585,7 +584,7 @@ func (s *PostgresStore) CreatePublishJob(ctx context.Context, job *PublishJob) (
 	createdAt := requiredTime(job.CreatedAt)
 	job.CreatedAt = createdAt
 
-	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at) 
+	query := `INSERT INTO publish_jobs(id, topic_id, payload, status, total_count, success_count, failure_count, created_at, scheduled_at)
 		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 	_, err = s.db.ExecContext(ctx, query, job.ID, job.TopicID, payloadJSON, string(job.Status), job.TotalCount, job.SuccessCount, job.FailureCount, createdAt, optionalTime(job.ScheduledAt))
 	if err != nil {
@@ -683,13 +682,13 @@ func (s *PostgresStore) FinalizeJobDispatch(ctx context.Context, jobID string, t
 
 func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*PublishJob, error) {
 	query := `
-		SELECT 
-			pj.id, 
-			COALESCE(pj.topic_id, ''), 
-			COALESCE(pj.user_id, ''), 
-			pj.payload, 
-			pj.status, 
-			pj.total_count, 
+		SELECT
+			pj.id,
+			COALESCE(pj.topic_id, ''),
+			COALESCE(pj.user_id, ''),
+			pj.payload,
+			pj.status,
+			pj.total_count,
 			pj.success_count,
 			pj.failure_count,
 			pj.created_at,
