@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -177,8 +178,8 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 		if token.UserID != "user-1" || token.Platform != model.APNS || token.TokenType != model.LiveActivityTokenTypeUpdate || token.Token != "la-token" {
 			t.Fatalf("UpsertLiveActivityToken token = %+v", token)
 		}
-		if token.ActivityID != "session-1_2026" {
-			t.Fatalf("UpsertLiveActivityToken ActivityID = %q, want session-1_2026", token.ActivityID)
+		if token.ActivityID != " session-1_2026 " {
+			t.Fatalf("UpsertLiveActivityToken ActivityID = %q, want exact opaque value", token.ActivityID)
 		}
 		token.ID = "token-id"
 		token.CreatedAt = now
@@ -191,7 +192,7 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
 		"userId":"user-1",
 		"topicId":"broadcast",
-		"activityId":"session-1_2026",
+		"activityId":" session-1_2026 ",
 		"platform":"apns",
 		"tokenType":"update",
 		"token":"la-token"
@@ -201,6 +202,340 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+}
+
+func TestHandleRegisterLAStartTokenStoresBroadcastChannelCapability(t *testing.T) {
+	now := time.Now().UTC()
+	store := &serverStoreStub{t: t}
+	store.getUserFunc = func(context.Context, string) (*storage.User, error) {
+		return &storage.User{ID: "user-1", CreatedAt: now}, nil
+	}
+	store.upsertLiveActivityTokenFunc = func(_ context.Context, token *storage.LiveActivityToken) (*storage.LiveActivityToken, error) {
+		if !token.SupportsBroadcastChannels {
+			t.Fatal("SupportsBroadcastChannels = false, want true")
+		}
+		token.ID = "token-1"
+		token.CreatedAt = now
+		token.LastSeenAt = now
+		return token, nil
+	}
+
+	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
+		"userId":"user-1",
+		"platform":"apns",
+		"tokenType":"start",
+		"token":"push-to-start-token",
+		"supportsBroadcastChannels":true
+	}`))
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var response struct {
+		Token *laTokenResponse `json:"token"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Token == nil || !response.Token.SupportsBroadcastChannels {
+		t.Fatalf("response token = %+v, want broadcast capability", response.Token)
+	}
+}
+
+func TestLiveActivityChannelRoutes(t *testing.T) {
+	var mapping *storage.LiveActivityChannel
+	store := &serverStoreStub{t: t}
+	store.getTopicByIDFunc = func(_ context.Context, topicID string) (*storage.Topic, error) {
+		return &storage.Topic{ID: topicID, Name: "Race"}, nil
+	}
+	store.getLAChannelFunc = func(_ context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+		if mapping == nil {
+			return nil, storage.Errors.NotFound
+		}
+		if activityID != mapping.ActivityID {
+			t.Fatalf("GetLAChannelByActivityID activityID = %q, want %q", activityID, mapping.ActivityID)
+		}
+		return mapping, nil
+	}
+	store.createOrGetLAChannelFunc = func(_ context.Context, channel *storage.LiveActivityChannel) (*storage.LiveActivityChannel, bool, error) {
+		mapping = channel
+		return mapping, true, nil
+	}
+	store.deleteLAChannelFunc = func(_ context.Context, activityID, channelID string) error {
+		if mapping == nil || activityID != mapping.ActivityID || channelID != mapping.ChannelID {
+			t.Fatalf("DeleteLAChannel = (%q, %q), mapping = %+v", activityID, channelID, mapping)
+		}
+		mapping = nil
+		return nil
+	}
+	provider := &serverLAChannelProvider{channelID: "apple-channel-id"}
+	pushboyService := service.NewPushBoyService(store, "", service.WithLAChannels(provider))
+	router := New(
+		pushboyService,
+		&serverJobPipeline{t: t, failOnSubmit: true},
+		&serverLAJobPipeline{t: t, failOnSubmit: true},
+	).setupRouter()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/v1/live-activity/channels/activity-1",
+		bytes.NewBufferString(`{}`),
+	)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("empty topic PUT status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(
+		http.MethodPut,
+		"/v1/live-activity/channels/activity-1",
+		bytes.NewBufferString(`{"topicId":"topic-1"}`),
+	)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("PUT status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode PUT response: %v", err)
+	}
+	if response["activityId"] != "activity-1" ||
+		response["topicId"] != "topic-1" ||
+		response["channelId"] != "apple-channel-id" {
+		t.Fatalf("PUT response = %#v", response)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/v1/live-activity/channels/activity-1", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/v1/live-activity/channels/activity-1", nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want %d, body: %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+	if provider.deletedChannelID != "apple-channel-id" {
+		t.Fatalf("deleted channel ID = %q, want apple-channel-id", provider.deletedChannelID)
+	}
+
+	const escapedActivityPath = "/v1/live-activity/channels/race%2F2026"
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(
+		http.MethodPut,
+		escapedActivityPath,
+		bytes.NewBufferString(`{"topicId":"topic-1"}`),
+	)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("escaped PUT status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if mapping == nil {
+		t.Fatal("escaped PUT did not create a mapping")
+	}
+	if mapping.ActivityID != "race/2026" {
+		t.Fatalf("escaped PUT activityID = %q, want race/2026", mapping.ActivityID)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, escapedActivityPath, nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("escaped GET status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, escapedActivityPath, nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("escaped DELETE status = %d, want %d, body: %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+
+	const literalEscapePath = "/v1/live-activity/channels/race%252F2026"
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(
+		http.MethodPut,
+		literalEscapePath,
+		bytes.NewBufferString(`{"topicId":"topic-1"}`),
+	)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("literal escape PUT status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if mapping == nil || mapping.ActivityID != "race%2F2026" {
+		t.Fatalf("literal escape PUT mapping = %+v, want activityID race%%2F2026", mapping)
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, literalEscapePath, nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("literal escape GET status = %d, want %d, body: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, literalEscapePath, nil)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("literal escape DELETE status = %d, want %d, body: %s", recorder.Code, http.StatusNoContent, recorder.Body.String())
+	}
+}
+
+func TestLiveActivityChannelRoutesClassifyProviderAndStorageFailures(t *testing.T) {
+	databaseErr := errors.New("database unavailable")
+	apnsErr := errors.New("APNs unavailable")
+	mapping := &storage.LiveActivityChannel{
+		ActivityID: "activity-1",
+		TopicID:    "topic-1",
+		ChannelID:  "channel-1",
+	}
+
+	tests := []struct {
+		name      string
+		method    string
+		configure func(*serverStoreStub, *serverLAChannelProvider)
+		wantCode  int
+	}{
+		{
+			name:   "PUT storage failure",
+			method: http.MethodPut,
+			configure: func(store *serverStoreStub, _ *serverLAChannelProvider) {
+				store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+					return nil, databaseErr
+				}
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:   "PUT provider failure",
+			method: http.MethodPut,
+			configure: func(store *serverStoreStub, provider *serverLAChannelProvider) {
+				store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+					return nil, storage.Errors.NotFound
+				}
+				store.getTopicByIDFunc = func(context.Context, string) (*storage.Topic, error) {
+					return &storage.Topic{ID: "topic-1"}, nil
+				}
+				provider.createError = apnsErr
+			},
+			wantCode: http.StatusBadGateway,
+		},
+		{
+			name:   "DELETE storage failure",
+			method: http.MethodDelete,
+			configure: func(store *serverStoreStub, _ *serverLAChannelProvider) {
+				store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+					return mapping, nil
+				}
+				store.deleteLAChannelFunc = func(context.Context, string, string) error {
+					return databaseErr
+				}
+			},
+			wantCode: http.StatusInternalServerError,
+		},
+		{
+			name:   "DELETE provider failure",
+			method: http.MethodDelete,
+			configure: func(store *serverStoreStub, provider *serverLAChannelProvider) {
+				store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+					return mapping, nil
+				}
+				provider.deleteError = apnsErr
+			},
+			wantCode: http.StatusBadGateway,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &serverStoreStub{t: t}
+			provider := &serverLAChannelProvider{channelID: "channel-1"}
+			test.configure(store, provider)
+			router := New(
+				service.NewPushBoyService(store, "", service.WithLAChannels(provider)),
+				&serverJobPipeline{t: t, failOnSubmit: true},
+				&serverLAJobPipeline{t: t, failOnSubmit: true},
+			).setupRouter()
+
+			var body io.Reader
+			if test.method == http.MethodPut {
+				body = bytes.NewBufferString(`{"topicId":"topic-1"}`)
+			}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(
+				test.method,
+				"/v1/live-activity/channels/activity-1",
+				body,
+			)
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != test.wantCode {
+				t.Fatalf(
+					"status = %d, want %d, body: %s",
+					recorder.Code,
+					test.wantCode,
+					recorder.Body.String(),
+				)
+			}
+		})
+	}
+}
+
+func TestProvisionLAChannelPersistenceRemainsAmbiguousReturns500WithoutDeletingChannel(t *testing.T) {
+	store := &serverStoreStub{t: t}
+	store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+		return nil, storage.Errors.NotFound
+	}
+	store.getTopicByIDFunc = func(context.Context, string) (*storage.Topic, error) {
+		return &storage.Topic{ID: "topic-1"}, nil
+	}
+	persistenceAttempts := 0
+	store.createOrGetLAChannelFunc = func(
+		context.Context,
+		*storage.LiveActivityChannel,
+	) (*storage.LiveActivityChannel, bool, error) {
+		persistenceAttempts++
+		return nil, false, errors.New("database unavailable")
+	}
+
+	provider := &serverLAChannelProvider{channelID: "channel-1"}
+	router := New(
+		service.NewPushBoyService(store, "", service.WithLAChannels(provider)),
+		&serverJobPipeline{t: t, failOnSubmit: true},
+		&serverLAJobPipeline{t: t, failOnSubmit: true},
+	).setupRouter()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPut,
+		"/v1/live-activity/channels/activity-1",
+		bytes.NewBufferString(`{"topicId":"topic-1"}`),
+	)
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf(
+			"status = %d, want %d, body: %s",
+			recorder.Code,
+			http.StatusInternalServerError,
+			recorder.Body.String(),
+		)
+	}
+	if persistenceAttempts != 2 {
+		t.Fatalf("persistence attempts = %d, want 2", persistenceAttempts)
+	}
+	if provider.deletedChannelID != "" {
+		t.Fatalf("deleted channel ID = %q, want retained ambiguous channel", provider.deletedChannelID)
 	}
 }
 
@@ -231,6 +566,13 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		}
 		return nil
 	}
+	store.getLAChannelFunc = func(_ context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+		return &storage.LiveActivityChannel{
+			ActivityID: activityID,
+			TopicID:    "broadcast",
+			ChannelID:  "apple-channel-id",
+		}, nil
+	}
 	store.createLADispatchFunc = func(ctx context.Context, dispatch *storage.LiveActivityDispatch) (*storage.LiveActivityDispatch, error) {
 		if dispatch.Status != model.LiveActivityDispatchStatusEnqueuePending {
 			t.Fatalf("CreateLADispatch status = %q, want %q", dispatch.Status, model.LiveActivityDispatchStatusEnqueuePending)
@@ -245,7 +587,11 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		return nil
 	}
 
-	router := testRouter(t, store, pushPipeline, laPipeline)
+	router := New(
+		service.NewPushBoyService(store, "", service.WithLAChannels(&serverLAChannelProvider{})),
+		pushPipeline,
+		laPipeline,
+	).setupRouter()
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", bytes.NewBufferString(`{
@@ -268,11 +614,60 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		got.JobID != "la-job-1" ||
 		got.DispatchID == "" ||
 		got.TopicID != "broadcast" ||
+		got.ChannelID != "apple-channel-id" ||
 		string(got.Payload) != `{"lap":12}` {
 		t.Fatalf("submitted job = %+v, want LA fields populated", got)
 	}
 	if enqueuedDispatchID != got.DispatchID {
 		t.Fatalf("enqueued dispatch ID = %q, want %q", enqueuedDispatchID, got.DispatchID)
+	}
+}
+
+func TestHandleCreateLAJobReturnsServerErrorWhenChannelLookupFails(t *testing.T) {
+	lookupErr := errors.New("database unavailable")
+	store := &serverStoreStub{t: t}
+	store.getLAJobByActivityIDFunc = func(context.Context, string) (*storage.LiveActivityJob, error) {
+		return &storage.LiveActivityJob{
+			ID:         "la-job-1",
+			ActivityID: "race-42",
+			TopicID:    "broadcast",
+			Status:     model.LiveActivityJobStatusActive,
+		}, nil
+	}
+	store.updateLAJobPayloadIfActiveFunc = func(
+		context.Context,
+		string,
+		json.RawMessage,
+		json.RawMessage,
+		time.Time,
+	) error {
+		return nil
+	}
+	store.getLAChannelFunc = func(context.Context, string) (*storage.LiveActivityChannel, error) {
+		return nil, lookupErr
+	}
+
+	router := New(
+		service.NewPushBoyService(store, "", service.WithLAChannels(&serverLAChannelProvider{})),
+		&serverJobPipeline{t: t, failOnSubmit: true},
+		&serverLAJobPipeline{t: t, failOnSubmit: true},
+	).setupRouter()
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", bytes.NewBufferString(`{
+		"action":"update",
+		"activityId":"race-42",
+		"payload":{"lap":12}
+	}`))
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf(
+			"status = %d, want %d, body: %s",
+			recorder.Code,
+			http.StatusInternalServerError,
+			recorder.Body.String(),
+		)
 	}
 }
 
@@ -382,6 +777,9 @@ type serverStoreStub struct {
 	createTokenFunc             func(context.Context, *storage.Token) (*storage.Token, error)
 	upsertLiveActivityTokenFunc func(context.Context, *storage.LiveActivityToken) (*storage.LiveActivityToken, error)
 	subscribeUserToLATopicFunc  func(context.Context, *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error)
+	createOrGetLAChannelFunc    func(context.Context, *storage.LiveActivityChannel) (*storage.LiveActivityChannel, bool, error)
+	getLAChannelFunc            func(context.Context, string) (*storage.LiveActivityChannel, error)
+	deleteLAChannelFunc         func(context.Context, string, string) error
 	createUserPublishJobFunc    func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
 	updateJobStatusFunc         func(context.Context, string, model.NotificationJobStatus) error
 
@@ -619,6 +1017,30 @@ func (s *serverStoreStub) SubscribeUserToLATopic(ctx context.Context, sub *stora
 	return nil, errors.New("unexpected SubscribeUserToLATopic")
 }
 
+func (s *serverStoreStub) CreateOrGetLAChannel(ctx context.Context, channel *storage.LiveActivityChannel) (*storage.LiveActivityChannel, bool, error) {
+	if s.createOrGetLAChannelFunc != nil {
+		return s.createOrGetLAChannelFunc(ctx, channel)
+	}
+	s.unused("CreateOrGetLAChannel")
+	return nil, false, errors.New("unexpected CreateOrGetLAChannel")
+}
+
+func (s *serverStoreStub) GetLAChannelByActivityID(ctx context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+	if s.getLAChannelFunc != nil {
+		return s.getLAChannelFunc(ctx, activityID)
+	}
+	s.unused("GetLAChannelByActivityID")
+	return nil, errors.New("unexpected GetLAChannelByActivityID")
+}
+
+func (s *serverStoreStub) DeleteLAChannel(ctx context.Context, activityID, channelID string) error {
+	if s.deleteLAChannelFunc != nil {
+		return s.deleteLAChannelFunc(ctx, activityID, channelID)
+	}
+	s.unused("DeleteLAChannel")
+	return errors.New("unexpected DeleteLAChannel")
+}
+
 func (s *serverStoreStub) CreateOrGetLAStartJob(ctx context.Context, job *storage.LiveActivityJob) (*storage.LiveActivityJob, bool, error) {
 	s.unused("CreateOrGetLAStartJob")
 	return nil, false, errors.New("unexpected CreateOrGetLAStartJob")
@@ -730,4 +1152,20 @@ func (s *serverStoreStub) SupersedeLADispatchIfStale(ctx context.Context, dispat
 func (s *serverStoreStub) Close() error {
 	s.unused("Close")
 	return errors.New("unexpected Close")
+}
+
+type serverLAChannelProvider struct {
+	channelID        string
+	deletedChannelID string
+	createError      error
+	deleteError      error
+}
+
+func (p *serverLAChannelProvider) CreateLiveActivityChannel(context.Context) (string, error) {
+	return p.channelID, p.createError
+}
+
+func (p *serverLAChannelProvider) DeleteLiveActivityChannel(_ context.Context, channelID string) error {
+	p.deletedChannelID = channelID
+	return p.deleteError
 }

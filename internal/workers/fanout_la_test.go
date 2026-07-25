@@ -20,8 +20,10 @@ type fanoutLAStoreStub struct {
 	statusUpdates []string
 	failedLAJobs  []string
 
-	tokenBatches   []*storage.LiveActivityTokenBatch
-	tokenBatchCall int
+	tokenBatches     []*storage.LiveActivityTokenBatch
+	tokenBatchErrors []error
+	tokenBatchCall   int
+	onTokenBatch     func(call int)
 
 	completedEnqueues []int
 	failedEnqueues    []int
@@ -54,6 +56,13 @@ func (s *fanoutLAStoreStub) FailLAJobIfActive(ctx context.Context, jobID string)
 }
 
 func (s *fanoutLAStoreStub) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*storage.LiveActivityTokenBatch, error) {
+	call := s.tokenBatchCall
+	if s.onTokenBatch != nil {
+		s.onTokenBatch(call)
+	}
+	if call < len(s.tokenBatchErrors) && s.tokenBatchErrors[call] != nil {
+		return nil, s.tokenBatchErrors[call]
+	}
 	if s.tokenBatchCall >= len(s.tokenBatches) {
 		return &storage.LiveActivityTokenBatch{}, nil
 	}
@@ -148,6 +157,37 @@ func TestFanoutLATokensDoesNotRunSupersedeChecksForStart(t *testing.T) {
 	}
 }
 
+func TestFanoutLAStartCarriesBroadcastChannelCapabilityToSendTask(t *testing.T) {
+	store := &fanoutLAStoreStub{
+		tokenBatches: []*storage.LiveActivityTokenBatch{{
+			Tokens: []storage.LiveActivityToken{{
+				ID:                        "start-token-1",
+				Token:                     "push-to-start-token",
+				Platform:                  model.APNS,
+				TokenType:                 model.LiveActivityTokenTypeStart,
+				SupportsBroadcastChannels: true,
+			}},
+		}},
+	}
+	job := laFanoutJob()
+	job.Action = model.LiveActivityActionStart
+
+	var emitted []model.LASendTask
+	err := FanoutLATokens(context.Background(), store, job, 10, func(ctx context.Context, task model.LASendTask) error {
+		emitted = append(emitted, task)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v", err)
+	}
+	if len(emitted) != 1 {
+		t.Fatalf("emitted tasks = %d, want 1", len(emitted))
+	}
+	if !emitted[0].SupportsBroadcastChannels {
+		t.Fatal("SupportsBroadcastChannels = false, want true")
+	}
+}
+
 func TestFanoutLATokensSkipsWhenSupersededBeforeFanout(t *testing.T) {
 	store := &fanoutLAStoreStub{
 		supersedeResults: []supersedeResult{{superseded: true}},
@@ -236,6 +276,144 @@ func TestFanoutLATokensCompletesWhenNotSuperseded(t *testing.T) {
 	}
 	if len(store.statusUpdates) != 1 || store.statusUpdates[0] != "IN_PROGRESS" {
 		t.Fatalf("status updates = %v, want [IN_PROGRESS]", store.statusUpdates)
+	}
+}
+
+func TestFanoutLATokensEnqueuesOneCountedChannelBeforeFirstTokenQuery(t *testing.T) {
+	var tasks []model.LASendTask
+	channelObservedBeforeTokenQuery := false
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{{superseded: false}, {superseded: false}},
+		tokenBatches:     []*storage.LiveActivityTokenBatch{laTokenBatch(false, "token-1")},
+		onTokenBatch: func(call int) {
+			if call == 0 {
+				channelObservedBeforeTokenQuery = len(tasks) == 1 &&
+					tasks[0].ChannelID == "apple-channel-id"
+			}
+		},
+	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
+
+	err := FanoutLATokens(context.Background(), store, job, 10, func(_ context.Context, task model.LASendTask) error {
+		tasks = append(tasks, task)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v", err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %d, want one channel and one token", len(tasks))
+	}
+	if tasks[0].ChannelID != "apple-channel-id" || tasks[0].Target.Platform != model.APNS {
+		t.Fatalf("first task = %+v, want channel task", tasks[0])
+	}
+	if tasks[1].Target.TokenID != "token-1" {
+		t.Fatalf("second task = %+v, want token task", tasks[1])
+	}
+	if !channelObservedBeforeTokenQuery {
+		t.Fatal("channel task must be enqueued before the first token query")
+	}
+	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 2 {
+		t.Fatalf("completed totals = %v, want [2]", store.completedEnqueues)
+	}
+}
+
+func TestFanoutLATokensKeepsChannelAttemptWhenLaterTokenQueryFails(t *testing.T) {
+	tokenQueryErr := errors.New("token query failed")
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{{}, {}, {}},
+		tokenBatches: []*storage.LiveActivityTokenBatch{
+			laTokenBatch(true, "token-1"),
+		},
+		tokenBatchErrors: []error{nil, tokenQueryErr},
+	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
+
+	var tasks []model.LASendTask
+	err := FanoutLATokens(context.Background(), store, job, 1, func(_ context.Context, task model.LASendTask) error {
+		tasks = append(tasks, task)
+		return nil
+	})
+
+	if !errors.Is(err, tokenQueryErr) {
+		t.Fatalf("FanoutLATokens error = %v, want token query failure", err)
+	}
+	if len(tasks) != 2 ||
+		tasks[0].ChannelID != "apple-channel-id" ||
+		tasks[1].Target.TokenID != "token-1" {
+		t.Fatalf("tasks = %+v, want channel followed by first token batch", tasks)
+	}
+	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 2 {
+		t.Fatalf("failed enqueues = %v, want channel and emitted token counted", store.failedEnqueues)
+	}
+}
+
+func TestFanoutLATokensCountsChannelInSubsequentSupersessionCheck(t *testing.T) {
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{
+			{},
+			{},
+			{superseded: true},
+		},
+		tokenBatches: []*storage.LiveActivityTokenBatch{
+			laTokenBatch(true, "t1", "t2"),
+		},
+	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
+
+	var tasks []model.LASendTask
+	err := FanoutLATokens(context.Background(), store, job, 2, func(_ context.Context, task model.LASendTask) error {
+		tasks = append(tasks, task)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v", err)
+	}
+	if len(tasks) != 3 || tasks[0].ChannelID != "apple-channel-id" {
+		t.Fatalf("tasks = %+v, want channel and first token batch", tasks)
+	}
+	wantSupersedeCalls := []int{0, 0, 3}
+	if len(store.supersedeCalls) != len(wantSupersedeCalls) {
+		t.Fatalf("supersede calls = %v, want %v", store.supersedeCalls, wantSupersedeCalls)
+	}
+	for i, want := range wantSupersedeCalls {
+		if store.supersedeCalls[i] != want {
+			t.Fatalf("supersede call %d emitted count = %d, want %d", i, store.supersedeCalls[i], want)
+		}
+	}
+	if len(store.completedEnqueues) != 0 {
+		t.Fatalf("completed enqueues = %v, want none for superseded dispatch", store.completedEnqueues)
+	}
+}
+
+func TestFanoutLATokensRecordsChannelEnqueueFailureAsNormalOutcome(t *testing.T) {
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{{superseded: false}, {superseded: false}},
+		tokenBatches:     []*storage.LiveActivityTokenBatch{{}},
+	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
+
+	err := FanoutLATokens(context.Background(), store, job, 10, func(_ context.Context, task model.LASendTask) error {
+		if task.ChannelID != "" {
+			return errors.New("channel queue closed")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v, want counted failure", err)
+	}
+	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 1 {
+		t.Fatalf("completed totals = %v, want [1]", store.completedEnqueues)
+	}
+	if len(store.appliedOutcomes) != 1 ||
+		len(store.appliedOutcomes[0]) != 1 ||
+		store.appliedOutcomes[0][0].Task.ChannelID != "apple-channel-id" ||
+		store.appliedOutcomes[0][0].Receipt.Status != model.DeliveryStatusFailed {
+		t.Fatalf("outcomes = %+v, want one normal failed LA outcome", store.appliedOutcomes)
 	}
 }
 

@@ -119,6 +119,23 @@ APNS_USE_SANDBOX=true
 
 Use `APNS_USE_SANDBOX=true` for development tokens and `false` for production tokens. Live Activities use the same bundle id with Apple-specific Live Activity push headers handled by Pushboy.
 
+Live Activity channels are available whenever APNS is configured. A channel is
+used only after the backend provisions an activity mapping and a capable client
+opts into channel-based starts. Channel management and broadcast publishing
+reuse the existing Live Activity APNs client and follow `APNS_USE_SANDBOX`;
+there is no separate channel worker or connection-pool configuration. Run
+separate Pushboy deployments for sandbox and production credentials, tokens,
+and channels.
+
+Allow outbound HTTP/2 and TLS connections to Apple's channel-management
+endpoint for the selected environment:
+
+- sandbox: `api-manage-broadcast.sandbox.push.apple.com:2195`;
+- production: `api-manage-broadcast.push.apple.com:2196`.
+
+Broadcast publishing continues to use the standard APNs sandbox or production
+endpoint on port `443`.
+
 ### FCM
 
 Download a Firebase service-account JSON file and place it at:

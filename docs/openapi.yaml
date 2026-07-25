@@ -338,6 +338,12 @@ paths:
           description: Topic deleted.
         "404":
           $ref: "#/components/responses/TextError"
+        "409":
+          description: Topic is still referenced by a Live Activity channel.
+          content:
+            text/plain:
+              schema:
+                type: string
         "500":
           $ref: "#/components/responses/TextError"
 
@@ -519,6 +525,85 @@ paths:
         "404":
           $ref: "#/components/responses/TextError"
 
+  /v1/live-activity/channels/{activityID}:
+    parameters:
+      - $ref: "#/components/parameters/ActivityID"
+    put:
+      tags: [LiveActivity]
+      summary: Provision an APNs Live Activity broadcast channel
+      description: |
+        Creates one no-storage APNs channel and binds it to the activityId and
+        topicId. Channel delivery applies to topic-scoped Live Activity jobs
+        with that same topicId; user-scoped jobs remain token-only. Once the
+        completed mapping is stored, repeating the same request is idempotent.
+        APNs channel creation has no idempotency key, so Pushboy never retries
+        the remote APNs create call after an error. After APNs returns a channel
+        ID, Pushboy retries an ambiguous local mapping write once through the
+        idempotent mapping operation. Reusing the activityId for another topic
+        returns 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisionLiveActivityChannelRequest"
+      responses:
+        "200":
+          description: The matching channel mapping already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityChannel"
+        "201":
+          description: Channel provisioned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityChannel"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "502":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+    get:
+      tags: [LiveActivity]
+      summary: Get the broadcast channel mapped to an activity
+      responses:
+        "200":
+          description: Channel mapping.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LiveActivityChannel"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [LiveActivity]
+      summary: Delete an activity's APNs broadcast channel
+      description: |
+        Deletes the channel at APNs and removes its local mapping. Clients
+        subscribed to that channel stop receiving channel broadcasts.
+      responses:
+        "204":
+          description: Channel and mapping deleted.
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "502":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+
   /v1/live-activity/jobs:
     post:
       tags: [LiveActivity]
@@ -608,6 +693,13 @@ components:
       schema:
         type: string
       example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+    ActivityID:
+      name: activityID
+      in: path
+      required: true
+      schema:
+        type: string
+      example: order-123
     Cursor:
       name: cursor
       in: query
@@ -930,6 +1022,15 @@ components:
         expiresAt:
           type: string
           format: date-time
+        supportsBroadcastChannels:
+          type: boolean
+          default: false
+          description: |
+            Set true only when this APNs push-to-start token belongs to an
+            iOS/iPadOS 18+ app build that implements and enables broadcast
+            channels and has the Apple capability provisioned. Runtime OS
+            availability alone is insufficient. The server rejects true for
+            APNs update tokens and all FCM tokens.
 
     DeleteLiveActivityTokenRequest:
       type: object
@@ -939,6 +1040,31 @@ components:
           type: string
         token:
           type: string
+
+    ProvisionLiveActivityChannelRequest:
+      type: object
+      required: [topicId]
+      properties:
+        topicId:
+          type: string
+          example: live-orders
+
+    LiveActivityChannel:
+      type: object
+      required: [activityId, topicId, channelId, createdAt]
+      properties:
+        activityId:
+          type: string
+          example: order-123
+        topicId:
+          type: string
+          example: live-orders
+        channelId:
+          type: string
+          description: Opaque channel identifier returned by APNs.
+        createdAt:
+          type: string
+          format: date-time
 
     LiveActivityOptions:
       type: object
@@ -1127,7 +1253,7 @@ components:
 
     LiveActivityToken:
       type: object
-      required: [ID, UserID, Platform, TokenType, Token, CreatedAt, LastSeenAt]
+      required: [ID, UserID, Platform, TokenType, Token, supportsBroadcastChannels, CreatedAt, LastSeenAt]
       properties:
         ID:
           type: string
@@ -1139,6 +1265,11 @@ components:
           $ref: "#/components/schemas/LiveActivityTokenType"
         Token:
           type: string
+        supportsBroadcastChannels:
+          type: boolean
+          description: |
+            Whether this APNs push-to-start token's client can subscribe the
+            resulting Live Activity to an APNs broadcast channel.
         CreatedAt:
           type: string
         LastSeenAt:

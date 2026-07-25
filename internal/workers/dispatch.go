@@ -75,6 +75,39 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 		return fmt.Errorf("live activity tokenId %s: %s", task.Target.TokenID, receipt.StatusReason)
 	}
 
+	request := &model.LiveActivityRequest{
+		Action:       task.LAJob.Action,
+		ActivityID:   task.LAJob.ActivityID,
+		ActivityType: task.LAJob.Activity,
+		Payload:      task.LAJob.Payload,
+		Options:      task.LAJob.Options,
+		CreatedAt:    task.LAJob.CreatedAt,
+	}
+
+	if task.ChannelID != "" {
+		channelDispatcher, ok := dispatcher.(dispatch.LiveActivityChannelDispatcher)
+		if !ok {
+			receipt.Status = model.DeliveryStatusFailed
+			receipt.StatusReason = "No live activity channel dispatcher configured for APNS"
+			pushToDLQ(ctx, model.LASendOutcome{Task: task, Receipt: receipt}, dlqPipeline)
+			return errors.New(receipt.StatusReason)
+		}
+		err := channelDispatcher.SendLiveActivityBroadcast(ctx, task.ChannelID, request)
+		if err != nil {
+			receipt.Status = model.DeliveryStatusFailed
+			receipt.StatusReason = err.Error()
+			pushToDLQ(ctx, model.LASendOutcome{
+				Task:           task,
+				Receipt:        receipt,
+				ProviderReason: providerReason(err),
+			}, dlqPipeline)
+			return fmt.Errorf("sending live activity broadcast for dispatch %s: %w", task.LAJob.DispatchID, err)
+		}
+		receipt.Status = model.DeliveryStatusSuccess
+		pushToDLQ(ctx, model.LASendOutcome{Task: task, Receipt: receipt}, dlqPipeline)
+		return nil
+	}
+
 	laDispatcher, ok := dispatcher.(dispatch.LiveActivityDispatcher)
 	if !ok {
 		receipt.Status = model.DeliveryStatusFailed
@@ -87,14 +120,17 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 		return fmt.Errorf("live activity tokenId %s: %s", task.Target.TokenID, receipt.StatusReason)
 	}
 
-	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, &model.LiveActivityRequest{
-		Action:       task.LAJob.Action,
-		ActivityID:   task.LAJob.ActivityID,
-		ActivityType: task.LAJob.Activity,
-		Payload:      task.LAJob.Payload,
-		Options:      task.LAJob.Options,
-		CreatedAt:    task.LAJob.CreatedAt,
-	})
+	if task.LAJob.Action == model.LiveActivityActionStart &&
+		task.Target.Platform == model.APNS &&
+		task.SupportsBroadcastChannels {
+		if task.LAJob.ChannelID != "" {
+			request.InputPushChannel = task.LAJob.ChannelID
+		} else {
+			request.RequestUpdateToken = true
+		}
+	}
+
+	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, request)
 	if err != nil {
 		receipt.Status = model.DeliveryStatusFailed
 		receipt.StatusReason = err.Error()
@@ -113,6 +149,14 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 	}
 	pushToDLQ[model.LASendOutcome](ctx, outcome, dlqPipeline)
 	return nil
+}
+
+func providerReason(err error) string {
+	var providerErr interface{ ProviderReason() string }
+	if errors.As(err, &providerErr) {
+		return providerErr.ProviderReason()
+	}
+	return ""
 }
 
 func pushToDLQ[O any](ctx context.Context, outcome O, dlqPipeline pipeline.Pipeline[O]) {

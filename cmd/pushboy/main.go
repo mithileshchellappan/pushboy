@@ -44,6 +44,7 @@ func main() {
 	// Initialize dispatchers - only add successfully created clients
 	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
 	laDispatchers := make(map[model.Platform]dispatch.Dispatcher)
+	var laChannelProvider service.LAChannelProvider
 
 	// Initialize APNS Client
 	if cfg.APNSKeyID != "" {
@@ -59,6 +60,7 @@ func main() {
 			laApnsClient := apns.NewClient(p8Bytes, cfg.APNSKeyID, cfg.APNSTeamID, cfg.APNSBundleID, cfg.APNSUseSandbox, cfg.APNSEndpoint, cfg.LAAPNSClientPool, cfg.LAAPNSMaxConcurrent, cfg.MaxRetryNotification)
 			dispatchers[model.APNS] = apnsClient
 			laDispatchers[model.APNS] = laApnsClient
+			laChannelProvider = laApnsClient
 			log.Println("APNS dispatcher initialized")
 		}
 	} else {
@@ -113,7 +115,11 @@ func main() {
 		}
 	}
 
-	pushboyService := service.NewPushBoyService(store, broadcastTopicID)
+	pushboyService := service.NewPushBoyService(
+		store,
+		broadcastTopicID,
+		service.WithLAChannels(laChannelProvider),
+	)
 
 	jobPipeline := pipeline.NewMemoryPipeline[model.JobItem](cfg.JobQueueSize)
 	taskPipeline := pipeline.NewMemoryPipeline[model.SendTask](cfg.TaskQueueSize)

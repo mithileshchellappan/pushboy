@@ -50,6 +50,40 @@ func TestGetLATokenBatchForDispatchDefersAssociationFilteringWhileStartPending(t
 	}
 }
 
+func TestGetLAStartTokenBatchReturnsBroadcastChannelCapability(t *testing.T) {
+	now := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	scenario := &liveActivityFanoutScenario{
+		scope: liveActivityDispatchFanoutScope{
+			action: model.LiveActivityActionStart,
+			userID: "user-1",
+		},
+		tokenRows: [][]driver.Value{{
+			"token-1",
+			"user-1",
+			string(model.APNS),
+			string(model.LiveActivityTokenTypeStart),
+			"push-to-start-token",
+			true,
+			now,
+			now,
+			nil,
+			nil,
+		}},
+	}
+	store := newLiveActivityFanoutTestStore(t, scenario)
+
+	batch, err := store.GetLATokenBatchForDispatch(context.Background(), "dispatch-start", "", 10)
+	if err != nil {
+		t.Fatalf("GetLATokenBatchForDispatch error = %v", err)
+	}
+	if len(batch.Tokens) != 1 {
+		t.Fatalf("tokens len = %d, want 1", len(batch.Tokens))
+	}
+	if !batch.Tokens[0].SupportsBroadcastChannels {
+		t.Fatal("SupportsBroadcastChannels = false, want true")
+	}
+}
+
 func TestGetLATokenBatchForDispatchRequiresAssociationAfterStartCompletes(t *testing.T) {
 	scenario := &liveActivityFanoutScenario{
 		scope: liveActivityDispatchFanoutScope{
@@ -173,6 +207,22 @@ func TestFailLADispatchEnqueueRecordsPartialCountWithoutOverwritingTerminalStatu
 	}
 }
 
+func TestCompleteLADispatchEnqueueKeepsJobActiveWhenStartHasNoTargets(t *testing.T) {
+	scenario := &liveActivityFanoutScenario{
+		emptyDispatchAction: model.LiveActivityActionStart,
+		emptyDispatchJobID:  "job-1",
+		jobStatus:           model.LiveActivityJobStatusActive,
+	}
+	store := newLiveActivityFanoutTestStore(t, scenario)
+
+	if err := store.CompleteLADispatchEnqueue(context.Background(), "dispatch-1", 0); err != nil {
+		t.Fatalf("CompleteLADispatchEnqueue error = %v", err)
+	}
+	if got := scenario.currentJobStatus(); got != model.LiveActivityJobStatusActive {
+		t.Fatalf("job status = %q, want %q", got, model.LiveActivityJobStatusActive)
+	}
+}
+
 type liveActivityFanoutScenario struct {
 	mu                  sync.Mutex
 	scope               liveActivityDispatchFanoutScope
@@ -181,6 +231,9 @@ type liveActivityFanoutScenario struct {
 	tokenQueries        []string
 	execQueries         []string
 	execRowsAffected    int64
+	emptyDispatchAction model.LiveActivityAction
+	emptyDispatchJobID  string
+	jobStatus           model.LiveActivityJobStatus
 }
 
 func (s *liveActivityFanoutScenario) lastExecQuery() string {
@@ -190,6 +243,12 @@ func (s *liveActivityFanoutScenario) lastExecQuery() string {
 		return ""
 	}
 	return s.execQueries[len(s.execQueries)-1]
+}
+
+func (s *liveActivityFanoutScenario) currentJobStatus() model.LiveActivityJobStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.jobStatus
 }
 
 func (s *liveActivityFanoutScenario) tokenQueryKinds() []string {
@@ -234,6 +293,7 @@ func liveActivityFanoutTokenRows(t *testing.T) [][]driver.Value {
 			string(model.FCM),
 			string(model.LiveActivityTokenTypeUpdate),
 			"fcm-token",
+			false,
 			now,
 			now,
 			nil,
@@ -270,6 +330,16 @@ func (c *liveActivityFanoutConn) Begin() (driver.Tx, error) {
 
 func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	switch {
+	case strings.Contains(query, "UPDATE live_activity_dispatches") &&
+		strings.Contains(query, "RETURNING action, live_activity_job_id"):
+		c.scenario.mu.Lock()
+		action := c.scenario.emptyDispatchAction
+		jobID := c.scenario.emptyDispatchJobID
+		c.scenario.mu.Unlock()
+		return &liveActivityFanoutRows{
+			columns: []string{"action", "live_activity_job_id"},
+			values:  [][]driver.Value{{string(action), jobID}},
+		}, nil
 	case strings.Contains(query, "SELECT lad.action") && strings.Contains(query, "start_dispatch_pending"):
 		if !strings.Contains(query, "'ENQUEUE_PENDING'") {
 			return nil, fmt.Errorf("start-pending query ignores dispatches accepted by the API but not yet promoted to QUEUED: %s", query)
@@ -310,7 +380,7 @@ func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string,
 			values = nil
 		}
 		return &liveActivityFanoutRows{
-			columns: []string{"id", "user_id", "platform", "token_type", "token", "created_at", "last_seen_at", "expires_at", "invalidated_at"},
+			columns: []string{"id", "user_id", "platform", "token_type", "token", "supports_broadcast_channels", "created_at", "last_seen_at", "expires_at", "invalidated_at"},
 			values:  values,
 		}, nil
 	default:
@@ -319,6 +389,14 @@ func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string,
 }
 
 func (c *liveActivityFanoutConn) ExecContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Result, error) {
+	if strings.Contains(query, "UPDATE live_activity_jobs") &&
+		strings.Contains(query, "SET status = 'FAILED'") {
+		c.scenario.mu.Lock()
+		c.scenario.jobStatus = model.LiveActivityJobStatusFailed
+		c.scenario.mu.Unlock()
+		return driver.RowsAffected(1), nil
+	}
+
 	if !strings.Contains(query, "UPDATE live_activity_dispatches") ||
 		(!strings.Contains(query, "SUPERSEDED") &&
 			!strings.Contains(query, "status = 'FAILED'") &&

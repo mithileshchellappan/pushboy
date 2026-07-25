@@ -35,43 +35,69 @@ func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIte
 	}
 
 	cursor := ""
-	totalTokenCount := 0
+	totalTargetCount := 0
 	totalFailedOutcomes := make([]model.LASendOutcome, 0)
+	channelPending := job.ChannelID != "" &&
+		job.Action != model.LiveActivityActionStart
 	for {
 		if job.Action == model.LiveActivityActionUpdate {
-			superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, totalTokenCount)
+			superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, totalTargetCount)
 			if err != nil {
 				return failLADispatchFanout(
 					ctx,
 					store,
 					job,
-					totalTokenCount,
+					totalTargetCount,
 					totalFailedOutcomes,
-					fmt.Errorf("error checking supersede state for dispatch %s after %d emitted tasks: %w", job.DispatchID, totalTokenCount, err),
+					fmt.Errorf("error checking supersede state for dispatch %s after %d emitted tasks: %w", job.DispatchID, totalTargetCount, err),
 				)
 			}
 			if superseded {
-				log.Printf("LA dispatch %s superseded by newer update after %d emitted tasks, skipping rest", job.DispatchID, totalTokenCount)
+				log.Printf("LA dispatch %s superseded by newer update after %d emitted tasks, skipping rest", job.DispatchID, totalTargetCount)
 				return applyLAEnqueueFailures(ctx, store, totalFailedOutcomes)
 			}
 		}
+
+		if channelPending {
+			channelTask := model.LASendTask{
+				Target: model.SendTarget{
+					Platform: model.APNS,
+				},
+				LAJob:     &job,
+				ChannelID: job.ChannelID,
+			}
+			totalTargetCount++
+			channelPending = false
+			if err := emit(ctx, channelTask); err != nil {
+				totalFailedOutcomes = append(totalFailedOutcomes, model.LASendOutcome{
+					Task: channelTask,
+					Receipt: model.DeliveryReceipt{
+						JobID:        job.DispatchID,
+						Status:       model.DeliveryStatusFailed,
+						StatusReason: "channel task enqueue failed",
+						DispatchedAt: time.Now().UTC(),
+					},
+				})
+			}
+		}
+
 		batch, err := store.GetLATokenBatchForDispatch(ctx, job.DispatchID, cursor, batchSize)
 		if err != nil {
-			return failLADispatchFanout(ctx, store, job, totalTokenCount, totalFailedOutcomes, fmt.Errorf("error fetching live activity tokens: %w", err))
+			return failLADispatchFanout(ctx, store, job, totalTargetCount, totalFailedOutcomes, fmt.Errorf("error fetching live activity tokens: %w", err))
 		}
 
 		outcomes := pushLATokensToPipeline(ctx, batch, emit, &job)
 		totalFailedOutcomes = append(totalFailedOutcomes, outcomes...)
 
-		totalTokenCount += len(batch.Tokens)
+		totalTargetCount += len(batch.Tokens)
 		if !batch.HasMore {
 			break
 		}
 		cursor = batch.NextCursor
 	}
 
-	if err := store.CompleteLADispatchEnqueue(ctx, job.DispatchID, totalTokenCount); err != nil {
-		return failLADispatchFanout(ctx, store, job, totalTokenCount, totalFailedOutcomes, fmt.Errorf("error completing live activity dispatch enqueue: %w", err))
+	if err := store.CompleteLADispatchEnqueue(ctx, job.DispatchID, totalTargetCount); err != nil {
+		return failLADispatchFanout(ctx, store, job, totalTargetCount, totalFailedOutcomes, fmt.Errorf("error completing live activity dispatch enqueue: %w", err))
 	}
 
 	return applyLAEnqueueFailures(ctx, store, totalFailedOutcomes)
@@ -81,12 +107,12 @@ func failLADispatchFanout(
 	ctx context.Context,
 	store storage.Store,
 	job model.LAJobItem,
-	totalTokenCount int,
+	totalTargetCount int,
 	failedOutcomes []model.LASendOutcome,
 	cause error,
 ) error {
 	errs := []error{cause}
-	if err := store.FailLADispatchEnqueue(ctx, job.DispatchID, totalTokenCount); err != nil {
+	if err := store.FailLADispatchEnqueue(ctx, job.DispatchID, totalTargetCount); err != nil {
 		errs = append(errs, err)
 	}
 	if err := applyLAEnqueueFailures(ctx, store, failedOutcomes); err != nil {
@@ -128,6 +154,8 @@ func pushLATokensToPipeline(ctx context.Context, batch *storage.LiveActivityToke
 				Platform: token.Platform,
 			},
 			LAJob: job,
+
+			SupportsBroadcastChannels: token.SupportsBroadcastChannels,
 		}
 		if err := emit(ctx, task); err != nil {
 			log.Printf("Error adding LA task to pipeline for dispatch %s token %s: %v", job.DispatchID, token.ID, err)

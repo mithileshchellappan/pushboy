@@ -40,6 +40,7 @@ func scanLAToken(scanner interface{ Scan(dest ...any) error }, token *LiveActivi
 		&platform,
 		&tokenType,
 		&token.Token,
+		&token.SupportsBroadcastChannels,
 		&token.CreatedAt,
 		&token.LastSeenAt,
 		&expiresAt,
@@ -144,7 +145,7 @@ func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *Live
 		token.CreatedAt = token.CreatedAt.UTC()
 	}
 	token.LastSeenAt = now
-	activityID := strings.TrimSpace(token.ActivityID)
+	activityID := token.ActivityID
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -155,21 +156,23 @@ func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *Live
 	row := tx.QueryRowContext(
 		ctx,
 		`INSERT INTO live_activity_tokens(
-			id, user_id, platform, token_type, token, created_at, last_seen_at, expires_at, invalidated_at
+			id, user_id, platform, token_type, token, supports_broadcast_channels, created_at, last_seen_at, expires_at, invalidated_at
 		)
-		VALUES($1, $2, $3, $4, $5, $6, $7, $8, NULL)
+		VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL)
 		ON CONFLICT (platform, token_type, token)
 		DO UPDATE SET
 			user_id = EXCLUDED.user_id,
+			supports_broadcast_channels = EXCLUDED.supports_broadcast_channels,
 			last_seen_at = EXCLUDED.last_seen_at,
 			expires_at = EXCLUDED.expires_at,
 			invalidated_at = NULL
-		RETURNING id, user_id, platform, token_type, token, created_at, last_seen_at, expires_at, invalidated_at`,
+		RETURNING id, user_id, platform, token_type, token, supports_broadcast_channels, created_at, last_seen_at, expires_at, invalidated_at`,
 		token.ID,
 		token.UserID,
 		token.Platform,
 		token.TokenType,
 		token.Token,
+		token.SupportsBroadcastChannels,
 		token.CreatedAt,
 		token.LastSeenAt,
 		optionalTime(token.ExpiresAt),
@@ -791,14 +794,18 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 	}
 	defer tx.Rollback()
 
-	deltas, invalidTokenIDs := summarizeLAOutcomes(outcomes)
+	deltas, invalidTokenIDs, staleChannels := summarizeLAOutcomes(outcomes)
 	if err := invalidateLATokensTx(ctx, tx, invalidTokenIDs); err != nil {
+		return err
+	}
+	if err := deleteStaleLAChannelsTx(ctx, tx, staleChannels); err != nil {
 		return err
 	}
 
 	lastSeenAt := time.Now().UTC()
 	for _, outcome := range outcomes {
 		if outcome.Receipt.Status != model.DeliveryStatusSuccess ||
+			outcome.Task.ChannelID != "" ||
 			outcome.Task.LAJob.Action != model.LiveActivityActionStart ||
 			outcome.Task.LAJob.ActivityID == "" ||
 			outcome.Task.Target.Platform != model.FCM ||
@@ -839,10 +846,6 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 	}
 
 	switch action {
-	case string(model.LiveActivityActionStart):
-		if err := s.FailLAJobIfActive(ctx, jobID); err != nil && !errors.Is(err, Errors.NotFound) {
-			return fmt.Errorf("error failing empty LA start job: %w", err)
-		}
 	case string(model.LiveActivityActionEnd):
 		if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC()); err != nil && !errors.Is(err, Errors.NotFound) {
 			return fmt.Errorf("error closing empty LA end job: %w", err)
@@ -851,9 +854,19 @@ func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID 
 	return nil
 }
 
-func summarizeLAOutcomes(outcomes []model.LASendOutcome) (map[string]laOutcomeDelta, map[string]struct{}) {
+type laChannelMapping struct {
+	activityID string
+	channelID  string
+}
+
+func summarizeLAOutcomes(outcomes []model.LASendOutcome) (
+	map[string]laOutcomeDelta,
+	map[string]struct{},
+	map[laChannelMapping]struct{},
+) {
 	deltas := make(map[string]laOutcomeDelta)
 	invalidTokenIDs := make(map[string]struct{})
+	staleChannels := make(map[laChannelMapping]struct{})
 
 	for _, outcome := range outcomes {
 		dispatchID := outcome.Receipt.JobID
@@ -863,14 +876,23 @@ func summarizeLAOutcomes(outcomes []model.LASendOutcome) (map[string]laOutcomeDe
 			delta.success++
 		case model.DeliveryStatusFailed:
 			delta.failure++
-			if isLAInvalidToken(outcome.Receipt.StatusReason) {
+			if outcome.Task.ChannelID == "" && isLAInvalidToken(outcome.Receipt.StatusReason) {
 				invalidTokenIDs[outcome.Receipt.TokenID] = struct{}{}
+			}
+			if outcome.Task.ChannelID != "" &&
+				outcome.ProviderReason == "ChannelNotRegistered" &&
+				outcome.Task.LAJob != nil &&
+				outcome.Task.LAJob.ActivityID != "" {
+				staleChannels[laChannelMapping{
+					activityID: outcome.Task.LAJob.ActivityID,
+					channelID:  outcome.Task.ChannelID,
+				}] = struct{}{}
 			}
 		}
 		deltas[dispatchID] = delta
 	}
 
-	return deltas, invalidTokenIDs
+	return deltas, invalidTokenIDs, staleChannels
 }
 
 func invalidateLATokensTx(ctx context.Context, tx *sql.Tx, invalidTokenIDs map[string]struct{}) error {
@@ -891,6 +913,26 @@ func invalidateLATokensTx(ctx context.Context, tx *sql.Tx, invalidTokenIDs map[s
 		pq.Array(tokenIDs),
 	); err != nil {
 		return fmt.Errorf("error invalidating LA tokens: %w", err)
+	}
+	return nil
+}
+
+func deleteStaleLAChannelsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	channels map[laChannelMapping]struct{},
+) error {
+	for channel := range channels {
+		if _, err := tx.ExecContext(
+			ctx,
+			`DELETE FROM live_activity_channels
+			 WHERE activity_id = $1
+			   AND channel_id = $2`,
+			channel.activityID,
+			channel.channelID,
+		); err != nil {
+			return fmt.Errorf("error deleting stale live activity channel: %w", err)
+		}
 	}
 	return nil
 }
@@ -990,7 +1032,7 @@ func (s *PostgresStore) InvalidateExpiredLAUpdateTokens(ctx context.Context, lim
 }
 
 const laTokenBatchByActivityAndUserQuery = `
-       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_token_activities lata
        JOIN live_activity_tokens lat ON lat.id = lata.token_id
@@ -1004,7 +1046,7 @@ const laTokenBatchByActivityAndUserQuery = `
        LIMIT $4`
 
 const laTokenBatchByActivityAndTopicQuery = `
-       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_token_activities lata
        JOIN live_activity_tokens lat ON lat.id = lata.token_id
@@ -1020,7 +1062,7 @@ const laTokenBatchByActivityAndTopicQuery = `
        LIMIT $4`
 
 const laTokenBatchByUserQuery = `
-       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_tokens lat
        WHERE lat.user_id = $1
@@ -1035,7 +1077,7 @@ const laTokenBatchByUserQuery = `
        LIMIT $4`
 
 const laTokenBatchByTopicQuery = `
-       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token,
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_tokens lat
        JOIN live_activity_user_topic_subscriptions sub

@@ -25,9 +25,10 @@ type LADispatchRequest struct {
 }
 
 type LADispatchResult struct {
-	Job      *storage.LiveActivityJob
-	Dispatch *storage.LiveActivityDispatch
-	Status   string
+	Job       *storage.LiveActivityJob
+	Dispatch  *storage.LiveActivityDispatch
+	Status    string
+	ChannelID string
 }
 
 const defaultLAJobLifetime = 8 * time.Hour
@@ -56,15 +57,16 @@ func laExpired(expiresAt *time.Time, now time.Time) bool {
 	return !expiresAt.After(now)
 }
 
-func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string, activityID string) (*storage.LiveActivityToken, *storage.User, error) {
+func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, platform model.Platform, tokenType model.LiveActivityTokenType, tokenValue string, topicID string, expiresAt string, activityID string, supportsBroadcastChannels bool) (*storage.LiveActivityToken, *storage.User, error) {
 	if userID == "" {
 		return nil, nil, fmt.Errorf("userId is required")
 	}
 	if tokenValue == "" {
 		return nil, nil, fmt.Errorf("token is required")
 	}
-	activityID = strings.TrimSpace(activityID)
-
+	if supportsBroadcastChannels && (platform != model.APNS || tokenType != model.LiveActivityTokenTypeStart) {
+		return nil, nil, fmt.Errorf("supportsBroadcastChannels is only valid for APNS start tokens")
+	}
 	now := time.Now().UTC()
 	expiryTime, err := parseLAExpiry(expiresAt, now)
 	if err != nil {
@@ -113,6 +115,8 @@ func (s *PushboyService) RegisterLAToken(ctx context.Context, userID string, pla
 		ExpiresAt:  expiryTime,
 		CreatedAt:  now,
 		LastSeenAt: now,
+
+		SupportsBroadcastChannels: supportsBroadcastChannels,
 	}
 
 	stored, err := s.store.UpsertLiveActivityToken(ctx, token)
@@ -268,6 +272,11 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		ExpiresAt:     expiryTime,
 	}
 
+	channelID, err := s.laChannelID(ctx, job)
+	if err != nil {
+		return nil, err
+	}
+
 	storedJob, created, err := s.store.CreateOrGetLAStartJob(ctx, job)
 	if err != nil {
 		return nil, err
@@ -288,9 +297,10 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 	}
 
 	return &LADispatchResult{
-		Job:      storedJob,
-		Dispatch: dispatch,
-		Status:   "started",
+		Job:       storedJob,
+		Dispatch:  dispatch,
+		Status:    "started",
+		ChannelID: channelID,
 	}, nil
 }
 
@@ -318,6 +328,11 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 		return nil, storage.Errors.NotFound
 	}
 
+	channelID, err := s.laChannelID(ctx, job)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := s.store.UpdateLAJobPayloadIfActive(ctx, job.ID, req.Payload, req.Options, now); err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			return nil, storage.Errors.NotFound
@@ -334,9 +349,10 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 	}
 
 	return &LADispatchResult{
-		Job:      job,
-		Dispatch: dispatch,
-		Status:   "updated",
+		Job:       job,
+		Dispatch:  dispatch,
+		Status:    "updated",
+		ChannelID: channelID,
 	}, nil
 }
 
@@ -370,19 +386,32 @@ func (s *PushboyService) createLAEnd(ctx context.Context, req LADispatchRequest,
 		}, nil
 	}
 
+	channelID, err := s.laChannelID(ctx, job)
+	if err != nil {
+		return nil, err
+	}
+
 	dispatch, err := s.createLADispatchRow(ctx, job, req.Action, req.Payload, req.Options, now)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LADispatchResult{
-		Job:      job,
-		Dispatch: dispatch,
-		Status:   "ended",
+		Job:       job,
+		Dispatch:  dispatch,
+		Status:    "ended",
+		ChannelID: channelID,
 	}, nil
 }
 
-func (s *PushboyService) createLADispatchRow(ctx context.Context, job *storage.LiveActivityJob, action model.LiveActivityAction, payload json.RawMessage, options json.RawMessage, now time.Time) (*storage.LiveActivityDispatch, error) {
+func (s *PushboyService) createLADispatchRow(
+	ctx context.Context,
+	job *storage.LiveActivityJob,
+	action model.LiveActivityAction,
+	payload json.RawMessage,
+	options json.RawMessage,
+	now time.Time,
+) (*storage.LiveActivityDispatch, error) {
 	dispatchPayload := payload
 	dispatchPayloadText := strings.TrimSpace(string(dispatchPayload))
 	if dispatchPayloadText == "" || dispatchPayloadText == "null" {
@@ -403,4 +432,24 @@ func (s *PushboyService) createLADispatchRow(ctx context.Context, job *storage.L
 		CreatedAt:         now,
 	}
 	return s.store.CreateLADispatch(ctx, dispatch)
+}
+
+func (s *PushboyService) laChannelID(
+	ctx context.Context,
+	job *storage.LiveActivityJob,
+) (string, error) {
+	if job.TopicID == "" {
+		return "", nil
+	}
+	channel, err := s.store.GetLAChannelByActivityID(ctx, job.ActivityID)
+	if errors.Is(err, storage.Errors.NotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrLAChannelLookupFailed, err)
+	}
+	if channel.TopicID != job.TopicID {
+		return "", nil
+	}
+	return channel.ChannelID, nil
 }

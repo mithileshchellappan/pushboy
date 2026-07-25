@@ -97,6 +97,8 @@ type LiveActivityToken struct {
 	LastSeenAt    time.Time
 	ExpiresAt     *time.Time
 	InvalidatedAt *time.Time
+
+	SupportsBroadcastChannels bool
 }
 
 type LiveActivityUserTopicSubscription struct {
@@ -104,6 +106,13 @@ type LiveActivityUserTopicSubscription struct {
 	UserID    string
 	TopicID   string
 	CreatedAt time.Time
+}
+
+type LiveActivityChannel struct {
+	ActivityID string
+	TopicID    string
+	ChannelID  string
+	CreatedAt  time.Time
 }
 
 type LiveActivityJob struct {
@@ -197,6 +206,9 @@ type Store interface {
 	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
 	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
 	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
+	CreateOrGetLAChannel(ctx context.Context, channel *LiveActivityChannel) (*LiveActivityChannel, bool, error)
+	GetLAChannelByActivityID(ctx context.Context, activityID string) (*LiveActivityChannel, error)
+	DeleteLAChannel(ctx context.Context, activityID, channelID string) error
 	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
 	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
 	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
@@ -222,10 +234,12 @@ type Store interface {
 
 type errorCollection struct {
 	AlreadyExists error
+	Conflict      error
 	NotFound      error
 }
 
 var Errors = errorCollection{
 	AlreadyExists: errors.New("resource already exists"),
+	Conflict:      errors.New("resource is in use"),
 	NotFound:      errors.New("resource not found"),
 }

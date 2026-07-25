@@ -16,10 +16,18 @@ import (
 type PushboyService struct {
 	store            storage.Store
 	broadcastTopicID string // ID of the broadcast topic (all users auto-subscribe)
+
+	laChannelProvider LAChannelProvider
 }
 
-func NewPushBoyService(s storage.Store, broadcastTopicID string) *PushboyService {
-	return &PushboyService{store: s, broadcastTopicID: broadcastTopicID}
+type Option func(*PushboyService)
+
+func NewPushBoyService(s storage.Store, broadcastTopicID string, options ...Option) *PushboyService {
+	service := &PushboyService{store: s, broadcastTopicID: broadcastTopicID}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 // parseScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future.
