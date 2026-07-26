@@ -189,6 +189,8 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, storage.Errors.NotFound):
 			http.Error(w, "Live activity job not found", http.StatusNotFound)
+		case errors.Is(err, service.ErrLAChannelConflict):
+			http.Error(w, "Live activity channel topic conflict", http.StatusConflict)
 		case errors.Is(err, service.ErrLAChannelLookupFailed):
 			http.Error(w, "Live activity channel lookup failed", http.StatusInternalServerError)
 		default:

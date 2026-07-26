@@ -319,6 +319,58 @@ func TestFanoutLATokensEnqueuesOneCountedChannelBeforeFirstTokenQuery(t *testing
 	}
 }
 
+func TestFanoutLAUpdateKeepsChannelAPNSAndFCMTokenTargets(t *testing.T) {
+	store := &fanoutLAStoreStub{
+		supersedeResults: []supersedeResult{{}, {}},
+		tokenBatches: []*storage.LiveActivityTokenBatch{{
+			Tokens: []storage.LiveActivityToken{
+				{
+					ID:       "apns-token",
+					Token:    "apns-token-value",
+					Platform: model.APNS,
+				},
+				{
+					ID:       "fcm-token",
+					Token:    "fcm-token-value",
+					Platform: model.FCM,
+				},
+			},
+		}},
+	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
+
+	var tasks []model.LASendTask
+	err := FanoutLATokens(
+		context.Background(),
+		store,
+		job,
+		10,
+		func(_ context.Context, task model.LASendTask) error {
+			tasks = append(tasks, task)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("FanoutLATokens error = %v", err)
+	}
+	if len(tasks) != 3 {
+		t.Fatalf("tasks = %d, want channel plus APNS and FCM tokens", len(tasks))
+	}
+	if tasks[0].ChannelID != "apple-channel-id" || tasks[0].Target.Platform != model.APNS {
+		t.Fatalf("first task = %+v, want APNS channel", tasks[0])
+	}
+	if tasks[1].Target.TokenID != "apns-token" || tasks[1].Target.Platform != model.APNS {
+		t.Fatalf("second task = %+v, want direct APNS token", tasks[1])
+	}
+	if tasks[2].Target.TokenID != "fcm-token" || tasks[2].Target.Platform != model.FCM {
+		t.Fatalf("third task = %+v, want FCM token", tasks[2])
+	}
+	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 3 {
+		t.Fatalf("completed totals = %v, want [3]", store.completedEnqueues)
+	}
+}
+
 func TestFanoutLATokensKeepsChannelAttemptWhenLaterTokenQueryFails(t *testing.T) {
 	tokenQueryErr := errors.New("token query failed")
 	store := &fanoutLAStoreStub{

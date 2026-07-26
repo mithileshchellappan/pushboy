@@ -206,7 +206,7 @@ type Store interface {
 	UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error)
 	InvalidateLiveActivityToken(ctx context.Context, userID string, tokenValue string) error
 	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
-	CreateOrGetLAChannel(ctx context.Context, channel *LiveActivityChannel) (*LiveActivityChannel, bool, error)
+	EnsureLAChannel(ctx context.Context, activityID, topicID string, create func(context.Context) (string, error)) (*LiveActivityChannel, bool, error)
 	GetLAChannelByActivityID(ctx context.Context, activityID string) (*LiveActivityChannel, error)
 	DeleteLAChannel(ctx context.Context, activityID, channelID string) error
 	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)

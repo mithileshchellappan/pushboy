@@ -532,15 +532,24 @@ paths:
       tags: [LiveActivity]
       summary: Provision an APNs Live Activity broadcast channel
       description: |
-        Creates one no-storage APNs channel and binds it to the activityId and
-        topicId. Channel delivery applies to topic-scoped Live Activity jobs
-        with that same topicId; user-scoped jobs remain token-only. Once the
-        completed mapping is stored, repeating the same request is idempotent.
-        APNs channel creation has no idempotency key, so Pushboy never retries
-        the remote APNs create call after an error. After APNs returns a channel
-        ID, Pushboy retries an ambiguous local mapping write once through the
-        idempotent mapping operation. Reusing the activityId for another topic
-        returns 409.
+        Explicitly ensures one no-storage APNs channel and binds it to the
+        activityId and topicId. This uses the same PostgreSQL advisory-lock
+        path as lazy topic-scoped starts. Same-activity callers wait for the
+        creator and reuse its stored mapping without another APNs call;
+        different activity IDs remain concurrent. Channel delivery applies to
+        topic-scoped Live Activity jobs with the same topicId; user-scoped jobs
+        remain token-only. Reusing the activityId for another topic returns
+        409.
+
+        The identifiers are opaque and are matched without normalization.
+        APNs channel creation has no idempotency key. The lock prevents
+        duplicate creates for successful, unambiguous requests, but exactly-once
+        creation is not guaranteed if APNs succeeds and its response or the
+        database commit result is ambiguous. Provider, lock, and persistence
+        failures are returned to the caller; unlike lazy start, this endpoint
+        does not fall back to token-only behavior. If APNs fails, queued
+        same-activity callers retry serially because no mapping winner exists;
+        each attempt holds a database transaction and connection.
       requestBody:
         required: true
         content:
@@ -549,13 +558,15 @@ paths:
               $ref: "#/components/schemas/ProvisionLiveActivityChannelRequest"
       responses:
         "200":
-          description: The matching channel mapping already exists.
+          description: |
+            The matching channel mapping already existed, or this caller
+            waited for and reused a concurrent creator's mapping.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/LiveActivityChannel"
         "201":
-          description: Channel provisioned.
+          description: This caller created and stored the channel mapping.
           content:
             application/json:
               schema:
@@ -608,6 +619,24 @@ paths:
     post:
       tags: [LiveActivity]
       summary: Start, update, or end a Live Activity
+      description: |
+        The request and response shapes are unchanged by broadcast channels.
+        Before creating a topic-scoped start job, Pushboy lazily ensures the
+        activityId-to-topicId channel mapping through the same locked operation
+        as the channel PUT endpoint. Channel provider, lock, and persistence
+        failures are logged and the start continues token-only. A mapping to a
+        different topic, or an existing job for another scope, returns 409
+        before APNs channel creation. User-scoped starts never create channels.
+        Concurrent same-activity failures retry APNs serially while holding a
+        database transaction and connection; no cooldown or provisioning state
+        is added.
+
+        Updates publish to a matching channel and retain the existing direct
+        APNs-token and Android FCM fanout. If channel mapping lookup fails,
+        updates log the error and continue that token fanout. Ends fail before
+        dispatch on a mapping lookup error so callers can retry instead of
+        leaving channel activities open. A missing mapping is normal token-only
+        behavior for both actions.
       requestBody:
         required: true
         content:
@@ -658,6 +687,14 @@ paths:
           $ref: "#/components/responses/TextError"
         "404":
           $ref: "#/components/responses/TextError"
+        "409":
+          description: |
+            The activityId already has a channel mapping or start job for
+            another topic or user scope.
+          content:
+            text/plain:
+              schema:
+                type: string
         "500":
           $ref: "#/components/responses/TextError"
         "503":
@@ -697,6 +734,7 @@ components:
       name: activityID
       in: path
       required: true
+      description: Opaque product activity identifier; matching is exact.
       schema:
         type: string
       example: order-123
@@ -1047,6 +1085,7 @@ components:
       properties:
         topicId:
           type: string
+          description: Opaque topic identifier; matching is exact.
           example: live-orders
 
     LiveActivityChannel:
@@ -1055,9 +1094,11 @@ components:
       properties:
         activityId:
           type: string
+          description: Opaque product activity identifier; matching is exact.
           example: order-123
         topicId:
           type: string
+          description: Opaque topic identifier; matching is exact.
           example: live-orders
         channelId:
           type: string
@@ -1131,6 +1172,7 @@ components:
           $ref: "#/components/schemas/LiveActivityAction"
         activityId:
           type: string
+          description: Opaque product activity identifier; matching is exact.
         activityType:
           type: string
         userId:

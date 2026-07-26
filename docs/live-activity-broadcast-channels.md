@@ -27,7 +27,7 @@ Before using broadcast channels:
    sandbox/production environment used by the client.
 
 No separate feature flag is required. Channel delivery is selected by
-provisioning an activity mapping and registering channel-capable start tokens.
+using a topic-scoped start and registering channel-capable start tokens.
 
 Channel IDs are opaque and environment-specific. Run separate Pushboy
 deployments for sandbox and production; do not mix their credentials, tokens,
@@ -44,21 +44,31 @@ Pushboy owns channel creation. The product backend supplies:
 - `topicId`: the Pushboy topic whose audience follows that event.
 
 Channel delivery applies to topic-scoped Live Activity jobs whose `topicId`
-matches this mapping. User-scoped jobs keep the existing direct-token path.
+matches this mapping. On the first topic-scoped start, Pushboy lazily creates
+the channel mapping before it creates the Live Activity job. User-scoped starts
+never create channels and keep the existing direct-token path.
 
-Provision one channel for the pair before starting the event:
+The backend normally starts the event through the existing job endpoint; there
+is no new request field or response field:
 
 ```http
-PUT /v1/live-activity/channels/match-2026-final
+POST /v1/live-activity/jobs
 Content-Type: application/json
 
 {
-  "topicId": "football"
+  "action": "start",
+  "activityId": "match-2026-final",
+  "activityType": "MatchAttributes",
+  "topicId": "football",
+  "payload": {
+    "status": "scheduled"
+  }
 }
 ```
 
-Pushboy creates an APNs channel with the fixed `no-storage` policy and stores
-only the completed mapping:
+Pushboy ensures one APNs channel with the fixed `no-storage` policy and stores
+only the completed mapping. The mapping remains available through the channel
+API:
 
 ```json
 {
@@ -69,25 +79,57 @@ only the completed mapping:
 }
 ```
 
-Once Pushboy has stored the completed mapping, repeating the same `activityId`
-and `topicId` is idempotent. APNs channel creation has no idempotency key, so
-Pushboy never retries the remote APNs create call after an error. After APNs
-returns a channel ID, Pushboy retries an ambiguous local mapping write once
-through the idempotent mapping operation. Reusing the `activityId` with another
-topic returns `409`.
+Channel creation is serialized across Pushboy instances with a PostgreSQL
+transaction advisory lock scoped to `activityId`. Same-activity callers wait,
+then reuse the stored winner without calling APNs. Different activity IDs do
+not block each other. Start-job creation uses the same lock and rejects a
+channel or job for another scope before either record is written. Reusing an
+`activityId` with another topic returns `409` without calling APNs.
+
+The identifiers are opaque. Pushboy does not trim or otherwise normalize
+`activityId`, `topicId`, or the APNs `channelId`; every caller must use the
+same exact values for later starts, updates, ends, and lookups.
+
+If lazy channel creation fails because of APNs, locking, or mapping persistence,
+Pushboy logs the failure and continues creating the start job without a
+channel. Channel-capable clients then receive the existing
+`input-push-token: 1` fallback. A conflicting activity-to-topic mapping is not
+safe to ignore: the start returns `409` and no job is created.
+
+When APNs creation fails, there is no stored winner for queued same-activity
+callers to reuse. Each waiter acquires the lock in turn and retries APNs while
+holding a database transaction and connection. This intentionally simple
+behavior can amplify provider latency and pool occupancy during a failure wave;
+benchmark it for the deployment's expected start concurrency. Pushboy does not
+add a cooldown row or provisioning state to hide that tradeoff.
 
 The management endpoints are:
 
-- `PUT /v1/live-activity/channels/{activityID}` to create or return a mapping;
+- `PUT /v1/live-activity/channels/{activityID}` to explicitly ensure or return
+  a mapping, for example before mediating a client-initiated manual start;
 - `GET /v1/live-activity/channels/{activityID}` to read it;
 - `DELETE /v1/live-activity/channels/{activityID}` to delete it at APNs and
   remove the mapping.
+
+`PUT` uses the same locked ensure operation as a topic-scoped start. The caller
+that creates the mapping receives `201`; an existing mapping or a concurrent
+waiter that reuses the winner receives `200` with the same channel ID. Unlike
+automatic start, a provider or persistence failure remains an explicit error
+from this management endpoint.
 
 Call `DELETE` after the event is finished and no later update will use the
 channel. Pushboy does not run a separate retirement state machine or reaper.
 
 These are trusted backend operations. The mobile client does not create an APNs
 channel or upload a channel ID to Pushboy.
+
+The lock guarantees one APNs create call for a successful `activityId` while
+the participating Pushboy instances share PostgreSQL. It cannot provide
+exactly-once creation if APNs succeeds but its response is lost, or if the
+database commit result is ambiguous. A later retry may create an unused remote
+channel. Avoiding that case requires durable provisioning state, which this
+design intentionally does not add. Lazy creation uses the existing channel
+mapping table and adds no database migration.
 
 ## What the client gives Pushboy
 
@@ -129,17 +171,22 @@ Channel-mode activities do not produce an individual update token.
 
 ## How remote start works
 
-For every audience member, Pushboy sends the normal direct APNs start. The
-registered capability and channel mapping only change the start payload:
+For a topic-scoped start, Pushboy first ensures the activity's channel mapping,
+then creates the existing Live Activity job. For every audience member,
+Pushboy sends the normal direct APNs start. The registered capability and
+resulting channel mapping only change the start payload:
 
 | Client and mapping | Start payload | Later delivery |
 | --- | --- | --- |
 | Channel-capable and matching topic mapping exists | `input-push-channel: "<channelId>"` | APNs channel |
-| Channel-capable and no mapping exists | `input-push-token: 1` | Per-activity token |
+| Channel-capable and no mapping exists after lazy creation failed | `input-push-token: 1` | Per-activity token |
 | Capability absent or false | Neither field | Existing legacy behavior |
 
 Both input fields live inside the start payload's `aps` dictionary. Do not send
 `input-push-channel` to an older client.
+
+User-scoped starts skip channel creation entirely, regardless of registered
+capability, and preserve the existing token behavior.
 
 The client should observe `Activity<Attributes>.activityUpdates` so it can
 discover a remotely started activity. If that activity is in token mode,
@@ -184,6 +231,12 @@ The channel publish is an ordinary Live Activity send in the same dispatch and
 outcome pipeline. Channel failures do not change or invalidate token records,
 and token failures do not remove the channel mapping.
 
+No mapping is normal token-only behavior. If an unexpected mapping lookup
+error occurs after the job exists, update dispatches log the lookup failure and
+continue through the existing direct APNs-token and Android FCM fanout. End
+dispatches instead return an error before dispatch so the product backend can
+retry; silently skipping the channel could leave channel-mode activities open.
+
 Pushboy always uses Apple's `no-storage` channel policy and sends broadcast
 expiration `0`. A missed broadcast is not replayed, so each update should be a
 complete state snapshot rather than a delta. Include the current state in the
@@ -200,13 +253,19 @@ and
 Test the same event with:
 
 - a legacy client, which keeps direct start and token updates;
+- a first topic-scoped start, which lazily creates the mapping;
+- concurrent starts and `PUT` requests for one `activityId`, which all reuse
+  one stored channel;
 - a channel-capable client with a mapping, which gets
   `input-push-channel`;
-- a channel-capable client without a mapping, which gets
+- a channel-capable client after lazy creation fails, which gets
   `input-push-token`;
+- a user-scoped start, which never creates a channel;
 - a mixed topic, where one update reaches the channel cohort and the existing
   token cohort;
-- update and end payloads through both paths;
+- update lookup failure, which preserves token and FCM fanout;
+- end lookup failure, which dispatches nothing and can be retried;
+- successful update and end payloads through both paths;
 - channel deletion and a later `404` from the mapping API;
 - separate sandbox and production deployments.
 

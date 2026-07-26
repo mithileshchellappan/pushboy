@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -258,6 +259,23 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		expiryTime = &defaultExpiry
 	}
 
+	channelID := ""
+	if req.TopicID != "" {
+		channel, _, err := s.ProvisionLAChannel(ctx, req.ActivityID, req.TopicID)
+		if err != nil {
+			if errors.Is(err, ErrLAChannelConflict) {
+				return nil, err
+			}
+			log.Printf(
+				"Warning: starting live activity %q without a broadcast channel: %v",
+				req.ActivityID,
+				err,
+			)
+		} else {
+			channelID = channel.ChannelID
+		}
+	}
+
 	job := &storage.LiveActivityJob{
 		ID:            uuid.New().String(),
 		ActivityID:    req.ActivityID,
@@ -272,13 +290,11 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		ExpiresAt:     expiryTime,
 	}
 
-	channelID, err := s.laChannelID(ctx, job)
-	if err != nil {
-		return nil, err
-	}
-
 	storedJob, created, err := s.store.CreateOrGetLAStartJob(ctx, job)
 	if err != nil {
+		if errors.Is(err, storage.Errors.Conflict) {
+			return nil, ErrLAChannelConflict
+		}
 		return nil, err
 	}
 	if !created {
@@ -330,7 +346,12 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 
 	channelID, err := s.laChannelID(ctx, job)
 	if err != nil {
-		return nil, err
+		log.Printf(
+			"Warning: updating live activity %q without a broadcast channel: %v",
+			job.ActivityID,
+			err,
+		)
+		channelID = ""
 	}
 
 	if err := s.store.UpdateLAJobPayloadIfActive(ctx, job.ID, req.Payload, req.Options, now); err != nil {

@@ -129,6 +129,18 @@ type liveActivityDispatchFanoutScope struct {
 	startDispatchPending bool
 }
 
+func lockLAActivity(ctx context.Context, tx *sql.Tx, activityID string) error {
+	_, err := tx.ExecContext(
+		ctx,
+		`SELECT pg_advisory_xact_lock(
+			hashtext('live-activity-channel'),
+			hashtext($1)
+		)`,
+		activityID,
+	)
+	return err
+}
+
 func (scope liveActivityDispatchFanoutScope) requiresActivityAssociation() bool {
 	return scope.action != model.LiveActivityActionStart &&
 		!scope.startDispatchPending
@@ -276,9 +288,28 @@ func (s *PostgresStore) CreateOrGetLAStartJob(ctx context.Context, job *LiveActi
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`, job.ActivityID); err != nil {
+	if err := lockLAActivity(ctx, tx, job.ActivityID); err != nil {
 		return nil, false, fmt.Errorf("error locking LA activity id: %w", err)
 	}
+
+	var channelTopicID string
+	err = tx.QueryRowContext(
+		ctx,
+		`SELECT topic_id
+		 FROM live_activity_channels
+		 WHERE activity_id = $1`,
+		job.ActivityID,
+	).Scan(&channelTopicID)
+	if err == nil && (job.TopicID == "" || channelTopicID != job.TopicID) {
+		return nil, false, fmt.Errorf(
+			"live activity channel topic conflicts with job topic: %w",
+			Errors.Conflict,
+		)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, fmt.Errorf("error getting live activity channel for job: %w", err)
+	}
+
 	if job.UserID != "" {
 		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, job.UserID); err != nil {
 			return nil, false, fmt.Errorf("error locking LA user scope: %w", err)

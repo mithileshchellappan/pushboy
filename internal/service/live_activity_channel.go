@@ -38,9 +38,6 @@ func (s *PushboyService) ProvisionLAChannel(
 	activityID string,
 	topicID string,
 ) (*storage.LiveActivityChannel, bool, error) {
-	if s.laChannelProvider == nil {
-		return nil, false, ErrLAChannelUnavailable
-	}
 	if activityID == "" {
 		return nil, false, errors.New("activityId is required")
 	}
@@ -48,68 +45,34 @@ func (s *PushboyService) ProvisionLAChannel(
 		return nil, false, errors.New("topicId is required")
 	}
 
-	existing, err := s.store.GetLAChannelByActivityID(ctx, activityID)
-	if err == nil {
-		if existing.TopicID != topicID {
+	channel, created, err := s.store.EnsureLAChannel(
+		ctx,
+		activityID,
+		topicID,
+		func(ctx context.Context) (string, error) {
+			if s.laChannelProvider == nil {
+				return "", ErrLAChannelUnavailable
+			}
+			channelID, err := s.laChannelProvider.CreateLiveActivityChannel(ctx)
+			if err != nil {
+				return "", fmt.Errorf("%w: create APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
+			}
+			if channelID == "" {
+				return "", fmt.Errorf("%w: APNs returned an empty channel ID", ErrLAChannelProviderFailed)
+			}
+			return channelID, nil
+		},
+	)
+	if err != nil {
+		if errors.Is(err, storage.Errors.Conflict) {
 			return nil, false, ErrLAChannelConflict
 		}
-		return existing, false, nil
-	}
-	if !errors.Is(err, storage.Errors.NotFound) {
 		return nil, false, err
 	}
-	if _, err := s.requireTopic(ctx, topicID); err != nil {
-		return nil, false, err
-	}
-
-	channelID, err := s.laChannelProvider.CreateLiveActivityChannel(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("%w: create APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
-	}
-	if channelID == "" {
-		return nil, false, fmt.Errorf("%w: APNs returned an empty channel ID", ErrLAChannelProviderFailed)
-	}
-
-	channel := &storage.LiveActivityChannel{
-		ActivityID: activityID,
-		TopicID:    topicID,
-		ChannelID:  channelID,
-		CreatedAt:  time.Now().UTC(),
-	}
-	stored, created, err := s.store.CreateOrGetLAChannel(ctx, channel)
-	if err != nil {
-		reconcileCtx, cancel := laChannelCleanupContext(ctx)
-		reconciled, _, reconcileErr := s.store.CreateOrGetLAChannel(reconcileCtx, channel)
-		cancel()
-		if reconcileErr != nil {
-			return nil, false, errors.Join(
-				fmt.Errorf("live activity channel %q persistence outcome is unknown: %w", channelID, err),
-				fmt.Errorf("retry live activity channel persistence: %w", reconcileErr),
-			)
-		}
-		stored = reconciled
-		created = stored.ChannelID == channelID
-	}
-	if stored.ChannelID != channelID {
-		cleanupCtx, cancel := laChannelCleanupContext(ctx)
-		cleanupErr := s.laChannelProvider.DeleteLiveActivityChannel(cleanupCtx, channelID)
-		cancel()
-		if cleanupErr != nil {
-			return nil, false, errors.Join(
-				err,
-				fmt.Errorf(
-					"%w: delete unused APNs live activity channel %q: %w",
-					ErrLAChannelProviderFailed,
-					channelID,
-					cleanupErr,
-				),
-			)
-		}
-	}
-	if stored.TopicID != topicID {
+	if channel.TopicID != topicID {
 		return nil, false, ErrLAChannelConflict
 	}
-	return stored, created, nil
+	return channel, created, nil
 }
 
 func (s *PushboyService) GetLAChannel(
