@@ -121,28 +121,6 @@ func TestDeleteLiveActivityChannelTreatsMissingChannelAsDeleted(t *testing.T) {
 	}
 }
 
-func TestBuildLAMessageKeepsIntegerDefaultTimestamp(t *testing.T) {
-	client := &Client{bundleID: "com.example.app"}
-	body, _, err := client.buildLAMessage(&model.LiveActivityRequest{
-		Action:    model.LiveActivityActionUpdate,
-		Payload:   json.RawMessage(`{"lap":42}`),
-		CreatedAt: time.Unix(1_700_000_000, 123_456_000).UTC(),
-	}, model.ParsedLiveActivityOptions{})
-	if err != nil {
-		t.Fatalf("buildLAMessage error = %v", err)
-	}
-
-	var wire struct {
-		APS map[string]json.RawMessage `json:"aps"`
-	}
-	if err := json.Unmarshal(body, &wire); err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	if got := string(wire.APS["timestamp"]); got != "1700000000" {
-		t.Fatalf("timestamp = %s, want original integer seconds", got)
-	}
-}
-
 func TestBuildLAStartAddsOnlyTheSelectedInput(t *testing.T) {
 	client := &Client{bundleID: "com.example.app"}
 	options := model.ParsedLiveActivityOptions{

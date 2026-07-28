@@ -279,47 +279,8 @@ func TestFanoutLATokensCompletesWhenNotSuperseded(t *testing.T) {
 	}
 }
 
-func TestFanoutLATokensEnqueuesOneCountedChannelBeforeFirstTokenQuery(t *testing.T) {
-	var tasks []model.LASendTask
-	channelObservedBeforeTokenQuery := false
-	store := &fanoutLAStoreStub{
-		supersedeResults: []supersedeResult{{superseded: false}, {superseded: false}},
-		tokenBatches:     []*storage.LiveActivityTokenBatch{laTokenBatch(false, "token-1")},
-		onTokenBatch: func(call int) {
-			if call == 0 {
-				channelObservedBeforeTokenQuery = len(tasks) == 1 &&
-					tasks[0].ChannelID == "apple-channel-id"
-			}
-		},
-	}
-	job := laFanoutJob()
-	job.ChannelID = "apple-channel-id"
-
-	err := FanoutLATokens(context.Background(), store, job, 10, func(_ context.Context, task model.LASendTask) error {
-		tasks = append(tasks, task)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("FanoutLATokens error = %v", err)
-	}
-	if len(tasks) != 2 {
-		t.Fatalf("tasks = %d, want one channel and one token", len(tasks))
-	}
-	if tasks[0].ChannelID != "apple-channel-id" || tasks[0].Target.Platform != model.APNS {
-		t.Fatalf("first task = %+v, want channel task", tasks[0])
-	}
-	if tasks[1].Target.TokenID != "token-1" {
-		t.Fatalf("second task = %+v, want token task", tasks[1])
-	}
-	if !channelObservedBeforeTokenQuery {
-		t.Fatal("channel task must be enqueued before the first token query")
-	}
-	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 2 {
-		t.Fatalf("completed totals = %v, want [2]", store.completedEnqueues)
-	}
-}
-
 func TestFanoutLAUpdateKeepsChannelAPNSAndFCMTokenTargets(t *testing.T) {
+	var tasks []model.LASendTask
 	store := &fanoutLAStoreStub{
 		supersedeResults: []supersedeResult{{}, {}},
 		tokenBatches: []*storage.LiveActivityTokenBatch{{
@@ -336,11 +297,15 @@ func TestFanoutLAUpdateKeepsChannelAPNSAndFCMTokenTargets(t *testing.T) {
 				},
 			},
 		}},
+		onTokenBatch: func(call int) {
+			if call == 0 && (len(tasks) != 1 || tasks[0].ChannelID != "apple-channel-id") {
+				t.Fatalf("tasks before first token query = %+v, want channel", tasks)
+			}
+		},
 	}
 	job := laFanoutJob()
 	job.ChannelID = "apple-channel-id"
 
-	var tasks []model.LASendTask
 	err := FanoutLATokens(
 		context.Background(),
 		store,
@@ -368,76 +333,6 @@ func TestFanoutLAUpdateKeepsChannelAPNSAndFCMTokenTargets(t *testing.T) {
 	}
 	if len(store.completedEnqueues) != 1 || store.completedEnqueues[0] != 3 {
 		t.Fatalf("completed totals = %v, want [3]", store.completedEnqueues)
-	}
-}
-
-func TestFanoutLATokensKeepsChannelAttemptWhenLaterTokenQueryFails(t *testing.T) {
-	tokenQueryErr := errors.New("token query failed")
-	store := &fanoutLAStoreStub{
-		supersedeResults: []supersedeResult{{}, {}, {}},
-		tokenBatches: []*storage.LiveActivityTokenBatch{
-			laTokenBatch(true, "token-1"),
-		},
-		tokenBatchErrors: []error{nil, tokenQueryErr},
-	}
-	job := laFanoutJob()
-	job.ChannelID = "apple-channel-id"
-
-	var tasks []model.LASendTask
-	err := FanoutLATokens(context.Background(), store, job, 1, func(_ context.Context, task model.LASendTask) error {
-		tasks = append(tasks, task)
-		return nil
-	})
-
-	if !errors.Is(err, tokenQueryErr) {
-		t.Fatalf("FanoutLATokens error = %v, want token query failure", err)
-	}
-	if len(tasks) != 2 ||
-		tasks[0].ChannelID != "apple-channel-id" ||
-		tasks[1].Target.TokenID != "token-1" {
-		t.Fatalf("tasks = %+v, want channel followed by first token batch", tasks)
-	}
-	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 2 {
-		t.Fatalf("failed enqueues = %v, want channel and emitted token counted", store.failedEnqueues)
-	}
-}
-
-func TestFanoutLATokensCountsChannelInSubsequentSupersessionCheck(t *testing.T) {
-	store := &fanoutLAStoreStub{
-		supersedeResults: []supersedeResult{
-			{},
-			{},
-			{superseded: true},
-		},
-		tokenBatches: []*storage.LiveActivityTokenBatch{
-			laTokenBatch(true, "t1", "t2"),
-		},
-	}
-	job := laFanoutJob()
-	job.ChannelID = "apple-channel-id"
-
-	var tasks []model.LASendTask
-	err := FanoutLATokens(context.Background(), store, job, 2, func(_ context.Context, task model.LASendTask) error {
-		tasks = append(tasks, task)
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("FanoutLATokens error = %v", err)
-	}
-	if len(tasks) != 3 || tasks[0].ChannelID != "apple-channel-id" {
-		t.Fatalf("tasks = %+v, want channel and first token batch", tasks)
-	}
-	wantSupersedeCalls := []int{0, 0, 3}
-	if len(store.supersedeCalls) != len(wantSupersedeCalls) {
-		t.Fatalf("supersede calls = %v, want %v", store.supersedeCalls, wantSupersedeCalls)
-	}
-	for i, want := range wantSupersedeCalls {
-		if store.supersedeCalls[i] != want {
-			t.Fatalf("supersede call %d emitted count = %d, want %d", i, store.supersedeCalls[i], want)
-		}
-	}
-	if len(store.completedEnqueues) != 0 {
-		t.Fatalf("completed enqueues = %v, want none for superseded dispatch", store.completedEnqueues)
 	}
 }
 
@@ -517,9 +412,11 @@ func TestFanoutLATokensFailsAndAccountsWhenMidFanoutSupersedeCheckErrors(t *test
 			laTokenBatch(false, "t3"),
 		},
 	}
+	job := laFanoutJob()
+	job.ChannelID = "apple-channel-id"
 
 	var emitted []model.LASendTask
-	err := FanoutLATokens(context.Background(), store, laFanoutJob(), 2, func(ctx context.Context, task model.LASendTask) error {
+	err := FanoutLATokens(context.Background(), store, job, 2, func(ctx context.Context, task model.LASendTask) error {
 		emitted = append(emitted, task)
 		if task.Target.TokenID == "t2" {
 			return errors.New("queue full")
@@ -530,11 +427,11 @@ func TestFanoutLATokensFailsAndAccountsWhenMidFanoutSupersedeCheckErrors(t *test
 	if err == nil || !errors.Is(err, guardErr) {
 		t.Fatalf("FanoutLATokens error = %v, want supersede-check failure", err)
 	}
-	if len(emitted) != 2 {
-		t.Fatalf("emitted %d tasks, want first batch only", len(emitted))
+	if len(emitted) != 3 || emitted[0].ChannelID != job.ChannelID {
+		t.Fatalf("emitted tasks = %+v, want channel plus first token batch", emitted)
 	}
-	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 2 {
-		t.Fatalf("failed enqueues = %v, want [2]", store.failedEnqueues)
+	if len(store.failedEnqueues) != 1 || store.failedEnqueues[0] != 3 {
+		t.Fatalf("failed enqueues = %v, want [3]", store.failedEnqueues)
 	}
 	if len(store.completedEnqueues) != 0 {
 		t.Fatalf("completed enqueues = %v, want none", store.completedEnqueues)

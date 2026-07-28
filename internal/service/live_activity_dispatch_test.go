@@ -129,10 +129,8 @@ func TestCreateLAStartRejectsExistingChannelForAnotherTopic(t *testing.T) {
 	}
 }
 
-func TestCreateLAStartClassifiesAtomicChannelJobConflict(t *testing.T) {
-	store := &laDispatchStoreStub{
-		startJobError: storage.Errors.Conflict,
-	}
+func TestCreateLAStartClassifiesAtomicJobConflict(t *testing.T) {
+	store := &laDispatchStoreStub{startJobError: storage.Errors.Conflict}
 	service := NewPushBoyService(
 		store,
 		"",
@@ -177,116 +175,87 @@ func TestCreateLAStartForUserDoesNotEnsureChannel(t *testing.T) {
 	}
 }
 
-func TestCreateLAUpdateContinuesTokenOnlyWhenChannelLookupFails(t *testing.T) {
+func TestCreateLADispatchChannelLookupPolicy(t *testing.T) {
 	lookupErr := errors.New("channel lookup failed")
-	store := &laDispatchStoreStub{
-		channelLookupError: lookupErr,
-		job: &storage.LiveActivityJob{
-			ID:            "job-1",
-			ActivityID:    "race-1",
-			ActivityType:  "race",
-			TopicID:       "topic-1",
-			Status:        model.LiveActivityJobStatusActive,
-			LatestPayload: json.RawMessage(`{"lap":1}`),
-		},
-	}
-	service := NewPushBoyService(store, "")
+	for _, action := range []model.LiveActivityAction{
+		model.LiveActivityActionUpdate,
+		model.LiveActivityActionEnd,
+	} {
+		t.Run(string(action), func(t *testing.T) {
+			store := &laDispatchStoreStub{
+				channelLookupError: lookupErr,
+				job: &storage.LiveActivityJob{
+					ID:            "job-1",
+					ActivityID:    "race-1",
+					ActivityType:  "race",
+					TopicID:       "topic-1",
+					Status:        model.LiveActivityJobStatusActive,
+					LatestPayload: json.RawMessage(`{"lap":1}`),
+				},
+			}
+			service := NewPushBoyService(store, "")
 
-	result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
-		Action:     model.LiveActivityActionUpdate,
-		ActivityID: "race-1",
-		Payload:    json.RawMessage(`{"lap":2}`),
-	})
-	if err != nil {
-		t.Fatalf("CreateLADispatch error = %v, want token-only fallback", err)
-	}
-	if !store.payloadUpdated {
-		t.Fatal("job payload was not updated after channel lookup failure")
-	}
-	if !store.dispatchCreated {
-		t.Fatal("dispatch was not created after channel lookup failure")
-	}
-	if result.ChannelID != "" {
-		t.Fatalf("ChannelID = %q, want token-only fallback", result.ChannelID)
-	}
-	if got := string(store.job.LatestPayload); got != `{"lap":2}` {
-		t.Fatalf("job payload = %s, want updated payload", got)
-	}
-}
+			result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
+				Action:     action,
+				ActivityID: "race-1",
+				Payload:    json.RawMessage(`{"lap":2}`),
+			})
 
-func TestCreateLAEndFailsBeforeDispatchWhenChannelLookupFails(t *testing.T) {
-	lookupErr := errors.New("channel lookup failed")
-	store := &laDispatchStoreStub{
-		channelLookupError: lookupErr,
-		job: &storage.LiveActivityJob{
-			ID:            "job-1",
-			ActivityID:    "race-1",
-			ActivityType:  "race",
-			TopicID:       "topic-1",
-			Status:        model.LiveActivityJobStatusActive,
-			LatestPayload: json.RawMessage(`{"lap":1}`),
-		},
+			if action == model.LiveActivityActionUpdate {
+				if err != nil {
+					t.Fatalf("CreateLADispatch error = %v, want token-only fallback", err)
+				}
+				if result.ChannelID != "" || !store.payloadUpdated || !store.dispatchCreated {
+					t.Fatalf("update fallback = (%q, %v, %v), want token-only dispatch", result.ChannelID, store.payloadUpdated, store.dispatchCreated)
+				}
+				return
+			}
+			if !errors.Is(err, lookupErr) || !errors.Is(err, ErrLAChannelLookupFailed) {
+				t.Fatalf("CreateLADispatch error = %v, want classified lookup error", err)
+			}
+			if store.dispatchCreated {
+				t.Fatal("end dispatch was created despite channel lookup failure")
+			}
+		})
 	}
-	service := NewPushBoyService(store, "")
 
-	_, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
-		Action:     model.LiveActivityActionEnd,
-		ActivityID: "race-1",
-	})
-	if !errors.Is(err, lookupErr) || !errors.Is(err, ErrLAChannelLookupFailed) {
-		t.Fatalf("CreateLADispatch error = %v, want classified channel lookup error", err)
-	}
-	if store.dispatchCreated {
-		t.Fatal("end dispatch was created despite channel lookup failure")
-	}
-}
-
-func TestCreateLAUpdateTreatsMissingOrMismatchedChannelAsTokenOnly(t *testing.T) {
-	tests := []struct {
+	for _, test := range []struct {
 		name    string
 		channel *storage.LiveActivityChannel
 	}{
-		{name: "missing"},
+		{name: "missing mapping"},
 		{
-			name: "topic mismatch",
+			name: "mismatched topic",
 			channel: &storage.LiveActivityChannel{
 				ActivityID: "race-1",
 				TopicID:    "topic-2",
 				ChannelID:  "channel-1",
 			},
 		},
-	}
-
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &laDispatchStoreStub{
-				job: &storage.LiveActivityJob{
-					ID:           "job-1",
-					ActivityID:   "race-1",
-					ActivityType: "race",
-					TopicID:      "topic-1",
-					Status:       model.LiveActivityJobStatusActive,
-				},
 				channel: test.channel,
+				job: &storage.LiveActivityJob{
+					ID:         "job-1",
+					ActivityID: "race-1",
+					TopicID:    "topic-1",
+					Status:     model.LiveActivityJobStatusActive,
+				},
 			}
-			service := NewPushBoyService(store, "")
-
-			result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
-				Action:     model.LiveActivityActionUpdate,
-				ActivityID: "race-1",
-				Payload:    json.RawMessage(`{"lap":2}`),
-			})
+			result, err := NewPushBoyService(store, "").CreateLADispatch(
+				context.Background(),
+				LADispatchRequest{
+					Action:     model.LiveActivityActionUpdate,
+					ActivityID: "race-1",
+					Payload:    json.RawMessage(`{"lap":2}`),
+				},
+			)
 			if err != nil {
 				t.Fatalf("CreateLADispatch error = %v", err)
 			}
-			if !store.payloadUpdated {
-				t.Fatal("token-only update did not update the job payload")
-			}
-			if !store.dispatchCreated {
-				t.Fatal("token-only update did not create a dispatch")
-			}
-			if result.ChannelID != "" {
-				t.Fatalf("ChannelID = %q, want token-only fallback", result.ChannelID)
+			if result.ChannelID != "" || !store.dispatchCreated {
+				t.Fatalf("result = (%q, %v), want token-only dispatch", result.ChannelID, store.dispatchCreated)
 			}
 		})
 	}

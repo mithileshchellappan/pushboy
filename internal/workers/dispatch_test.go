@@ -65,82 +65,47 @@ func TestDispatchFailuresReturnContextWithoutDirectLogging(t *testing.T) {
 	}
 }
 
-func TestDispatchLAStartSelectsChannelInputForCapableAPNSToken(t *testing.T) {
-	provider := &capturingLADispatcher{}
-	dispatchers := map[model.Platform]dispatch.Dispatcher{model.APNS: provider}
-	outcomes := pipeline.NewMemoryPipeline[model.LASendOutcome](1)
+func TestDispatchLAStartSelectsBroadcastInput(t *testing.T) {
+	tests := []struct {
+		name            string
+		capable         bool
+		channelID       string
+		wantChannel     string
+		wantUpdateToken bool
+	}{
+		{"channel", true, "channel-id", "channel-id", false},
+		{"token fallback", true, "", "", true},
+		{"legacy", false, "channel-id", "", false},
+	}
 
-	err := DispatchLATask(context.Background(), model.LASendTask{
-		Target:                    model.SendTarget{TokenID: "start-token-id", Token: "push-to-start-token", Platform: model.APNS},
-		SupportsBroadcastChannels: true,
-		LAJob: &model.LAJobItem{
-			DispatchID: "dispatch-start",
-			Action:     model.LiveActivityActionStart,
-			ActivityID: "activity-1",
-			Activity:   "RaceAttributes",
-			ChannelID:  "channel-id",
-		},
-	}, dispatchers, outcomes)
-	if err != nil {
-		t.Fatalf("DispatchLATask error = %v", err)
-	}
-	if provider.request == nil {
-		t.Fatal("SendLiveActivity did not receive a request")
-	}
-	if provider.request.InputPushChannel != "channel-id" {
-		t.Fatalf("InputPushChannel = %q, want channel-id", provider.request.InputPushChannel)
-	}
-	if provider.request.RequestUpdateToken {
-		t.Fatal("RequestUpdateToken = true, want false for channel-mode start")
-	}
-}
-
-func TestDispatchLAStartRequestsUpdateTokenWhenCapableAPNSTokenHasNoChannel(t *testing.T) {
-	provider := &capturingLADispatcher{}
-	dispatchers := map[model.Platform]dispatch.Dispatcher{model.APNS: provider}
-	outcomes := pipeline.NewMemoryPipeline[model.LASendOutcome](1)
-
-	err := DispatchLATask(context.Background(), model.LASendTask{
-		Target:                    model.SendTarget{TokenID: "start-token-id", Token: "push-to-start-token", Platform: model.APNS},
-		SupportsBroadcastChannels: true,
-		LAJob: &model.LAJobItem{
-			DispatchID: "dispatch-start",
-			Action:     model.LiveActivityActionStart,
-			ActivityID: "activity-1",
-			Activity:   "RaceAttributes",
-		},
-	}, dispatchers, outcomes)
-	if err != nil {
-		t.Fatalf("DispatchLATask error = %v", err)
-	}
-	if provider.request == nil || !provider.request.RequestUpdateToken {
-		t.Fatalf("request = %+v, want RequestUpdateToken true", provider.request)
-	}
-	if provider.request.InputPushChannel != "" {
-		t.Fatalf("InputPushChannel = %q, want empty token fallback", provider.request.InputPushChannel)
-	}
-}
-
-func TestDispatchLAStartLeavesLegacyPayloadUnchanged(t *testing.T) {
-	provider := &capturingLADispatcher{}
-	dispatchers := map[model.Platform]dispatch.Dispatcher{model.APNS: provider}
-	outcomes := pipeline.NewMemoryPipeline[model.LASendOutcome](1)
-
-	err := DispatchLATask(context.Background(), model.LASendTask{
-		Target: model.SendTarget{TokenID: "start-token-id", Token: "push-to-start-token", Platform: model.APNS},
-		LAJob: &model.LAJobItem{
-			DispatchID: "dispatch-start",
-			Action:     model.LiveActivityActionStart,
-			ActivityID: "activity-1",
-			Activity:   "RaceAttributes",
-			ChannelID:  "channel-id",
-		},
-	}, dispatchers, outcomes)
-	if err != nil {
-		t.Fatalf("DispatchLATask error = %v", err)
-	}
-	if provider.request.InputPushChannel != "" || provider.request.RequestUpdateToken {
-		t.Fatalf("legacy request = %+v, want no channel fields", provider.request)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &capturingLADispatcher{}
+			err := DispatchLATask(context.Background(), model.LASendTask{
+				Target: model.SendTarget{
+					TokenID:  "start-token-id",
+					Token:    "push-to-start-token",
+					Platform: model.APNS,
+				},
+				SupportsBroadcastChannels: test.capable,
+				LAJob: &model.LAJobItem{
+					DispatchID: "dispatch-start",
+					Action:     model.LiveActivityActionStart,
+					ActivityID: "activity-1",
+					Activity:   "RaceAttributes",
+					ChannelID:  test.channelID,
+				},
+			}, map[model.Platform]dispatch.Dispatcher{model.APNS: provider},
+				pipeline.NewMemoryPipeline[model.LASendOutcome](1))
+			if err != nil {
+				t.Fatalf("DispatchLATask error = %v", err)
+			}
+			if provider.request == nil ||
+				provider.request.InputPushChannel != test.wantChannel ||
+				provider.request.RequestUpdateToken != test.wantUpdateToken {
+				t.Fatalf("request = %+v, want channel %q update-token %v", provider.request, test.wantChannel, test.wantUpdateToken)
+			}
+		})
 	}
 }
 

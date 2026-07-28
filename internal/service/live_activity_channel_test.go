@@ -30,47 +30,12 @@ func TestProvisionLAChannelPreservesOpaqueIDs(t *testing.T) {
 	if store.topicID != " topic-1 " || store.lookupActivityID != " race-1 " {
 		t.Fatalf("store IDs = (%q, %q), want opaque input", store.lookupActivityID, store.topicID)
 	}
-}
-
-func TestProvisionLAChannelUsesAtomicStoreOperation(t *testing.T) {
-	store := &channelStoreStub{}
-	provider := &channelProviderStub{createID: "channel-1"}
-	service := NewPushBoyService(store, "", WithLAChannels(provider))
-
-	channel, created, err := service.ProvisionLAChannel(context.Background(), "race-1", "topic-1")
-	if err != nil {
-		t.Fatalf("ProvisionLAChannel error = %v", err)
-	}
-	if !created || channel.ChannelID != "channel-1" {
-		t.Fatalf("result = (%+v, %v), want created channel", channel, created)
-	}
 	if store.ensureCalls != 1 {
 		t.Fatalf("EnsureLAChannel calls = %d, want 1", store.ensureCalls)
 	}
 }
 
-func TestProvisionLAChannelReturnsExistingMappingWithoutCallingAPNS(t *testing.T) {
-	store := &channelStoreStub{channel: &storage.LiveActivityChannel{
-		ActivityID: "race-1",
-		TopicID:    "topic-1",
-		ChannelID:  "channel-1",
-	}}
-	provider := &channelProviderStub{createID: "should-not-be-used"}
-	service := NewPushBoyService(store, "", WithLAChannels(provider))
-
-	channel, created, err := service.ProvisionLAChannel(context.Background(), "race-1", "topic-1")
-	if err != nil {
-		t.Fatalf("ProvisionLAChannel error = %v", err)
-	}
-	if created || channel.ChannelID != "channel-1" {
-		t.Fatalf("result = (%+v, %v), want existing mapping", channel, created)
-	}
-	if provider.createCalls != 0 {
-		t.Fatalf("APNs create calls = %d, want 0", provider.createCalls)
-	}
-}
-
-func TestProvisionLAChannelReturnsExistingMappingWithoutConfiguredProvider(t *testing.T) {
+func TestProvisionLAChannelReturnsExistingMappingWithoutProvider(t *testing.T) {
 	store := &channelStoreStub{channel: &storage.LiveActivityChannel{
 		ActivityID: "race-1",
 		TopicID:    "topic-1",
@@ -101,46 +66,53 @@ func TestProvisionLAChannelRejectsDifferentTopic(t *testing.T) {
 	}
 }
 
-func TestDeleteLAChannelLocalCleanupSurvivesRequestCancellation(t *testing.T) {
+func TestDeleteLAChannelDetachesLocalCleanupFromRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	store := &channelStoreStub{channel: &storage.LiveActivityChannel{
-		ActivityID: "race-1",
-		TopicID:    "topic-1",
-		ChannelID:  "channel-1",
-	}}
-	provider := &channelProviderStub{onDelete: cancel}
-	service := NewPushBoyService(store, "", WithLAChannels(provider))
+	defer cancel()
+
+	cleanupCalled := false
+	store := &channelStoreStub{
+		channel: &storage.LiveActivityChannel{
+			ActivityID: "race-1",
+			TopicID:    "topic-1",
+			ChannelID:  "channel-1",
+		},
+		deleteFunc: func(ctx context.Context, activityID, channelID string) error {
+			cleanupCalled = true
+			if ctx.Err() != nil {
+				t.Fatalf("cleanup context error = %v, want detached context", ctx.Err())
+			}
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("cleanup context has no deadline")
+			}
+			if activityID != "race-1" || channelID != "channel-1" {
+				t.Fatalf("deleted mapping = (%q, %q)", activityID, channelID)
+			}
+			return nil
+		},
+	}
+	service := NewPushBoyService(
+		store,
+		"",
+		WithLAChannels(&channelProviderStub{onDelete: cancel}),
+	)
 
 	if err := service.DeleteLAChannel(ctx, "race-1"); err != nil {
 		t.Fatalf("DeleteLAChannel error = %v", err)
 	}
-	if store.deletedActivityID != "race-1" || store.deletedChannelID != "channel-1" {
-		t.Fatalf(
-			"deleted mapping = (%q, %q), want (race-1, channel-1)",
-			store.deletedActivityID,
-			store.deletedChannelID,
-		)
-	}
-	if store.deleteContextErr != nil {
-		t.Fatalf("local cleanup context error = %v, want detached context", store.deleteContextErr)
-	}
-	if !store.deleteHadDeadline {
-		t.Fatal("local cleanup context has no deadline")
+	if !cleanupCalled {
+		t.Fatal("local mapping cleanup was not called")
 	}
 }
 
 type channelStoreStub struct {
 	storage.Store
-	channel           *storage.LiveActivityChannel
-	ensureCalls       int
-	createError       error
-	topicID           string
-	lookupActivityID  string
-	deletedActivityID string
-	deletedChannelID  string
-	deleteContextErr  error
-	deleteHadDeadline bool
-	deleteError       error
+	channel          *storage.LiveActivityChannel
+	ensureCalls      int
+	createError      error
+	topicID          string
+	lookupActivityID string
+	deleteFunc       func(context.Context, string, string) error
 }
 
 func (s *channelStoreStub) EnsureLAChannel(
@@ -191,22 +163,15 @@ func (s *channelStoreStub) DeleteLAChannel(
 	activityID string,
 	channelID string,
 ) error {
-	s.deletedActivityID = activityID
-	s.deletedChannelID = channelID
-	s.deleteContextErr = ctx.Err()
-	_, s.deleteHadDeadline = ctx.Deadline()
-	return s.deleteError
+	return s.deleteFunc(ctx, activityID, channelID)
 }
 
 type channelProviderStub struct {
-	createID          string
-	createError       error
-	createCalls       int
-	onCreate          func()
-	onDelete          func()
-	deleteContextErr  error
-	deleteHadDeadline bool
-	deleteError       error
+	createID    string
+	createError error
+	createCalls int
+	onCreate    func()
+	onDelete    func()
 }
 
 func (p *channelProviderStub) CreateLiveActivityChannel(context.Context) (string, error) {
@@ -217,11 +182,9 @@ func (p *channelProviderStub) CreateLiveActivityChannel(context.Context) (string
 	return p.createID, p.createError
 }
 
-func (p *channelProviderStub) DeleteLiveActivityChannel(ctx context.Context, channelID string) error {
-	p.deleteContextErr = ctx.Err()
-	_, p.deleteHadDeadline = ctx.Deadline()
+func (p *channelProviderStub) DeleteLiveActivityChannel(context.Context, string) error {
 	if p.onDelete != nil {
 		p.onDelete()
 	}
-	return p.deleteError
+	return nil
 }
