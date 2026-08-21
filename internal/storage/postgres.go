@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -436,6 +437,10 @@ func (s *PostgresStore) DeleteTopic(ctx context.Context, topicID string) error {
 	query := `DELETE FROM topics WHERE id = $1`
 	result, err := s.db.ExecContext(ctx, query, topicID)
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return Errors.Conflict
+		}
 		return fmt.Errorf("error deleting topic: %w", err)
 	}
 

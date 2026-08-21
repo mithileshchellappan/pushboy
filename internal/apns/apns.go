@@ -41,6 +41,8 @@ type Client struct {
 	endpoint    string
 	maxRetries  int
 
+	channelManagementEndpoint string
+
 	jwtMutex  sync.RWMutex
 	cachedJWT string
 	jwtExpiry time.Time
@@ -62,6 +64,22 @@ type ApsPayload struct {
 }
 
 type ApnsRequest map[string]interface{}
+
+type responseError struct {
+	status string
+	reason string
+}
+
+func (e *responseError) Error() string {
+	if e.reason == "" {
+		return fmt.Sprintf("APNs error: %s", e.status)
+	}
+	return fmt.Sprintf("APNs error: %s (reason: %s)", e.status, e.reason)
+}
+
+func (e *responseError) ProviderReason() string {
+	return e.reason
+}
 
 func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string, poolSize int, maxConcurrent int, maxRetries int) *Client {
 	var endpoint string
@@ -110,6 +128,14 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		}
 	}
 
+	channelManagementEndpoint := productionChannelManagementEndpoint
+	if useSandbox {
+		channelManagementEndpoint = developmentChannelManagementEndpoint
+	}
+	if endpointOverride != "" {
+		channelManagementEndpoint = endpointOverride
+	}
+
 	return &Client{
 		httpClients: clients,
 		sem:         make(chan struct{}, maxConcurrent),
@@ -119,6 +145,8 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 		signingKey:  p8KeyBytes,
 		endpoint:    endpoint,
 		maxRetries:  maxRetries,
+
+		channelManagementEndpoint: channelManagementEndpoint,
 	}
 }
 
@@ -344,7 +372,10 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 			Reason string `json:"reason"`
 		}
 		if err := json.Unmarshal(body, &apnsReason); err == nil && apnsReason.Reason != "" {
-			return fmt.Errorf("APNs error: %s (reason: %s)", resp.Status, apnsReason.Reason)
+			return &responseError{
+				status: resp.Status,
+				reason: apnsReason.Reason,
+			}
 		}
 		return fmt.Errorf("failed to send notification: %s", resp.Status)
 	}

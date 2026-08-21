@@ -2,6 +2,7 @@ package apns
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -54,6 +55,15 @@ func TestSendWithRetryClassifiesNonRetryableResponses(t *testing.T) {
 			if !strings.Contains(err.Error(), tt.wantContains) {
 				t.Fatalf("sendWithRetry error = %q, want containing %q", err, tt.wantContains)
 			}
+			if tt.name == "bad device token reason" {
+				var providerErr interface{ ProviderReason() string }
+				if !errors.As(err, &providerErr) {
+					t.Fatalf("sendWithRetry error type = %T, want provider reason", err)
+				}
+				if got := providerErr.ProviderReason(); got != "BadDeviceToken" {
+					t.Fatalf("provider reason = %q, want BadDeviceToken", got)
+				}
+			}
 		})
 	}
 }
@@ -88,6 +98,27 @@ func TestSendWithRetryUsesConfiguredRetryLimit(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 2 {
 		t.Fatalf("attempts = %d, want initial attempt plus one retry", got)
+	}
+}
+
+func TestSendWithRetryDoesNotRetryServerErrors(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := &Client{
+		httpClients: []*http.Client{server.Client()},
+		maxRetries:  3,
+	}
+	err := client.sendWithRetry(context.Background(), server.URL, []byte(`{}`), "jwt", nil)
+	if err == nil || !strings.Contains(err.Error(), "500 Internal Server Error") {
+		t.Fatalf("sendWithRetry error = %v, want original server error", err)
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want no server-error retry", got)
 	}
 }
 

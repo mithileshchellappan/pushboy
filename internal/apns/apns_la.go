@@ -72,6 +72,9 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options mode
 
 	switch request.Action {
 	case model.LiveActivityActionStart:
+		if request.InputPushChannel != "" && request.RequestUpdateToken {
+			return nil, nil, fmt.Errorf("apns live activity start cannot include both input-push-channel and input-push-token")
+		}
 		if options.Alert == nil {
 			return nil, nil, fmt.Errorf("apns live activity start requires options.alert")
 		}
@@ -87,6 +90,11 @@ func (c *Client) buildLAMessage(request *model.LiveActivityRequest, options mode
 		}
 		aps["attributes-type"] = options.AttributesType
 		aps["attributes"] = attributes
+		if request.InputPushChannel != "" {
+			aps["input-push-channel"] = request.InputPushChannel
+		} else if request.RequestUpdateToken {
+			aps["input-push-token"] = 1
+		}
 	case model.LiveActivityActionUpdate, model.LiveActivityActionEnd:
 	default:
 		return nil, nil, fmt.Errorf("unsupported live activity action: %s", request.Action)

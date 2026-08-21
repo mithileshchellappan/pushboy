@@ -177,8 +177,8 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 		if token.UserID != "user-1" || token.Platform != model.APNS || token.TokenType != model.LiveActivityTokenTypeUpdate || token.Token != "la-token" {
 			t.Fatalf("UpsertLiveActivityToken token = %+v", token)
 		}
-		if token.ActivityID != "session-1_2026" {
-			t.Fatalf("UpsertLiveActivityToken ActivityID = %q, want session-1_2026", token.ActivityID)
+		if token.ActivityID != " session-1_2026 " {
+			t.Fatalf("UpsertLiveActivityToken ActivityID = %q, want exact opaque value", token.ActivityID)
 		}
 		token.ID = "token-id"
 		token.CreatedAt = now
@@ -191,7 +191,7 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
 		"userId":"user-1",
 		"topicId":"broadcast",
-		"activityId":"session-1_2026",
+		"activityId":" session-1_2026 ",
 		"platform":"apns",
 		"tokenType":"update",
 		"token":"la-token"
@@ -201,6 +201,229 @@ func TestHandleRegisterLATokenStoresActivityID(t *testing.T) {
 
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+}
+
+func TestHandleRegisterLAStartTokenStoresBroadcastChannelCapability(t *testing.T) {
+	now := time.Now().UTC()
+	store := &serverStoreStub{t: t}
+	store.getUserFunc = func(context.Context, string) (*storage.User, error) {
+		return &storage.User{ID: "user-1", CreatedAt: now}, nil
+	}
+	store.upsertLiveActivityTokenFunc = func(_ context.Context, token *storage.LiveActivityToken) (*storage.LiveActivityToken, error) {
+		if !token.SupportsBroadcastChannels {
+			t.Fatal("SupportsBroadcastChannels = false, want true")
+		}
+		token.ID = "token-1"
+		token.CreatedAt = now
+		token.LastSeenAt = now
+		return token, nil
+	}
+
+	router := testRouter(t, store, &serverJobPipeline{t: t, failOnSubmit: true}, &serverLAJobPipeline{t: t, failOnSubmit: true})
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/live-activity/tokens", bytes.NewBufferString(`{
+		"userId":"user-1",
+		"platform":"apns",
+		"tokenType":"start",
+		"token":"push-to-start-token",
+		"supportsBroadcastChannels":true
+	}`))
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+}
+
+func TestHandleProvisionLAChannel(t *testing.T) {
+	tests := []struct {
+		name          string
+		existing      bool
+		storeErr      error
+		providerError error
+		wantCode      int
+	}{
+		{
+			name:     "creates mapping",
+			wantCode: http.StatusCreated,
+		},
+		{
+			name:     "returns existing mapping",
+			existing: true,
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "rejects topic conflict",
+			storeErr: storage.Errors.Conflict,
+			wantCode: http.StatusConflict,
+		},
+		{
+			name:          "maps provider failure",
+			providerError: errors.New("APNs unavailable"),
+			wantCode:      http.StatusBadGateway,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &serverStoreStub{t: t}
+			store.ensureLAChannelFunc = func(
+				ctx context.Context,
+				activityID string,
+				topicID string,
+				create func(context.Context) (string, error),
+			) (*storage.LiveActivityChannel, bool, error) {
+				if test.storeErr != nil {
+					return nil, false, test.storeErr
+				}
+				channelID := "existing-channel"
+				if !test.existing {
+					var err error
+					channelID, err = create(ctx)
+					if err != nil {
+						return nil, false, err
+					}
+				}
+				return &storage.LiveActivityChannel{
+					ActivityID: activityID,
+					TopicID:    topicID,
+					ChannelID:  channelID,
+				}, !test.existing, nil
+			}
+			provider := &serverLAChannelProvider{
+				channelID:   "created-channel",
+				createError: test.providerError,
+			}
+			router := New(
+				service.NewPushBoyService(store, "", provider),
+				&serverJobPipeline{t: t, failOnSubmit: true},
+				&serverLAJobPipeline{t: t, failOnSubmit: true},
+			).setupRouter()
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(
+				http.MethodPut,
+				"/v1/live-activity/channels/activity-1",
+				bytes.NewBufferString(`{"topicId":"topic-1"}`),
+			)
+			router.ServeHTTP(recorder, request)
+
+			if recorder.Code != test.wantCode {
+				t.Fatalf(
+					"status = %d, want %d, body: %s",
+					recorder.Code,
+					test.wantCode,
+					recorder.Body.String(),
+				)
+			}
+
+			if test.wantCode == http.StatusCreated || test.wantCode == http.StatusOK {
+				var response map[string]any
+				if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if response["activityId"] != "activity-1" ||
+					response["topicId"] != "topic-1" ||
+					response["channelId"] == "" {
+					t.Fatalf("response = %#v", response)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveActivityChannelLifecycle(t *testing.T) {
+	const (
+		activityID   = "race/2026"
+		activityPath = "/v1/live-activity/channels/race%2F2026"
+	)
+	var mapping *storage.LiveActivityChannel
+	store := &serverStoreStub{t: t}
+	store.ensureLAChannelFunc = func(
+		ctx context.Context,
+		gotActivityID string,
+		topicID string,
+		create func(context.Context) (string, error),
+	) (*storage.LiveActivityChannel, bool, error) {
+		if gotActivityID != activityID {
+			t.Fatalf("EnsureLAChannel activity ID = %q, want %q", gotActivityID, activityID)
+		}
+		channelID, err := create(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		mapping = &storage.LiveActivityChannel{
+			ActivityID: gotActivityID,
+			TopicID:    topicID,
+			ChannelID:  channelID,
+			CreatedAt:  time.Now().UTC(),
+		}
+		return mapping, true, nil
+	}
+	store.getLAChannelFunc = func(_ context.Context, gotActivityID string) (*storage.LiveActivityChannel, error) {
+		if gotActivityID != activityID {
+			t.Fatalf("GetLAChannelByActivityID activity ID = %q, want %q", gotActivityID, activityID)
+		}
+		if mapping == nil || mapping.ActivityID != gotActivityID {
+			return nil, storage.Errors.NotFound
+		}
+		return mapping, nil
+	}
+	store.deleteLAChannelFunc = func(
+		ctx context.Context,
+		gotActivityID string,
+		deleteRemote func(context.Context, string) error,
+	) error {
+		if gotActivityID != activityID {
+			t.Fatalf("DeleteLAChannel activity ID = %q, want %q", gotActivityID, activityID)
+		}
+		if mapping == nil || mapping.ActivityID != gotActivityID {
+			return storage.Errors.NotFound
+		}
+		if err := deleteRemote(ctx, mapping.ChannelID); err != nil {
+			return err
+		}
+		mapping = nil
+		return nil
+	}
+	provider := &serverLAChannelProvider{channelID: "apple-channel-id"}
+	router := New(
+		service.NewPushBoyService(store, "", provider),
+		&serverJobPipeline{t: t, failOnSubmit: true},
+		&serverLAJobPipeline{t: t, failOnSubmit: true},
+	).setupRouter()
+
+	requests := []struct {
+		method string
+		body   string
+		status int
+	}{
+		{http.MethodPut, `{"topicId":"topic-1"}`, http.StatusCreated},
+		{http.MethodGet, "", http.StatusOK},
+		{http.MethodDelete, "", http.StatusNoContent},
+	}
+	for _, request := range requests {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(
+			recorder,
+			httptest.NewRequest(
+				request.method,
+				activityPath,
+				bytes.NewBufferString(request.body),
+			),
+		)
+		if recorder.Code != request.status {
+			t.Fatalf("%s status = %d, want %d, body: %s",
+				request.method, recorder.Code, request.status, recorder.Body.String())
+		}
+	}
+	if provider.deletedChannelID != "apple-channel-id" {
+		t.Fatalf("deleted channel = %q, want apple-channel-id", provider.deletedChannelID)
+	}
+	if mapping != nil {
+		t.Fatalf("mapping = %+v, want deleted", mapping)
 	}
 }
 
@@ -231,6 +454,13 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		}
 		return nil
 	}
+	store.getLAChannelFunc = func(_ context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+		return &storage.LiveActivityChannel{
+			ActivityID: activityID,
+			TopicID:    "broadcast",
+			ChannelID:  "apple-channel-id",
+		}, nil
+	}
 	store.createLADispatchFunc = func(ctx context.Context, dispatch *storage.LiveActivityDispatch) (*storage.LiveActivityDispatch, error) {
 		if dispatch.Status != model.LiveActivityDispatchStatusEnqueuePending {
 			t.Fatalf("CreateLADispatch status = %q, want %q", dispatch.Status, model.LiveActivityDispatchStatusEnqueuePending)
@@ -245,7 +475,11 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		return nil
 	}
 
-	router := testRouter(t, store, pushPipeline, laPipeline)
+	router := New(
+		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
+		pushPipeline,
+		laPipeline,
+	).setupRouter()
 
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", bytes.NewBufferString(`{
@@ -268,6 +502,7 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		got.JobID != "la-job-1" ||
 		got.DispatchID == "" ||
 		got.TopicID != "broadcast" ||
+		got.ChannelID != "apple-channel-id" ||
 		string(got.Payload) != `{"lap":12}` {
 		t.Fatalf("submitted job = %+v, want LA fields populated", got)
 	}
@@ -297,7 +532,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 	}
 
 	server := New(
-		service.NewPushBoyService(store, ""),
+		service.NewPushBoyService(store, "", nil),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, submitErr: queueErr},
 	)
@@ -316,7 +551,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) http.Handler {
 	t.Helper()
 
-	return New(service.NewPushBoyService(store, ""), jobPipeline, laJobPipeline).setupRouter()
+	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline).setupRouter()
 }
 
 type serverJobPipeline struct {
@@ -382,6 +617,9 @@ type serverStoreStub struct {
 	createTokenFunc             func(context.Context, *storage.Token) (*storage.Token, error)
 	upsertLiveActivityTokenFunc func(context.Context, *storage.LiveActivityToken) (*storage.LiveActivityToken, error)
 	subscribeUserToLATopicFunc  func(context.Context, *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error)
+	ensureLAChannelFunc         func(context.Context, string, string, func(context.Context) (string, error)) (*storage.LiveActivityChannel, bool, error)
+	getLAChannelFunc            func(context.Context, string) (*storage.LiveActivityChannel, error)
+	deleteLAChannelFunc         func(context.Context, string, func(context.Context, string) error) error
 	createUserPublishJobFunc    func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
 	updateJobStatusFunc         func(context.Context, string, model.NotificationJobStatus) error
 
@@ -619,9 +857,46 @@ func (s *serverStoreStub) SubscribeUserToLATopic(ctx context.Context, sub *stora
 	return nil, errors.New("unexpected SubscribeUserToLATopic")
 }
 
-func (s *serverStoreStub) CreateOrGetLAStartJob(ctx context.Context, job *storage.LiveActivityJob) (*storage.LiveActivityJob, bool, error) {
+func (s *serverStoreStub) EnsureLAChannel(
+	ctx context.Context,
+	activityID string,
+	topicID string,
+	create func(context.Context) (string, error),
+) (*storage.LiveActivityChannel, bool, error) {
+	if s.ensureLAChannelFunc != nil {
+		return s.ensureLAChannelFunc(ctx, activityID, topicID, create)
+	}
+	s.unused("EnsureLAChannel")
+	return nil, false, errors.New("unexpected EnsureLAChannel")
+}
+
+func (s *serverStoreStub) GetLAChannelByActivityID(ctx context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+	if s.getLAChannelFunc != nil {
+		return s.getLAChannelFunc(ctx, activityID)
+	}
+	s.unused("GetLAChannelByActivityID")
+	return nil, errors.New("unexpected GetLAChannelByActivityID")
+}
+
+func (s *serverStoreStub) DeleteLAChannel(
+	ctx context.Context,
+	activityID string,
+	deleteRemote func(context.Context, string) error,
+) error {
+	if s.deleteLAChannelFunc != nil {
+		return s.deleteLAChannelFunc(ctx, activityID, deleteRemote)
+	}
+	s.unused("DeleteLAChannel")
+	return errors.New("unexpected DeleteLAChannel")
+}
+
+func (s *serverStoreStub) CreateOrGetLAStartJob(
+	ctx context.Context,
+	job *storage.LiveActivityJob,
+	createChannel func(context.Context) (string, error),
+) (*storage.LAStartJobResult, error) {
 	s.unused("CreateOrGetLAStartJob")
-	return nil, false, errors.New("unexpected CreateOrGetLAStartJob")
+	return nil, errors.New("unexpected CreateOrGetLAStartJob")
 }
 
 func (s *serverStoreStub) GetLAJob(ctx context.Context, jobID string) (*storage.LiveActivityJob, error) {
@@ -697,9 +972,9 @@ func (s *serverStoreStub) MarkLADispatchEnqueued(ctx context.Context, dispatchID
 	return errors.New("unexpected MarkLADispatchEnqueued")
 }
 
-func (s *serverStoreStub) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*storage.LiveActivityTokenBatch, error) {
-	s.unused("GetLATokenBatchForDispatch")
-	return nil, errors.New("unexpected GetLATokenBatchForDispatch")
+func (s *serverStoreStub) NewLATokenPager(ctx context.Context, dispatchID string) (storage.LiveActivityTokenPager, error) {
+	s.unused("NewLATokenPager")
+	return nil, errors.New("unexpected NewLATokenPager")
 }
 
 func (s *serverStoreStub) CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {
@@ -730,4 +1005,19 @@ func (s *serverStoreStub) SupersedeLADispatchIfStale(ctx context.Context, dispat
 func (s *serverStoreStub) Close() error {
 	s.unused("Close")
 	return errors.New("unexpected Close")
+}
+
+type serverLAChannelProvider struct {
+	channelID        string
+	deletedChannelID string
+	createError      error
+}
+
+func (p *serverLAChannelProvider) CreateLiveActivityChannel(context.Context) (string, error) {
+	return p.channelID, p.createError
+}
+
+func (p *serverLAChannelProvider) DeleteLiveActivityChannel(_ context.Context, channelID string) error {
+	p.deletedChannelID = channelID
+	return nil
 }

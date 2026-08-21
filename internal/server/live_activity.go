@@ -15,13 +15,14 @@ import (
 )
 
 type registerLiveActivityTokenRequest struct {
-	UserID     string `json:"userId"`
-	TopicID    string `json:"topicId,omitempty"`
-	ActivityID string `json:"activityId,omitempty"`
-	Platform   string `json:"platform"`
-	TokenType  string `json:"tokenType"`
-	Token      string `json:"token"`
-	ExpiresAt  string `json:"expiresAt,omitempty"`
+	UserID                    string `json:"userId"`
+	TopicID                   string `json:"topicId,omitempty"`
+	ActivityID                string `json:"activityId,omitempty"`
+	Platform                  string `json:"platform"`
+	TokenType                 string `json:"tokenType"`
+	Token                     string `json:"token"`
+	ExpiresAt                 string `json:"expiresAt,omitempty"`
+	SupportsBroadcastChannels bool   `json:"supportsBroadcastChannels,omitempty"`
 }
 
 type deleteLiveActivityTokenRequest struct {
@@ -98,6 +99,7 @@ func (s *Server) handleRegisterLAToken(w http.ResponseWriter, r *http.Request) {
 		req.TopicID,
 		req.ExpiresAt,
 		req.ActivityID,
+		req.SupportsBroadcastChannels,
 	)
 	if err != nil {
 		switch {
@@ -187,6 +189,10 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, storage.Errors.NotFound):
 			http.Error(w, "Live activity job not found", http.StatusNotFound)
+		case errors.Is(err, service.ErrLAChannelConflict):
+			http.Error(w, "Live activity channel topic conflict", http.StatusConflict)
+		case errors.Is(err, service.ErrLAChannelLookupFailed):
+			http.Error(w, "Live activity channel lookup failed", http.StatusInternalServerError)
 		default:
 			http.Error(w, err.Error(), http.StatusBadRequest)
 		}
@@ -205,6 +211,7 @@ func (s *Server) handleCreateLAJob(w http.ResponseWriter, r *http.Request) {
 			Activity:   result.Job.ActivityType,
 			Payload:    result.Dispatch.Payload,
 			Options:    result.Dispatch.Options,
+			ChannelID:  result.ChannelID,
 			CreatedAt:  result.Dispatch.CreatedAt,
 		}
 
