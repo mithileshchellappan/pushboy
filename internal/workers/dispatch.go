@@ -123,11 +123,8 @@ func DispatchLATask(ctx context.Context, task model.LASendTask, dispatchers map[
 	if task.LAJob.Action == model.LiveActivityActionStart &&
 		task.Target.Platform == model.APNS &&
 		task.SupportsBroadcastChannels {
-		if task.LAJob.ChannelID != "" {
-			request.InputPushChannel = task.LAJob.ChannelID
-		} else {
-			request.RequestUpdateToken = true
-		}
+		request.InputPushChannel = task.LAJob.ChannelID
+		request.RequestUpdateToken = task.LAJob.ChannelID == ""
 	}
 
 	err := laDispatcher.SendLiveActivity(ctx, task.Target.Token, request)

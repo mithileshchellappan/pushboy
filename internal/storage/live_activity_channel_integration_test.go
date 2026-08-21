@@ -97,6 +97,107 @@ func TestEnsureLAChannelPreexistingMappingSkipsProvider(t *testing.T) {
 	}
 }
 
+func TestDeleteLAChannelSerializesWithEnsure(t *testing.T) {
+	h := newLAChannelDBHarness(t)
+	topicID, activityID := h.topic(), h.activity()
+	oldChannelID := "channel-" + uuid.NewString()
+	if _, created, err := h.stores[0].EnsureLAChannel(
+		context.Background(),
+		activityID,
+		topicID,
+		func(context.Context) (string, error) { return oldChannelID, nil },
+	); err != nil || !created {
+		t.Fatalf("create old channel: created = %v, err = %v", created, err)
+	}
+
+	deleteEntered, releaseDelete := make(chan struct{}), make(chan struct{})
+	var releaseDeleteOnce sync.Once
+	release := func() {
+		releaseDeleteOnce.Do(func() { close(releaseDelete) })
+	}
+	defer release()
+	deleteDone := make(chan error, 1)
+	go func() {
+		deleteDone <- h.stores[0].DeleteLAChannel(
+			context.Background(),
+			activityID,
+			func(_ context.Context, channelID string) error {
+				if channelID != oldChannelID {
+					return fmt.Errorf("deleted channel = %q, want %q", channelID, oldChannelID)
+				}
+				close(deleteEntered)
+				<-releaseDelete
+				return nil
+			},
+		)
+	}()
+	select {
+	case <-deleteEntered:
+	case err := <-deleteDone:
+		t.Fatalf("delete failed before provider callback: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("delete did not enter provider callback")
+	}
+
+	newChannelID := "channel-" + uuid.NewString()
+	type ensureResult struct {
+		channel *LiveActivityChannel
+		created bool
+		err     error
+	}
+	ensureDone := make(chan ensureResult, 1)
+	var providerCalls atomic.Int32
+	go func() {
+		channel, created, err := h.stores[1].EnsureLAChannel(
+			context.Background(),
+			activityID,
+			topicID,
+			func(context.Context) (string, error) {
+				providerCalls.Add(1)
+				return newChannelID, nil
+			},
+		)
+		ensureDone <- ensureResult{channel: channel, created: created, err: err}
+	}()
+
+	waiting, waitErr := h.waitForLockWaiter(activityID, 2*time.Second)
+	release()
+	var deleteErr error
+	select {
+	case deleteErr = <-deleteDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not complete after releasing provider")
+	}
+
+	var ensured ensureResult
+	select {
+	case ensured = <-ensureDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ensure did not complete after channel deletion")
+	}
+
+	if waitErr != nil {
+		t.Fatalf("observe ensure lock waiter: %v", waitErr)
+	}
+	if !waiting {
+		t.Fatal("ensure did not wait for channel deletion")
+	}
+	if deleteErr != nil {
+		t.Fatalf("delete channel: %v", deleteErr)
+	}
+	if ensured.err != nil || !ensured.created {
+		t.Fatalf("ensure replacement: created = %v, err = %v", ensured.created, ensured.err)
+	}
+	if ensured.channel.ChannelID != newChannelID || providerCalls.Load() != 1 {
+		t.Fatalf(
+			"replacement = %+v, provider calls = %d; want channel %q and 1 call",
+			ensured.channel,
+			providerCalls.Load(),
+			newChannelID,
+		)
+	}
+}
+
 func TestLAChannelAndJobRejectConflictingTopics(t *testing.T) {
 	t.Run("channel after job", func(t *testing.T) {
 		h := newLAChannelDBHarness(t)
@@ -131,8 +232,8 @@ func TestLAChannelAndJobRejectConflictingTopics(t *testing.T) {
 		if err != nil || !created {
 			t.Fatalf("ensure: created = %v, err = %v", created, err)
 		}
-		_, _, err = h.stores[1].CreateOrGetLAStartJob(
-			context.Background(), testLAStartJob(activityID, jobTopic),
+		_, err = h.stores[1].CreateOrGetLAStartJob(
+			context.Background(), testLAStartJob(activityID, jobTopic), nil,
 		)
 		if !errors.Is(err, Errors.Conflict) {
 			t.Fatalf("job error = %v, want conflict", err)
@@ -174,7 +275,7 @@ func TestLAChannelAndConflictingJobShareActivityLock(t *testing.T) {
 		}
 	})
 	go func() {
-		_, _, err := h.stores[1].CreateOrGetLAStartJob(context.Background(), job)
+		_, err := h.stores[1].CreateOrGetLAStartJob(context.Background(), job, nil)
 		jobDone <- err
 	}()
 
@@ -368,6 +469,86 @@ func TestEnsureLAChannelProviderFailuresRetrySerially(t *testing.T) {
 	}
 }
 
+func TestLAStartProviderFailureDoesNotCreateALosingChannel(t *testing.T) {
+	h := newLAChannelDBHarness(t)
+	topicID, activityID := h.topic(), h.activity()
+	t.Cleanup(func() {
+		if _, err := h.stores[0].db.ExecContext(
+			context.Background(),
+			`DELETE FROM live_activity_jobs WHERE activity_id = $1`,
+			activityID,
+		); err != nil {
+			t.Errorf("delete start job: %v", err)
+		}
+	})
+
+	providerErr := errors.New("provider unavailable")
+	var providerCalls atomic.Int32
+	type result struct {
+		start *LAStartJobResult
+		err   error
+	}
+	const callers = 8
+	results := make([]result, callers)
+	runLAChannelConcurrent(callers, func(i int) {
+		results[i].start, results[i].err = h.stores[i%2].CreateOrGetLAStartJob(
+			context.Background(),
+			testLAStartJob(activityID, topicID),
+			func(context.Context) (string, error) {
+				providerCalls.Add(1)
+				time.Sleep(10 * time.Millisecond)
+				return "", providerErr
+			},
+		)
+	})
+
+	created, channelFailures, winnerID := 0, 0, ""
+	for i, result := range results {
+		if result.err != nil {
+			t.Fatalf("caller %d error = %v", i, result.err)
+		}
+		if result.start.Created {
+			created++
+			winnerID = result.start.Job.ID
+		}
+		if result.start.ChannelError != nil {
+			channelFailures++
+			if !errors.Is(result.start.ChannelError, providerErr) {
+				t.Fatalf("caller %d channel error = %v", i, result.start.ChannelError)
+			}
+		}
+	}
+	for i, result := range results {
+		if result.start.Job.ID != winnerID {
+			t.Fatalf("caller %d job = %q, want winner %q", i, result.start.Job.ID, winnerID)
+		}
+	}
+	if providerCalls.Load() != 1 || created != 1 || channelFailures != 1 {
+		t.Fatalf(
+			"provider calls = %d, created = %d, channel failures = %d; want 1, 1, 1",
+			providerCalls.Load(),
+			created,
+			channelFailures,
+		)
+	}
+	if _, err := h.stores[0].GetLAChannelByActivityID(
+		context.Background(), activityID,
+	); !errors.Is(err, Errors.NotFound) {
+		t.Fatalf("channel lookup error = %v, want not found", err)
+	}
+
+	channelID := "channel-" + uuid.NewString()
+	channel, wasCreated, err := h.stores[1].EnsureLAChannel(
+		context.Background(),
+		activityID,
+		topicID,
+		func(context.Context) (string, error) { return channelID, nil },
+	)
+	if err != nil || !wasCreated || channel.ChannelID != channelID {
+		t.Fatalf("manual ensure = (%+v, %v, %v)", channel, wasCreated, err)
+	}
+}
+
 func BenchmarkEnsureLAChannel(b *testing.B) {
 	h := newLAChannelDBHarness(b)
 	topicID := h.topic()
@@ -513,15 +694,15 @@ func (h *laChannelDBHarness) deleteMapping(activityID string) {
 
 func (h *laChannelDBHarness) createJob(activityID, topicID string) {
 	h.t.Helper()
-	job, created, err := h.stores[0].CreateOrGetLAStartJob(
-		context.Background(), testLAStartJob(activityID, topicID),
+	result, err := h.stores[0].CreateOrGetLAStartJob(
+		context.Background(), testLAStartJob(activityID, topicID), nil,
 	)
-	if err != nil || !created {
-		h.t.Fatalf("create start job: created = %v, err = %v", created, err)
+	if err != nil || !result.Created {
+		h.t.Fatalf("create start job: result = %+v, err = %v", result, err)
 	}
 	h.t.Cleanup(func() {
 		if _, err := h.stores[0].db.ExecContext(
-			context.Background(), `DELETE FROM live_activity_jobs WHERE id = $1`, job.ID,
+			context.Background(), `DELETE FROM live_activity_jobs WHERE id = $1`, result.Job.ID,
 		); err != nil {
 			h.t.Errorf("delete start job: %v", err)
 		}

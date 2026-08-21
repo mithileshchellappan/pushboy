@@ -297,7 +297,7 @@ func TestHandleProvisionLAChannel(t *testing.T) {
 				createError: test.providerError,
 			}
 			router := New(
-				service.NewPushBoyService(store, "", service.WithLAChannels(provider)),
+				service.NewPushBoyService(store, "", provider),
 				&serverJobPipeline{t: t, failOnSubmit: true},
 				&serverLAJobPipeline{t: t, failOnSubmit: true},
 			).setupRouter()
@@ -371,19 +371,26 @@ func TestLiveActivityChannelLifecycle(t *testing.T) {
 		}
 		return mapping, nil
 	}
-	store.deleteLAChannelFunc = func(_ context.Context, gotActivityID, channelID string) error {
+	store.deleteLAChannelFunc = func(
+		ctx context.Context,
+		gotActivityID string,
+		deleteRemote func(context.Context, string) error,
+	) error {
 		if gotActivityID != activityID {
 			t.Fatalf("DeleteLAChannel activity ID = %q, want %q", gotActivityID, activityID)
 		}
-		if mapping == nil || mapping.ActivityID != gotActivityID || mapping.ChannelID != channelID {
+		if mapping == nil || mapping.ActivityID != gotActivityID {
 			return storage.Errors.NotFound
+		}
+		if err := deleteRemote(ctx, mapping.ChannelID); err != nil {
+			return err
 		}
 		mapping = nil
 		return nil
 	}
 	provider := &serverLAChannelProvider{channelID: "apple-channel-id"}
 	router := New(
-		service.NewPushBoyService(store, "", service.WithLAChannels(provider)),
+		service.NewPushBoyService(store, "", provider),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, failOnSubmit: true},
 	).setupRouter()
@@ -469,7 +476,7 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 	}
 
 	router := New(
-		service.NewPushBoyService(store, "", service.WithLAChannels(&serverLAChannelProvider{})),
+		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
 		pushPipeline,
 		laPipeline,
 	).setupRouter()
@@ -525,7 +532,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 	}
 
 	server := New(
-		service.NewPushBoyService(store, ""),
+		service.NewPushBoyService(store, "", nil),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, submitErr: queueErr},
 	)
@@ -544,7 +551,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) http.Handler {
 	t.Helper()
 
-	return New(service.NewPushBoyService(store, ""), jobPipeline, laJobPipeline).setupRouter()
+	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline).setupRouter()
 }
 
 type serverJobPipeline struct {
@@ -612,7 +619,7 @@ type serverStoreStub struct {
 	subscribeUserToLATopicFunc  func(context.Context, *storage.LiveActivityUserTopicSubscription) (*storage.LiveActivityUserTopicSubscription, error)
 	ensureLAChannelFunc         func(context.Context, string, string, func(context.Context) (string, error)) (*storage.LiveActivityChannel, bool, error)
 	getLAChannelFunc            func(context.Context, string) (*storage.LiveActivityChannel, error)
-	deleteLAChannelFunc         func(context.Context, string, string) error
+	deleteLAChannelFunc         func(context.Context, string, func(context.Context, string) error) error
 	createUserPublishJobFunc    func(context.Context, *storage.PublishJob) (*storage.PublishJob, error)
 	updateJobStatusFunc         func(context.Context, string, model.NotificationJobStatus) error
 
@@ -871,17 +878,25 @@ func (s *serverStoreStub) GetLAChannelByActivityID(ctx context.Context, activity
 	return nil, errors.New("unexpected GetLAChannelByActivityID")
 }
 
-func (s *serverStoreStub) DeleteLAChannel(ctx context.Context, activityID, channelID string) error {
+func (s *serverStoreStub) DeleteLAChannel(
+	ctx context.Context,
+	activityID string,
+	deleteRemote func(context.Context, string) error,
+) error {
 	if s.deleteLAChannelFunc != nil {
-		return s.deleteLAChannelFunc(ctx, activityID, channelID)
+		return s.deleteLAChannelFunc(ctx, activityID, deleteRemote)
 	}
 	s.unused("DeleteLAChannel")
 	return errors.New("unexpected DeleteLAChannel")
 }
 
-func (s *serverStoreStub) CreateOrGetLAStartJob(ctx context.Context, job *storage.LiveActivityJob) (*storage.LiveActivityJob, bool, error) {
+func (s *serverStoreStub) CreateOrGetLAStartJob(
+	ctx context.Context,
+	job *storage.LiveActivityJob,
+	createChannel func(context.Context) (string, error),
+) (*storage.LAStartJobResult, error) {
 	s.unused("CreateOrGetLAStartJob")
-	return nil, false, errors.New("unexpected CreateOrGetLAStartJob")
+	return nil, errors.New("unexpected CreateOrGetLAStartJob")
 }
 
 func (s *serverStoreStub) GetLAJob(ctx context.Context, jobID string) (*storage.LiveActivityJob, error) {
@@ -957,9 +972,9 @@ func (s *serverStoreStub) MarkLADispatchEnqueued(ctx context.Context, dispatchID
 	return errors.New("unexpected MarkLADispatchEnqueued")
 }
 
-func (s *serverStoreStub) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*storage.LiveActivityTokenBatch, error) {
-	s.unused("GetLATokenBatchForDispatch")
-	return nil, errors.New("unexpected GetLATokenBatchForDispatch")
+func (s *serverStoreStub) NewLATokenPager(ctx context.Context, dispatchID string) (storage.LiveActivityTokenPager, error) {
+	s.unused("NewLATokenPager")
+	return nil, errors.New("unexpected NewLATokenPager")
 }
 
 func (s *serverStoreStub) CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error {

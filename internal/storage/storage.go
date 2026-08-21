@@ -144,10 +144,21 @@ type LiveActivityDispatch struct {
 	CompletedAt       *time.Time
 }
 
+type LAStartJobResult struct {
+	Job          *LiveActivityJob
+	Channel      *LiveActivityChannel
+	Created      bool
+	ChannelError error
+}
+
 type LiveActivityTokenBatch struct {
 	Tokens     []LiveActivityToken
 	NextCursor string
 	HasMore    bool
+}
+
+type LiveActivityTokenPager interface {
+	Next(ctx context.Context, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
 }
 
 // Store defines the interface for data persistence
@@ -208,8 +219,8 @@ type Store interface {
 	SubscribeUserToLATopic(ctx context.Context, sub *LiveActivityUserTopicSubscription) (*LiveActivityUserTopicSubscription, error)
 	EnsureLAChannel(ctx context.Context, activityID, topicID string, create func(context.Context) (string, error)) (*LiveActivityChannel, bool, error)
 	GetLAChannelByActivityID(ctx context.Context, activityID string) (*LiveActivityChannel, error)
-	DeleteLAChannel(ctx context.Context, activityID, channelID string) error
-	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob) (*LiveActivityJob, bool, error)
+	DeleteLAChannel(ctx context.Context, activityID string, deleteRemote func(context.Context, string) error) error
+	CreateOrGetLAStartJob(ctx context.Context, job *LiveActivityJob, createChannel func(context.Context) (string, error)) (*LAStartJobResult, error)
 	GetLAJob(ctx context.Context, jobID string) (*LiveActivityJob, error)
 	GetLAJobByActivityID(ctx context.Context, activityID string) (*LiveActivityJob, error)
 	FindLAJobByUserScope(ctx context.Context, activityType string, userID string) (*LiveActivityJob, error)
@@ -221,7 +232,7 @@ type Store interface {
 	CreateLADispatch(ctx context.Context, dispatch *LiveActivityDispatch) (*LiveActivityDispatch, error)
 	UpdateLADispatchStatus(ctx context.Context, dispatchID string, status string) error
 	MarkLADispatchEnqueued(ctx context.Context, dispatchID string) error
-	GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*LiveActivityTokenBatch, error)
+	NewLATokenPager(ctx context.Context, dispatchID string) (LiveActivityTokenPager, error)
 	CompleteLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
 	FailLADispatchEnqueue(ctx context.Context, dispatchID string, totalCount int) error
 	ApplyLAOutcomeBatch(ctx context.Context, outcomes []model.LASendOutcome) error

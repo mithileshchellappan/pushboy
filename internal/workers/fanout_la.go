@@ -11,7 +11,17 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
-func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
+type laFanoutStore interface {
+	UpdateLADispatchStatus(context.Context, string, string) error
+	SupersedeLADispatchIfStale(context.Context, string, int) (bool, error)
+	NewLATokenPager(context.Context, string) (storage.LiveActivityTokenPager, error)
+	CompleteLADispatchEnqueue(context.Context, string, int) error
+	FailLADispatchEnqueue(context.Context, string, int) error
+	ApplyLAOutcomeBatch(context.Context, []model.LASendOutcome) error
+	FailLAJobIfActive(context.Context, string) error
+}
+
+func FanoutLATokens(ctx context.Context, store laFanoutStore, job model.LAJobItem, batchSize int, emit func(context.Context, model.LASendTask) error) error {
 	if job.Action == model.LiveActivityActionUpdate {
 		superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, 0)
 		if err != nil {
@@ -39,6 +49,7 @@ func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIte
 	totalFailedOutcomes := make([]model.LASendOutcome, 0)
 	channelPending := job.ChannelID != "" &&
 		job.Action != model.LiveActivityActionStart
+	var tokenPager storage.LiveActivityTokenPager
 	for {
 		if job.Action == model.LiveActivityActionUpdate {
 			superseded, err := store.SupersedeLADispatchIfStale(ctx, job.DispatchID, totalTargetCount)
@@ -81,7 +92,18 @@ func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIte
 			}
 		}
 
-		batch, err := store.GetLATokenBatchForDispatch(ctx, job.DispatchID, cursor, batchSize)
+		if tokenPager == nil {
+			pager, err := store.NewLATokenPager(ctx, job.DispatchID)
+			if err != nil {
+				return failLADispatchFanout(ctx, store, job, totalTargetCount, totalFailedOutcomes, fmt.Errorf("error creating live activity token pager: %w", err))
+			}
+			if pager == nil {
+				return failLADispatchFanout(ctx, store, job, totalTargetCount, totalFailedOutcomes, errors.New("live activity token pager is unavailable"))
+			}
+			tokenPager = pager
+		}
+
+		batch, err := tokenPager.Next(ctx, cursor, batchSize)
 		if err != nil {
 			return failLADispatchFanout(ctx, store, job, totalTargetCount, totalFailedOutcomes, fmt.Errorf("error fetching live activity tokens: %w", err))
 		}
@@ -105,7 +127,7 @@ func FanoutLATokens(ctx context.Context, store storage.Store, job model.LAJobIte
 
 func failLADispatchFanout(
 	ctx context.Context,
-	store storage.Store,
+	store laFanoutStore,
 	job model.LAJobItem,
 	totalTargetCount int,
 	failedOutcomes []model.LASendOutcome,
@@ -122,7 +144,7 @@ func failLADispatchFanout(
 	return errors.Join(errs...)
 }
 
-func applyLAEnqueueFailures(ctx context.Context, store storage.Store, failedOutcomes []model.LASendOutcome) error {
+func applyLAEnqueueFailures(ctx context.Context, store laFanoutStore, failedOutcomes []model.LASendOutcome) error {
 	if len(failedOutcomes) == 0 {
 		return nil
 	}
@@ -132,7 +154,7 @@ func applyLAEnqueueFailures(ctx context.Context, store storage.Store, failedOutc
 	return nil
 }
 
-func failLAStartAfterDispatchFailure(ctx context.Context, store storage.Store, job model.LAJobItem) {
+func failLAStartAfterDispatchFailure(ctx context.Context, store laFanoutStore, job model.LAJobItem) {
 	if job.Action != model.LiveActivityActionStart {
 		return
 	}

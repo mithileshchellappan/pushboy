@@ -11,7 +11,7 @@ import (
 func TestProvisionLAChannelPreservesOpaqueIDs(t *testing.T) {
 	store := &channelStoreStub{}
 	provider := &channelProviderStub{createID: "channel-1"}
-	service := NewPushBoyService(store, "", WithLAChannels(provider))
+	service := NewPushBoyService(store, "", provider)
 
 	channel, created, err := service.ProvisionLAChannel(
 		context.Background(),
@@ -41,7 +41,7 @@ func TestProvisionLAChannelReturnsExistingMappingWithoutProvider(t *testing.T) {
 		TopicID:    "topic-1",
 		ChannelID:  "channel-1",
 	}}
-	service := NewPushBoyService(store, "")
+	service := NewPushBoyService(store, "", nil)
 
 	channel, created, err := service.ProvisionLAChannel(context.Background(), "race-1", "topic-1")
 	if err != nil {
@@ -58,7 +58,7 @@ func TestProvisionLAChannelRejectsDifferentTopic(t *testing.T) {
 		TopicID:    "topic-1",
 		ChannelID:  "channel-1",
 	}}
-	service := NewPushBoyService(store, "", WithLAChannels(&channelProviderStub{}))
+	service := NewPushBoyService(store, "", &channelProviderStub{})
 
 	_, _, err := service.ProvisionLAChannel(context.Background(), "race-1", "topic-2")
 	if !errors.Is(err, ErrLAChannelConflict) {
@@ -66,7 +66,7 @@ func TestProvisionLAChannelRejectsDifferentTopic(t *testing.T) {
 	}
 }
 
-func TestDeleteLAChannelDetachesLocalCleanupFromRequestCancellation(t *testing.T) {
+func TestDeleteLAChannelDetachesOperationFromRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -77,24 +77,39 @@ func TestDeleteLAChannelDetachesLocalCleanupFromRequestCancellation(t *testing.T
 			TopicID:    "topic-1",
 			ChannelID:  "channel-1",
 		},
-		deleteFunc: func(ctx context.Context, activityID, channelID string) error {
-			cleanupCalled = true
+		deleteFunc: func(
+			ctx context.Context,
+			activityID string,
+			deleteRemote func(context.Context, string) error,
+		) error {
 			if ctx.Err() != nil {
 				t.Fatalf("cleanup context error = %v, want detached context", ctx.Err())
 			}
 			if _, ok := ctx.Deadline(); !ok {
 				t.Fatal("cleanup context has no deadline")
 			}
-			if activityID != "race-1" || channelID != "channel-1" {
-				t.Fatalf("deleted mapping = (%q, %q)", activityID, channelID)
+			if activityID != "race-1" {
+				t.Fatalf("deleted activity = %q", activityID)
 			}
+			if err := deleteRemote(ctx, "channel-1"); err != nil {
+				return err
+			}
+			cleanupCalled = true
 			return nil
 		},
 	}
 	service := NewPushBoyService(
 		store,
 		"",
-		WithLAChannels(&channelProviderStub{onDelete: cancel}),
+		&channelProviderStub{onDelete: func(deleteCtx context.Context) {
+			cancel()
+			if deleteCtx.Err() != nil {
+				t.Fatalf("provider context error = %v, want detached context", deleteCtx.Err())
+			}
+			if _, ok := deleteCtx.Deadline(); !ok {
+				t.Fatal("provider context has no deadline")
+			}
+		}},
 	)
 
 	if err := service.DeleteLAChannel(ctx, "race-1"); err != nil {
@@ -112,7 +127,7 @@ type channelStoreStub struct {
 	createError      error
 	topicID          string
 	lookupActivityID string
-	deleteFunc       func(context.Context, string, string) error
+	deleteFunc       func(context.Context, string, func(context.Context, string) error) error
 }
 
 func (s *channelStoreStub) EnsureLAChannel(
@@ -161,9 +176,9 @@ func (s *channelStoreStub) GetLAChannelByActivityID(
 func (s *channelStoreStub) DeleteLAChannel(
 	ctx context.Context,
 	activityID string,
-	channelID string,
+	deleteRemote func(context.Context, string) error,
 ) error {
-	return s.deleteFunc(ctx, activityID, channelID)
+	return s.deleteFunc(ctx, activityID, deleteRemote)
 }
 
 type channelProviderStub struct {
@@ -171,7 +186,7 @@ type channelProviderStub struct {
 	createError error
 	createCalls int
 	onCreate    func()
-	onDelete    func()
+	onDelete    func(context.Context)
 }
 
 func (p *channelProviderStub) CreateLiveActivityChannel(context.Context) (string, error) {
@@ -182,9 +197,9 @@ func (p *channelProviderStub) CreateLiveActivityChannel(context.Context) (string
 	return p.createID, p.createError
 }
 
-func (p *channelProviderStub) DeleteLiveActivityChannel(context.Context, string) error {
+func (p *channelProviderStub) DeleteLiveActivityChannel(ctx context.Context, _ string) error {
 	if p.onDelete != nil {
-		p.onDelete()
+		p.onDelete(ctx)
 	}
 	return nil
 }

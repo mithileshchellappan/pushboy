@@ -12,20 +12,62 @@ import (
 )
 
 func TestCreateLAStartLazilyEnsuresTopicChannelBeforeCreatingJob(t *testing.T) {
+	providerEntered := make(chan struct{})
+	releaseProvider := make(chan struct{})
+	defer func() {
+		select {
+		case <-releaseProvider:
+		default:
+			close(releaseProvider)
+		}
+	}()
+
 	store := &laDispatchStoreStub{}
 	service := NewPushBoyService(
 		store,
 		"",
-		WithLAChannels(&channelProviderStub{createID: "channel-1"}),
+		&channelProviderStub{
+			createID: "channel-1",
+			onCreate: func() {
+				close(providerEntered)
+				<-releaseProvider
+			},
+		},
 	)
 
-	result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
-		Action:       model.LiveActivityActionStart,
-		ActivityID:   "race-1",
-		ActivityType: "race",
-		TopicID:      "topic-1",
-		Payload:      json.RawMessage(`{"lap":1}`),
-	})
+	type startResult struct {
+		result *LADispatchResult
+		err    error
+	}
+	done := make(chan startResult, 1)
+	go func() {
+		result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
+			Action:       model.LiveActivityActionStart,
+			ActivityID:   "race-1",
+			ActivityType: "race",
+			TopicID:      "topic-1",
+			Payload:      json.RawMessage(`{"lap":1}`),
+		})
+		done <- startResult{result: result, err: err}
+	}()
+
+	select {
+	case <-providerEntered:
+	case <-time.After(time.Second):
+		t.Fatal("channel provider was not called")
+	}
+	if store.startJobCreated {
+		t.Fatal("start job became visible while channel provisioning was blocked")
+	}
+	close(releaseProvider)
+
+	var call startResult
+	select {
+	case call = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("start did not finish after channel provisioning completed")
+	}
+	result, err := call.result, call.err
 	if err != nil {
 		t.Fatalf("CreateLADispatch error = %v", err)
 	}
@@ -40,6 +82,90 @@ func TestCreateLAStartLazilyEnsuresTopicChannelBeforeCreatingJob(t *testing.T) {
 	}
 }
 
+func TestCreateLAStartRetryDoesNotProvisionUnusedChannel(t *testing.T) {
+	existing := &storage.LiveActivityJob{
+		ID:           "job-1",
+		ActivityID:   "race-1",
+		ActivityType: "race",
+		TopicID:      "topic-1",
+		Status:       model.LiveActivityJobStatusActive,
+	}
+	store := &laDispatchStoreStub{job: existing}
+	provider := &channelProviderStub{createID: "unused-channel"}
+	service := NewPushBoyService(store, "", provider)
+
+	result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
+		Action:       model.LiveActivityActionStart,
+		ActivityID:   "race-1",
+		ActivityType: "race",
+		TopicID:      "topic-1",
+		Payload:      json.RawMessage(`{"lap":1}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateLADispatch error = %v", err)
+	}
+	if result.Status != "already_started" || result.Job != existing {
+		t.Fatalf("result = %+v, want existing job", result)
+	}
+	if store.channelEnsured || provider.createCalls != 0 || store.dispatchCreated {
+		t.Fatalf(
+			"channel ensured = %v, provider calls = %d, dispatch created = %v; want false, 0, false",
+			store.channelEnsured,
+			provider.createCalls,
+			store.dispatchCreated,
+		)
+	}
+}
+
+func TestCreateLAStartRetryRejectsDifferentScopeWithoutProvisioning(t *testing.T) {
+	tests := []struct {
+		name          string
+		existingUser  string
+		existingTopic string
+		requestUser   string
+		requestTopic  string
+	}{
+		{name: "different topic", existingTopic: "topic-2", requestTopic: "topic-1"},
+		{name: "topic to user", existingTopic: "topic-1", requestUser: "user-1"},
+		{name: "user to topic", existingUser: "user-1", requestTopic: "topic-1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &laDispatchStoreStub{job: &storage.LiveActivityJob{
+				ID:           "job-1",
+				ActivityID:   "race-1",
+				ActivityType: "race",
+				UserID:       test.existingUser,
+				TopicID:      test.existingTopic,
+				Status:       model.LiveActivityJobStatusActive,
+			}}
+			provider := &channelProviderStub{createID: "unused-channel"}
+			service := NewPushBoyService(store, "", provider)
+
+			_, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
+				Action:       model.LiveActivityActionStart,
+				ActivityID:   "race-1",
+				ActivityType: "race",
+				UserID:       test.requestUser,
+				TopicID:      test.requestTopic,
+				Payload:      json.RawMessage(`{"lap":1}`),
+			})
+			if !errors.Is(err, ErrLAChannelConflict) {
+				t.Fatalf("CreateLADispatch error = %v, want channel conflict", err)
+			}
+			if store.channelEnsured || provider.createCalls != 0 || store.dispatchCreated {
+				t.Fatalf(
+					"channel ensured = %v, provider calls = %d, dispatch created = %v; want false, 0, false",
+					store.channelEnsured,
+					provider.createCalls,
+					store.dispatchCreated,
+				)
+			}
+		})
+	}
+}
+
 func TestCreateLAStartFallsBackToTokenOnlyWhenChannelEnsureFails(t *testing.T) {
 	providerErr := errors.New("APNs unavailable")
 	tests := []struct {
@@ -50,7 +176,7 @@ func TestCreateLAStartFallsBackToTokenOnlyWhenChannelEnsureFails(t *testing.T) {
 		{
 			name: "provider not configured",
 			service: func(store *laDispatchStoreStub) *PushboyService {
-				return NewPushBoyService(store, "")
+				return NewPushBoyService(store, "", nil)
 			},
 		},
 		{
@@ -59,7 +185,7 @@ func TestCreateLAStartFallsBackToTokenOnlyWhenChannelEnsureFails(t *testing.T) {
 				return NewPushBoyService(
 					store,
 					"",
-					WithLAChannels(&channelProviderStub{createError: providerErr}),
+					&channelProviderStub{createError: providerErr},
 				)
 			},
 		},
@@ -70,7 +196,7 @@ func TestCreateLAStartFallsBackToTokenOnlyWhenChannelEnsureFails(t *testing.T) {
 				return NewPushBoyService(
 					store,
 					"",
-					WithLAChannels(&channelProviderStub{createID: "channel-1"}),
+					&channelProviderStub{createID: "channel-1"},
 				)
 			},
 		},
@@ -112,7 +238,7 @@ func TestCreateLAStartRejectsExistingChannelForAnotherTopic(t *testing.T) {
 			ChannelID:  "channel-1",
 		},
 	}
-	service := NewPushBoyService(store, "")
+	service := NewPushBoyService(store, "", nil)
 
 	_, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
 		Action:       model.LiveActivityActionStart,
@@ -134,7 +260,7 @@ func TestCreateLAStartClassifiesAtomicJobConflict(t *testing.T) {
 	service := NewPushBoyService(
 		store,
 		"",
-		WithLAChannels(&channelProviderStub{createID: "channel-1"}),
+		&channelProviderStub{createID: "channel-1"},
 	)
 
 	_, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
@@ -154,7 +280,7 @@ func TestCreateLAStartForUserDoesNotEnsureChannel(t *testing.T) {
 	service := NewPushBoyService(
 		store,
 		"",
-		WithLAChannels(&channelProviderStub{createID: "channel-1"}),
+		&channelProviderStub{createID: "channel-1"},
 	)
 
 	result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
@@ -193,7 +319,7 @@ func TestCreateLADispatchChannelLookupPolicy(t *testing.T) {
 					LatestPayload: json.RawMessage(`{"lap":1}`),
 				},
 			}
-			service := NewPushBoyService(store, "")
+			service := NewPushBoyService(store, "", nil)
 
 			result, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
 				Action:     action,
@@ -243,7 +369,7 @@ func TestCreateLADispatchChannelLookupPolicy(t *testing.T) {
 					Status:     model.LiveActivityJobStatusActive,
 				},
 			}
-			result, err := NewPushBoyService(store, "").CreateLADispatch(
+			result, err := NewPushBoyService(store, "", nil).CreateLADispatch(
 				context.Background(),
 				LADispatchRequest{
 					Action:     model.LiveActivityActionUpdate,
@@ -328,16 +454,46 @@ func (s *laDispatchStoreStub) GetLAChannelByActivityID(
 }
 
 func (s *laDispatchStoreStub) CreateOrGetLAStartJob(
-	_ context.Context,
+	ctx context.Context,
 	job *storage.LiveActivityJob,
-) (*storage.LiveActivityJob, bool, error) {
+	createChannel func(context.Context) (string, error),
+) (*storage.LAStartJobResult, error) {
+	if s.startJobError != nil {
+		return nil, s.startJobError
+	}
+	if s.job != nil {
+		if s.job.TopicID != job.TopicID {
+			return nil, storage.Errors.Conflict
+		}
+		return &storage.LAStartJobResult{Job: s.job}, nil
+	}
+	if s.channel != nil && (job.TopicID == "" || s.channel.TopicID != job.TopicID) {
+		return nil, storage.Errors.Conflict
+	}
+
+	s.channelEnsured = createChannel != nil
+	channelErr := s.channelEnsureError
+	if s.channel == nil && channelErr == nil && createChannel != nil {
+		channelID, err := createChannel(ctx)
+		if err != nil {
+			channelErr = err
+		} else {
+			s.channel = &storage.LiveActivityChannel{
+				ActivityID: job.ActivityID,
+				TopicID:    job.TopicID,
+				ChannelID:  channelID,
+			}
+		}
+	}
 	s.startJobCreated = true
 	s.channelEnsuredBeforeStartJob = s.channelEnsured
-	if s.startJobError != nil {
-		return nil, false, s.startJobError
-	}
 	s.job = job
-	return job, true, nil
+	return &storage.LAStartJobResult{
+		Job:          job,
+		Channel:      s.channel,
+		Created:      true,
+		ChannelError: channelErr,
+	}, nil
 }
 
 func (s *laDispatchStoreStub) GetLAJobByActivityID(

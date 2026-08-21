@@ -85,7 +85,7 @@ func TestConcurrentLazyLAStartsAcrossInstances(t *testing.T) {
 	routers := make([]http.Handler, len(stores))
 	for index, store := range stores {
 		routers[index] = New(
-			service.NewPushBoyService(store, "", service.WithLAChannels(provider)),
+			service.NewPushBoyService(store, "", provider),
 			pipeline.NewMemoryPipeline[model.JobItem](1),
 			laPipeline,
 		).setupRouter()

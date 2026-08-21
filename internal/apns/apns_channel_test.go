@@ -110,6 +110,12 @@ func TestDeleteLiveActivityChannelTreatsMissingChannelAsDeleted(t *testing.T) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("method = %s, want DELETE", r.Method)
 		}
+		if r.URL.Path != "/1/apps/com.example.app/channels" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("apns-channel-id"); got != "channel-1" {
+			t.Fatalf("apns-channel-id = %q, want channel-1", got)
+		}
 		w.WriteHeader(http.StatusGone)
 		_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
 	}))

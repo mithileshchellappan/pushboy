@@ -16,21 +16,33 @@ var (
 	ErrLAChannelProviderFailed = errors.New("live activity channel provider failed")
 )
 
-type LAChannelProvider interface {
+type LAChannelClient interface {
 	CreateLiveActivityChannel(ctx context.Context) (string, error)
 	DeleteLiveActivityChannel(ctx context.Context, channelID string) error
 }
 
-const laChannelCleanupTimeout = 5 * time.Second
+// Channel deletion is one locked remote-and-local operation. A detached timeout
+// lets it finish after the HTTP caller disconnects and bounds APNs semaphore
+// waiting plus its 10-second HTTP timeout. Remote success immediately before
+// this deadline still has the unavoidable risk of a failed database commit.
+const laChannelDeleteTimeout = 30 * time.Second
 
-func laChannelCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), laChannelCleanupTimeout)
+func laChannelDeleteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), laChannelDeleteTimeout)
 }
 
-func WithLAChannels(provider LAChannelProvider) Option {
-	return func(service *PushboyService) {
-		service.laChannelProvider = provider
+func (s *PushboyService) createLAChannel(ctx context.Context) (string, error) {
+	if s.laChannelClient == nil {
+		return "", ErrLAChannelUnavailable
 	}
+	channelID, err := s.laChannelClient.CreateLiveActivityChannel(ctx)
+	if err != nil {
+		return "", fmt.Errorf("%w: create APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
+	}
+	if channelID == "" {
+		return "", fmt.Errorf("%w: APNs returned an empty channel ID", ErrLAChannelProviderFailed)
+	}
+	return channelID, nil
 }
 
 func (s *PushboyService) ProvisionLAChannel(
@@ -49,19 +61,7 @@ func (s *PushboyService) ProvisionLAChannel(
 		ctx,
 		activityID,
 		topicID,
-		func(ctx context.Context) (string, error) {
-			if s.laChannelProvider == nil {
-				return "", ErrLAChannelUnavailable
-			}
-			channelID, err := s.laChannelProvider.CreateLiveActivityChannel(ctx)
-			if err != nil {
-				return "", fmt.Errorf("%w: create APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
-			}
-			if channelID == "" {
-				return "", fmt.Errorf("%w: APNs returned an empty channel ID", ErrLAChannelProviderFailed)
-			}
-			return channelID, nil
-		},
+		s.createLAChannel,
 	)
 	if err != nil {
 		if errors.Is(err, storage.Errors.Conflict) {
@@ -86,17 +86,23 @@ func (s *PushboyService) GetLAChannel(
 }
 
 func (s *PushboyService) DeleteLAChannel(ctx context.Context, activityID string) error {
-	if s.laChannelProvider == nil {
+	if s.laChannelClient == nil {
 		return ErrLAChannelUnavailable
 	}
-	channel, err := s.GetLAChannel(ctx, activityID)
-	if err != nil {
-		return err
+	if activityID == "" {
+		return errors.New("activityId is required")
 	}
-	if err := s.laChannelProvider.DeleteLiveActivityChannel(ctx, channel.ChannelID); err != nil {
-		return fmt.Errorf("%w: delete APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
-	}
-	cleanupCtx, cancel := laChannelCleanupContext(ctx)
+
+	deleteCtx, cancel := laChannelDeleteContext(ctx)
 	defer cancel()
-	return s.store.DeleteLAChannel(cleanupCtx, channel.ActivityID, channel.ChannelID)
+	return s.store.DeleteLAChannel(
+		deleteCtx,
+		activityID,
+		func(ctx context.Context, channelID string) error {
+			if err := s.laChannelClient.DeleteLiveActivityChannel(ctx, channelID); err != nil {
+				return fmt.Errorf("%w: delete APNs live activity channel: %w", ErrLAChannelProviderFailed, err)
+			}
+			return nil
+		},
+	)
 }

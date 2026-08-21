@@ -259,23 +259,6 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		expiryTime = &defaultExpiry
 	}
 
-	channelID := ""
-	if req.TopicID != "" {
-		channel, _, err := s.ProvisionLAChannel(ctx, req.ActivityID, req.TopicID)
-		if err != nil {
-			if errors.Is(err, ErrLAChannelConflict) {
-				return nil, err
-			}
-			log.Printf(
-				"Warning: starting live activity %q without a broadcast channel: %v",
-				req.ActivityID,
-				err,
-			)
-		} else {
-			channelID = channel.ChannelID
-		}
-	}
-
 	job := &storage.LiveActivityJob{
 		ID:            uuid.New().String(),
 		ActivityID:    req.ActivityID,
@@ -290,30 +273,45 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 		ExpiresAt:     expiryTime,
 	}
 
-	storedJob, created, err := s.store.CreateOrGetLAStartJob(ctx, job)
+	var createChannel func(context.Context) (string, error)
+	if req.TopicID != "" {
+		createChannel = s.createLAChannel
+	}
+	start, err := s.store.CreateOrGetLAStartJob(ctx, job, createChannel)
 	if err != nil {
 		if errors.Is(err, storage.Errors.Conflict) {
 			return nil, ErrLAChannelConflict
 		}
 		return nil, err
 	}
-	if !created {
+	if !start.Created {
 		return &LADispatchResult{
-			Job:    storedJob,
+			Job:    start.Job,
 			Status: "already_started",
 		}, nil
 	}
+	if start.ChannelError != nil {
+		log.Printf(
+			"Warning: starting live activity %q without an APNs broadcast channel: %v",
+			req.ActivityID,
+			start.ChannelError,
+		)
+	}
+	channelID := ""
+	if start.Channel != nil {
+		channelID = start.Channel.ChannelID
+	}
 
-	dispatch, err := s.createLADispatchRow(ctx, storedJob, req.Action, req.Payload, req.Options, now)
+	dispatch, err := s.createLADispatchRow(ctx, start.Job, req.Action, req.Payload, req.Options, now)
 	if err != nil {
-		if rollbackErr := s.store.RollbackLAStartJob(ctx, storedJob.ID); rollbackErr != nil {
+		if rollbackErr := s.store.RollbackLAStartJob(ctx, start.Job.ID); rollbackErr != nil {
 			return nil, fmt.Errorf("failed to create LA dispatch: %w (rollback failed: %v)", err, rollbackErr)
 		}
 		return nil, err
 	}
 
 	return &LADispatchResult{
-		Job:       storedJob,
+		Job:       start.Job,
 		Dispatch:  dispatch,
 		Status:    "started",
 		ChannelID: channelID,
@@ -347,7 +345,7 @@ func (s *PushboyService) createLAUpdate(ctx context.Context, req LADispatchReque
 	channelID, err := s.laChannelID(ctx, job)
 	if err != nil {
 		log.Printf(
-			"Warning: updating live activity %q without a broadcast channel: %v",
+			"Warning: updating live activity %q without an APNs broadcast channel: %v",
 			job.ActivityID,
 			err,
 		)

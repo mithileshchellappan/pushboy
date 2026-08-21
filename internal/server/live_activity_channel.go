@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
@@ -17,9 +17,7 @@ type provisionLAChannelRequest struct {
 }
 
 func laChannelActivityID(r *http.Request) (string, error) {
-	escapedPath := r.URL.EscapedPath()
-	lastSlash := strings.LastIndexByte(escapedPath, '/')
-	return url.PathUnescape(escapedPath[lastSlash+1:])
+	return url.PathUnescape(chi.URLParam(r, "activityID"))
 }
 
 func toLAChannelResponse(channel *storage.LiveActivityChannel) map[string]any {

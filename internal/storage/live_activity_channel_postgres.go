@@ -14,6 +14,11 @@ const laChannelSelectColumns = `
 	channel_id,
 	created_at`
 
+var (
+	errLAChannelCreate = errors.New("live activity channel creator failed")
+	errLAChannelSetup  = errors.New("live activity channel setup failed")
+)
+
 func scanLAChannel(scanner interface{ Scan(dest ...any) error }, channel *LiveActivityChannel) error {
 	if err := scanner.Scan(
 		&channel.ActivityID,
@@ -61,8 +66,26 @@ func (s *PostgresStore) EnsureLAChannel(
 		return nil, false, fmt.Errorf("error getting live activity job for channel: %w", err)
 	}
 
+	channel, created, err := ensureLAChannelTx(ctx, tx, activityID, topicID, create)
+	if err != nil {
+		return nil, false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, false, fmt.Errorf("error committing live activity channel: %w", err)
+	}
+	return channel, created, nil
+}
+
+func ensureLAChannelTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	activityID string,
+	topicID string,
+	create func(context.Context) (string, error),
+) (*LiveActivityChannel, bool, error) {
 	var existing LiveActivityChannel
-	err = scanLAChannel(
+	err := scanLAChannel(
 		tx.QueryRowContext(
 			ctx,
 			`SELECT `+laChannelSelectColumns+`
@@ -73,13 +96,19 @@ func (s *PostgresStore) EnsureLAChannel(
 		&existing,
 	)
 	if err == nil {
-		if err := tx.Commit(); err != nil {
-			return nil, false, fmt.Errorf("error committing existing live activity channel: %w", err)
+		if existing.TopicID != topicID {
+			return nil, false, fmt.Errorf(
+				"live activity channel topic conflicts with requested topic: %w",
+				Errors.Conflict,
+			)
 		}
 		return &existing, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, false, fmt.Errorf("error getting live activity channel: %w", err)
+		return nil, false, fmt.Errorf("%w: error getting live activity channel: %w", errLAChannelSetup, err)
+	}
+	if create == nil {
+		return nil, false, nil
 	}
 
 	var topicExists int
@@ -94,15 +123,15 @@ func (s *PostgresStore) EnsureLAChannel(
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, false, Errors.NotFound
 		}
-		return nil, false, fmt.Errorf("error locking live activity channel topic: %w", err)
+		return nil, false, fmt.Errorf("%w: error locking live activity channel topic: %w", errLAChannelSetup, err)
 	}
 
 	channelID, err := create(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("%w: %w", errLAChannelCreate, err)
 	}
 	if channelID == "" {
-		return nil, false, errors.New("live activity channel creator returned an empty channel ID")
+		return nil, false, fmt.Errorf("%w: live activity channel creator returned an empty channel ID", errLAChannelCreate)
 	}
 
 	channel := &LiveActivityChannel{
@@ -124,11 +153,7 @@ func (s *PostgresStore) EnsureLAChannel(
 		),
 		channel,
 	); err != nil {
-		return nil, false, fmt.Errorf("error creating live activity channel: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, false, fmt.Errorf("error committing live activity channel: %w", err)
+		return nil, false, fmt.Errorf("%w: error creating live activity channel: %w", errLAChannelSetup, err)
 	}
 	return channel, true, nil
 }
@@ -156,20 +181,57 @@ func (s *PostgresStore) GetLAChannelByActivityID(
 func (s *PostgresStore) DeleteLAChannel(
 	ctx context.Context,
 	activityID string,
-	channelID string,
+	deleteRemote func(context.Context, string) error,
 ) error {
-	result, err := s.db.ExecContext(ctx, `
-		DELETE FROM live_activity_channels
-		WHERE activity_id = $1
-		  AND channel_id = $2`,
-		activityID,
-		channelID,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting live activity channel delete transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := lockLAActivity(ctx, tx, activityID); err != nil {
+		return fmt.Errorf("error locking live activity channel for deletion: %w", err)
+	}
+
+	var channel LiveActivityChannel
+	if err := scanLAChannel(
+		tx.QueryRowContext(
+			ctx,
+			`SELECT `+laChannelSelectColumns+`
+			 FROM live_activity_channels
+			 WHERE activity_id = $1
+			 FOR UPDATE`,
+			activityID,
+		),
+		&channel,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Errors.NotFound
+		}
+		return fmt.Errorf("error getting live activity channel for deletion: %w", err)
+	}
+
+	if err := deleteRemote(ctx, channel.ChannelID); err != nil {
+		return err
+	}
+
+	result, err := tx.ExecContext(
+		ctx,
+		`DELETE FROM live_activity_channels
+		 WHERE activity_id = $1
+		   AND channel_id = $2`,
+		channel.ActivityID,
+		channel.ChannelID,
 	)
 	if err != nil {
 		return fmt.Errorf("error deleting live activity channel: %w", err)
 	}
 	if rows, _ := result.RowsAffected(); rows == 0 {
 		return Errors.NotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing live activity channel deletion: %w", err)
 	}
 	return nil
 }

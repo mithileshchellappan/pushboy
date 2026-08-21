@@ -24,6 +24,7 @@ type fanoutLAStoreStub struct {
 	tokenBatchErrors []error
 	tokenBatchCall   int
 	onTokenBatch     func(call int)
+	tokenPagerCalls  int
 
 	completedEnqueues []int
 	failedEnqueues    []int
@@ -55,7 +56,12 @@ func (s *fanoutLAStoreStub) FailLAJobIfActive(ctx context.Context, jobID string)
 	return nil
 }
 
-func (s *fanoutLAStoreStub) GetLATokenBatchForDispatch(ctx context.Context, dispatchID string, cursor string, batchSize int) (*storage.LiveActivityTokenBatch, error) {
+func (s *fanoutLAStoreStub) NewLATokenPager(ctx context.Context, dispatchID string) (storage.LiveActivityTokenPager, error) {
+	s.tokenPagerCalls++
+	return s, nil
+}
+
+func (s *fanoutLAStoreStub) Next(ctx context.Context, cursor string, batchSize int) (*storage.LiveActivityTokenBatch, error) {
 	call := s.tokenBatchCall
 	if s.onTokenBatch != nil {
 		s.onTokenBatch(call)
@@ -255,7 +261,8 @@ func TestFanoutLATokensRecordsEmittedCountWhenSupersededMidFanout(t *testing.T) 
 func TestFanoutLATokensCompletesWhenNotSuperseded(t *testing.T) {
 	store := &fanoutLAStoreStub{
 		tokenBatches: []*storage.LiveActivityTokenBatch{
-			laTokenBatch(false, "t1", "t2"),
+			laTokenBatch(true, "t1"),
+			laTokenBatch(false, "t2"),
 		},
 	}
 
@@ -276,6 +283,9 @@ func TestFanoutLATokensCompletesWhenNotSuperseded(t *testing.T) {
 	}
 	if len(store.statusUpdates) != 1 || store.statusUpdates[0] != "IN_PROGRESS" {
 		t.Fatalf("status updates = %v, want [IN_PROGRESS]", store.statusUpdates)
+	}
+	if store.tokenPagerCalls != 1 || store.tokenBatchCall != 2 {
+		t.Fatalf("token pager calls = %d, token batch calls = %d; want 1, 2", store.tokenPagerCalls, store.tokenBatchCall)
 	}
 }
 
