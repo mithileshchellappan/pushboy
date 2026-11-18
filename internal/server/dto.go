@@ -153,6 +153,8 @@ type laTokenResponse struct {
 	LastSeenAt    string
 	ExpiresAt     string
 	InvalidatedAt string
+
+	SupportsBroadcastChannels bool `json:"supportsBroadcastChannels"`
 }
 
 func toLATokenResponse(token storage.LiveActivityToken) laTokenResponse {
@@ -166,6 +168,8 @@ func toLATokenResponse(token storage.LiveActivityToken) laTokenResponse {
 		LastSeenAt:    formatAPITime(token.LastSeenAt),
 		ExpiresAt:     formatAPIOptionalTime(token.ExpiresAt),
 		InvalidatedAt: formatAPIOptionalTime(token.InvalidatedAt),
+
+		SupportsBroadcastChannels: token.SupportsBroadcastChannels,
 	}
 }
 

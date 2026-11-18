@@ -149,4 +149,7 @@ type LiveActivityRequest struct {
 	Payload      LiveActivityPayload
 	Options      LiveActivityOptions
 	CreatedAt    time.Time
+
+	InputPushChannel   string
+	RequestUpdateToken bool
 }

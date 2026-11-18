@@ -65,6 +65,114 @@ func TestDispatchFailuresReturnContextWithoutDirectLogging(t *testing.T) {
 	}
 }
 
+func TestDispatchLAStartSelectsBroadcastInput(t *testing.T) {
+	tests := []struct {
+		name            string
+		capable         bool
+		channelID       string
+		wantChannel     string
+		wantUpdateToken bool
+	}{
+		{"channel", true, "channel-id", "channel-id", false},
+		{"token fallback", true, "", "", true},
+		{"legacy", false, "channel-id", "", false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &capturingLADispatcher{}
+			err := DispatchLATask(context.Background(), model.LASendTask{
+				Target: model.SendTarget{
+					TokenID:  "start-token-id",
+					Token:    "push-to-start-token",
+					Platform: model.APNS,
+				},
+				SupportsBroadcastChannels: test.capable,
+				LAJob: &model.LAJobItem{
+					DispatchID: "dispatch-start",
+					Action:     model.LiveActivityActionStart,
+					ActivityID: "activity-1",
+					Activity:   "RaceAttributes",
+					ChannelID:  test.channelID,
+				},
+			}, map[model.Platform]dispatch.Dispatcher{model.APNS: provider},
+				pipeline.NewMemoryPipeline[model.LASendOutcome](1))
+			if err != nil {
+				t.Fatalf("DispatchLATask error = %v", err)
+			}
+			if provider.request == nil ||
+				provider.request.InputPushChannel != test.wantChannel ||
+				provider.request.RequestUpdateToken != test.wantUpdateToken {
+				t.Fatalf("request = %+v, want channel %q update-token %v", provider.request, test.wantChannel, test.wantUpdateToken)
+			}
+		})
+	}
+}
+
+func TestDispatchLAChannelUsesExistingOutcomePipeline(t *testing.T) {
+	provider := &capturingLADispatcher{}
+	dispatchers := map[model.Platform]dispatch.Dispatcher{model.APNS: provider}
+	outcomes := pipeline.NewMemoryPipeline[model.LASendOutcome](1)
+	task := model.LASendTask{
+		Target:    model.SendTarget{Platform: model.APNS},
+		ChannelID: "apple-channel-id",
+		LAJob: &model.LAJobItem{
+			DispatchID: "dispatch-1",
+			Action:     model.LiveActivityActionUpdate,
+			ActivityID: "activity-1",
+			Activity:   "RaceAttributes",
+		},
+	}
+
+	if err := DispatchLATask(context.Background(), task, dispatchers, outcomes); err != nil {
+		t.Fatalf("DispatchLATask error = %v", err)
+	}
+	delivery, err := outcomes.Receive(context.Background())
+	if err != nil {
+		t.Fatalf("receive outcome: %v", err)
+	}
+	outcome := delivery.Get()
+	if outcome.Receipt.Status != model.DeliveryStatusSuccess || outcome.Task.ChannelID != "apple-channel-id" {
+		t.Fatalf("outcome = %+v, want normal successful LA outcome", outcome)
+	}
+	if provider.channelID != "apple-channel-id" {
+		t.Fatalf("channelID = %q, want apple-channel-id", provider.channelID)
+	}
+}
+
+func TestDispatchLAChannelPreservesExactProviderReason(t *testing.T) {
+	provider := &capturingLADispatcher{
+		channelErr: providerReasonError{reason: "ChannelNotRegistered"},
+	}
+	dispatchers := map[model.Platform]dispatch.Dispatcher{model.APNS: provider}
+	outcomes := pipeline.NewMemoryPipeline[model.LASendOutcome](1)
+
+	err := DispatchLATask(context.Background(), model.LASendTask{
+		Target:    model.SendTarget{Platform: model.APNS},
+		ChannelID: "apple-channel-id",
+		LAJob: &model.LAJobItem{
+			DispatchID: "dispatch-1",
+			Action:     model.LiveActivityActionUpdate,
+			ActivityID: "activity-1",
+		},
+	}, dispatchers, outcomes)
+	if err == nil {
+		t.Fatal("DispatchLATask error = nil, want provider failure")
+	}
+
+	delivery, receiveErr := outcomes.Receive(context.Background())
+	if receiveErr != nil {
+		t.Fatalf("receive outcome: %v", receiveErr)
+	}
+	outcome := delivery.Get()
+	if outcome.ProviderReason != "ChannelNotRegistered" {
+		t.Fatalf("ProviderReason = %q, want ChannelNotRegistered", outcome.ProviderReason)
+	}
+	if outcome.Receipt.Status != model.DeliveryStatusFailed {
+		t.Fatalf("status = %q, want failed", outcome.Receipt.Status)
+	}
+}
+
 type failingDispatcher struct {
 	err error
 }
@@ -75,6 +183,42 @@ func (d failingDispatcher) Send(context.Context, string, *model.NotificationPayl
 
 func (d failingDispatcher) SendLiveActivity(context.Context, string, *model.LiveActivityRequest) error {
 	return d.err
+}
+
+type capturingLADispatcher struct {
+	channelID  string
+	request    *model.LiveActivityRequest
+	channelErr error
+}
+
+func (d *capturingLADispatcher) SendLiveActivityBroadcast(
+	_ context.Context,
+	channelID string,
+	_ *model.LiveActivityRequest,
+) error {
+	d.channelID = channelID
+	return d.channelErr
+}
+
+func (d *capturingLADispatcher) Send(context.Context, string, *model.NotificationPayload) error {
+	return nil
+}
+
+func (d *capturingLADispatcher) SendLiveActivity(_ context.Context, _ string, request *model.LiveActivityRequest) error {
+	d.request = request
+	return nil
+}
+
+type providerReasonError struct {
+	reason string
+}
+
+func (e providerReasonError) Error() string {
+	return "provider error: " + e.reason
+}
+
+func (e providerReasonError) ProviderReason() string {
+	return e.reason
 }
 
 func captureStdout(t *testing.T, fn func()) string {

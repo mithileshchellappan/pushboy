@@ -13,3 +13,11 @@ type Dispatcher interface {
 type LiveActivityDispatcher interface {
 	SendLiveActivity(ctx context.Context, token string, request *model.LiveActivityRequest) error
 }
+
+type LiveActivityChannelDispatcher interface {
+	SendLiveActivityBroadcast(
+		ctx context.Context,
+		channelID string,
+		request *model.LiveActivityRequest,
+	) error
+}

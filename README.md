@@ -15,6 +15,7 @@ Pushboy started as a Go learning project and grew into a focused notification se
 - [Project Status](#project-status) - current release scope
 - [Quick Start](#quick-start) - run the service locally
 - [Setup Guide](docs/setup.md) - detailed Docker, Postgres, APNS, and FCM setup
+- [Live Activity Broadcast Channels](docs/live-activity-broadcast-channels.md) - iOS channel and token integration
 - [Docker](#docker) - build and run the container
 - [Configuration](#configuration) - environment variables
 - [API Examples](#api-examples) - common curl flows
@@ -337,6 +338,7 @@ The API spec lives at [docs/openapi.yaml](docs/openapi.yaml).
 ## Documentation
 
 - [Setup guide](docs/setup.md)
+- [Live Activity broadcast channels](docs/live-activity-broadcast-channels.md)
 - [OpenAPI spec](docs/openapi.yaml)
 - [Postman collection](pushboy.postman_collection.json)
 - [Security policy](SECURITY.md)
