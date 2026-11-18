@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pushboy
+      POSTGRES_PASSWORD: pushboy
+      POSTGRES_DB: pushboy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pushboy -d pushboy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pushboy:
+    image: pushboy:ci
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: ":8080"
+      DATABASE_URL: postgres://pushboy:pushboy@postgres:5432/pushboy?sslmode=disable
+      WORKER_COUNT: "2"
+      SENDER_COUNT: "2"
+      JOB_QUEUE_SIZE: "100"
+      BATCH_SIZE: "100"
+      MAX_RETRY_NOTIFICATION: "3"
+      APNS_KEY_ID: ""
+      APNS_TEAM_ID: ""
+      APNS_BUNDLE_ID: ""
+      APNS_KEY_PATH: /app/keys/__missing_apns_key.p8
+      APNS_USE_SANDBOX: "true"
+      FCM_KEY_PATH: /app/keys/__missing_service_account.json
+      BROADCAST_TOPIC_NAME: broadcast
+    ports:
+      - "127.0.0.1:18080:8080"
