@@ -7,6 +7,7 @@ Pushboy is still pre-1.0, so contributions that clarify behavior, harden operati
 ## Ground Rules
 
 - Keep changes narrow and behavior-focused.
+- Follow [AGENTS.md](AGENTS.md) for code cleanliness, testing, ownership, and migration rules.
 - Do not commit secrets, device tokens, APNS `.p8` files, Firebase service-account JSON, `.env` files, database dumps, or production payloads.
 - Do not include real user data in issues, pull requests, tests, fixtures, screenshots, or logs.
 - Prefer explicit docs when behavior is intentionally limited. For example, the current runtime is Postgres-backed and single-node, with in-process worker queues.
@@ -18,6 +19,7 @@ Requirements:
 
 - Go 1.24+
 - Postgres
+- Node.js 22 and npm for OpenAPI validation
 - Docker Desktop or a compatible Docker runtime if you want to test containers
 
 Clone the repo and copy the example environment:
@@ -72,11 +74,13 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./cmd/pushboy
-ruby -e "require 'yaml'; YAML.load_file('docs/openapi.yaml')"
+npx --yes @redocly/cli@2.30.6 lint docs/openapi.yaml
 git diff --check
 ```
 
-The repository currently has no committed test files. If your change touches scheduling, token lifecycle, dispatch, provider error handling, Live Activity lifecycle, storage, or API behavior, add focused tests as part of the change.
+Use focused tests for meaningful behavior that existing tests do not already protect. Changes to scheduling, token lifecycle, dispatch, provider error handling, Live Activity lifecycle, storage, or API behavior need proportionate regression coverage. Database changes also need the relevant disposable-PostgreSQL integration tests to run; skipped integration tests are not verification of the changed database behavior. See [AGENTS.md](AGENTS.md#testing).
+
+Set `PUSHBOY_TEST_DATABASE_URL` to a disposable PostgreSQL database when running the Go checks. CI starts PostgreSQL 16 and supplies this variable for both the regular and race suites. Without it, local PostgreSQL integration tests are skipped. The container job separately builds the image and starts an isolated Compose stack to check the API and migrations.
 
 For Docker-related changes, also run:
 

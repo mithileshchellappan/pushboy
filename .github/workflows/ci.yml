@@ -16,8 +16,25 @@ concurrency:
 
 jobs:
   go:
-    name: Go
+    name: Go and PostgreSQL
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pushboy_test
+          POSTGRES_PASSWORD: pushboy_test
+          POSTGRES_DB: pushboy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pushboy_test -d pushboy_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      PUSHBOY_TEST_DATABASE_URL: postgres://pushboy_test:pushboy_test@127.0.0.1:5432/pushboy_test?sslmode=disable
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -30,7 +47,7 @@ jobs:
 
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          unformatted="$(git ls-files -z '*.go' | xargs -0 gofmt -l)"
           if [ -n "$unformatted" ]; then
             echo "$unformatted"
             exit 1
@@ -39,11 +56,11 @@ jobs:
       - name: Check module tidiness
         run: go mod tidy -diff
 
-      - name: Test
-        run: go test ./...
+      - name: Test including PostgreSQL integration
+        run: go test -count=1 ./...
 
-      - name: Race test
-        run: go test -race ./...
+      - name: Race test including PostgreSQL integration
+        run: go test -race -count=1 ./...
 
       - name: Vet
         run: go vet ./...
@@ -54,6 +71,7 @@ jobs:
   openapi:
     name: OpenAPI
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -69,6 +87,7 @@ jobs:
   containers:
     name: Docker and Compose
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       COMPOSE_FILE: compose.ci.yaml
       COMPOSE_PROJECT_NAME: pushboy-ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -113,15 +132,15 @@ jobs:
           create_response="$(curl -fsS -X POST http://127.0.0.1:18080/v1/users/ \
             -H 'Content-Type: application/json' \
             -d "{\"id\":\"${user_id}\"}")"
-          echo "$create_response" | grep -F "\"ID\":\"${user_id}\""
+          echo "$create_response" | jq -e --arg id "$user_id" '.ID == $id'
 
           get_response="$(curl -fsS "http://127.0.0.1:18080/v1/users/${user_id}")"
-          echo "$get_response" | grep -F "\"ID\":\"${user_id}\""
+          echo "$get_response" | jq -e --arg id "$user_id" '.ID == $id'
 
           topics_response="$(curl -fsS http://127.0.0.1:18080/v1/topics/)"
-          echo "$topics_response" | grep -F '"ID":"broadcast"'
+          echo "$topics_response" | jq -e 'any(.[]; .ID == "broadcast")'
 
-          docker compose exec -T postgres psql -U pushboy -d pushboy -Atc "SELECT MAX(version) FROM schema_migrations;" | grep -E '^[0-9]+$'
+          docker compose exec -T postgres psql -U pushboy -d pushboy -Atc "SELECT version > 0 AND NOT dirty FROM schema_migrations;" | grep -qx t
 
       - name: Show Compose status
         if: always()
