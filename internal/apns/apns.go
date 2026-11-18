@@ -31,15 +31,16 @@ const (
 )
 
 type Client struct {
-	httpClients []*http.Client
-	next        atomic.Uint32
-	sem         chan struct{} // caps in-flight requests; nil = unlimited
-	keyID       string
-	teamID      string
-	bundleID    string
-	signingKey  []byte
-	endpoint    string
-	maxRetries  int
+	httpClients       []*http.Client
+	next              atomic.Uint32
+	sem               chan struct{} // caps in-flight requests; nil = unlimited
+	keyID             string
+	teamID            string
+	bundleID          string
+	signingKey        []byte
+	endpoint          string
+	broadcastEndpoint string
+	maxRetries        int
 
 	channelManagementEndpoint string
 
@@ -129,22 +130,26 @@ func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, 
 	}
 
 	channelManagementEndpoint := productionChannelManagementEndpoint
+	broadcastEndpoint := productionBroadcastEndpoint
 	if useSandbox {
 		channelManagementEndpoint = developmentChannelManagementEndpoint
+		broadcastEndpoint = developmentBroadcastEndpoint
 	}
 	if endpointOverride != "" {
 		channelManagementEndpoint = endpointOverride
+		broadcastEndpoint = endpointOverride
 	}
 
 	return &Client{
-		httpClients: clients,
-		sem:         make(chan struct{}, maxConcurrent),
-		keyID:       keyID,
-		teamID:      teamID,
-		bundleID:    bundleID,
-		signingKey:  p8KeyBytes,
-		endpoint:    endpoint,
-		maxRetries:  maxRetries,
+		httpClients:       clients,
+		sem:               make(chan struct{}, maxConcurrent),
+		keyID:             keyID,
+		teamID:            teamID,
+		bundleID:          bundleID,
+		signingKey:        p8KeyBytes,
+		endpoint:          endpoint,
+		broadcastEndpoint: broadcastEndpoint,
+		maxRetries:        maxRetries,
 
 		channelManagementEndpoint: channelManagementEndpoint,
 	}

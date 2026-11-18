@@ -427,6 +427,48 @@ func TestLiveActivityChannelLifecycle(t *testing.T) {
 	}
 }
 
+func TestLiveActivityChannelPreservesOpaqueActivityID(t *testing.T) {
+	store := &serverStoreStub{t: t}
+	var gotID string
+	store.getLAChannelFunc = func(_ context.Context, activityID string) (*storage.LiveActivityChannel, error) {
+		gotID = activityID
+		return &storage.LiveActivityChannel{ActivityID: activityID, TopicID: "topic-1", ChannelID: "channel-1"}, nil
+	}
+	router := New(
+		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
+		&serverJobPipeline{t: t, failOnSubmit: true},
+		&serverLAJobPipeline{t: t, failOnSubmit: true},
+	).setupRouter()
+
+	for _, test := range []struct {
+		name string
+		path string
+		id   string
+	}{
+		{"encoded slash", "race%2F2026", "race/2026"},
+		{"literal percent escape", "race%2542", "race%42"},
+		{"trailing percent", "race%25", "race%"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/live-activity/channels/"+test.path, nil))
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", recorder.Code, recorder.Body.String())
+			}
+			if gotID != test.id {
+				t.Fatalf("lookup activity ID = %q, want %q", gotID, test.id)
+			}
+			var response map[string]any
+			if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			if response["activityId"] != test.id {
+				t.Fatalf("response activity ID = %v, want %q", response["activityId"], test.id)
+			}
+		})
+	}
+}
+
 func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 	now := time.Now().UTC()
 	store := &serverStoreStub{t: t}

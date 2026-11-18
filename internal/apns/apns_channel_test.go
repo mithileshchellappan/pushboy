@@ -105,6 +105,50 @@ func TestSendLiveActivityBroadcastUsesExistingProviderPath(t *testing.T) {
 	}
 }
 
+func TestSendLiveActivityBroadcastUsesBroadcastHost(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		sandbox  bool
+		override string
+		wantHost string
+	}{
+		{"sandbox", true, "", "api-broadcast.sandbox.push.apple.com"},
+		{"production", false, "", "api-broadcast.push.apple.com"},
+		{"local override", false, "https://local.example", "local.example"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := NewClient(nil, "kid", "team", "com.example.app", test.sandbox, test.override, 1, 1, 0)
+			client.cachedJWT = "jwt"
+			client.jwtExpiry = time.Now().Add(time.Hour)
+			transport := &broadcastHostTransport{}
+			client.httpClients[0].Transport = transport
+			err := client.SendLiveActivityBroadcast(context.Background(), "channel-1", &model.LiveActivityRequest{
+				Action:       model.LiveActivityActionUpdate,
+				ActivityID:   "activity-1",
+				ActivityType: "RaceAttributes",
+				Payload:      json.RawMessage(`{"lap":42}`),
+				CreatedAt:    time.Unix(1_700_000_000, 0).UTC(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if transport.host != test.wantHost || transport.path != "/4/broadcasts/apps/com.example.app" {
+				t.Fatalf("broadcast route = %s%s, want %s/4/broadcasts/apps/com.example.app", transport.host, transport.path, test.wantHost)
+			}
+		})
+	}
+}
+
+type broadcastHostTransport struct {
+	host string
+	path string
+}
+
+func (t *broadcastHostTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	t.host, t.path = r.URL.Host, r.URL.Path
+	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: http.NoBody, Header: make(http.Header), Request: r}, nil
+}
+
 func TestDeleteLiveActivityChannelTreatsMissingChannelAsDeleted(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
@@ -200,6 +244,7 @@ func testChannelClient(server *httptest.Server) *Client {
 		httpClients:               []*http.Client{server.Client()},
 		bundleID:                  "com.example.app",
 		endpoint:                  server.URL,
+		broadcastEndpoint:         server.URL,
 		channelManagementEndpoint: server.URL,
 		cachedJWT:                 "jwt",
 		jwtExpiry:                 time.Now().Add(time.Hour),

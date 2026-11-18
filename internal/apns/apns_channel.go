@@ -16,6 +16,9 @@ import (
 const (
 	developmentChannelManagementEndpoint = "https://api-manage-broadcast.sandbox.push.apple.com:2195"
 	productionChannelManagementEndpoint  = "https://api-manage-broadcast.push.apple.com:2196"
+	// Apple's broadcast request examples use a separate host from device pushes.
+	developmentBroadcastEndpoint = "https://api-broadcast.sandbox.push.apple.com"
+	productionBroadcastEndpoint  = "https://api-broadcast.push.apple.com"
 )
 
 func (c *Client) CreateLiveActivityChannel(ctx context.Context) (string, error) {
@@ -79,7 +82,7 @@ func (c *Client) SendLiveActivityBroadcast(
 	}
 	endpoint := fmt.Sprintf(
 		"%s/4/broadcasts/apps/%s",
-		c.endpoint,
+		c.broadcastEndpoint,
 		url.PathEscape(c.bundleID),
 	)
 	return c.sendWithRetry(ctx, endpoint, body, jwtToken, headers)

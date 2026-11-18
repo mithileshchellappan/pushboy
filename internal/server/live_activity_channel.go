@@ -17,7 +17,12 @@ type provisionLAChannelRequest struct {
 }
 
 func laChannelActivityID(r *http.Request) (string, error) {
-	return url.PathUnescape(chi.URLParam(r, "activityID"))
+	activityID := chi.URLParam(r, "activityID")
+	if r.URL.RawPath == "" {
+		return activityID, nil
+	}
+	// Chi routes on RawPath when present; otherwise Path is already decoded.
+	return url.PathUnescape(activityID)
 }
 
 func toLAChannelResponse(channel *storage.LiveActivityChannel) map[string]any {

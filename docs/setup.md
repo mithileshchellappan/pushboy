@@ -134,8 +134,9 @@ endpoint for the selected environment:
 - sandbox: `api-manage-broadcast.sandbox.push.apple.com:2195`;
 - production: `api-manage-broadcast.push.apple.com:2196`.
 
-Broadcast publishing continues to use the standard APNs sandbox or production
-endpoint on port `443`.
+Broadcast publishing uses `api-broadcast.sandbox.push.apple.com:443` or
+`api-broadcast.push.apple.com:443`, respectively. Direct device pushes use the
+standard APNs sandbox or production endpoint on port `443`.
 
 ### FCM
 
