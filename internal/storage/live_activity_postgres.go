@@ -141,11 +141,6 @@ type liveActivityFanoutScope struct {
 	topicID    string
 }
 
-func (scope liveActivityFanoutScope) requiresActivityAssociation(startDispatchPending bool) bool {
-	return scope.action != model.LiveActivityActionStart &&
-		!startDispatchPending
-}
-
 func (s *PostgresStore) UpsertLiveActivityToken(ctx context.Context, token *LiveActivityToken) (*LiveActivityToken, error) {
 	now := time.Now().UTC()
 	if token.ID == "" {
@@ -334,7 +329,7 @@ func (s *PostgresStore) createOrGetLAStartJob(
 		&existing,
 	)
 	if err == nil {
-		if existing.TopicID != job.TopicID {
+		if existing.UserID != job.UserID || existing.TopicID != job.TopicID || existing.ActivityType != job.ActivityType {
 			return nil, fmt.Errorf(
 				"live activity job scope conflicts with requested scope: %w",
 				Errors.Conflict,
@@ -739,41 +734,18 @@ func (p *postgresLATokenPager) Next(
 	cursor string,
 	batchSize int,
 ) (*LiveActivityTokenBatch, error) {
-	apnsTokenType := model.LiveActivityTokenTypeUpdate
-	if p.scope.action == model.LiveActivityActionStart {
-		apnsTokenType = model.LiveActivityTokenTypeStart
-	}
-	startDispatchPending := false
-	if p.scope.action != model.LiveActivityActionStart {
-		err := p.store.db.QueryRowContext(
-			ctx,
-			`SELECT EXISTS (
-				SELECT 1
-				FROM live_activity_dispatches
-				WHERE live_activity_job_id = $1
-				  AND action = 'start'
-				  AND status IN ('ENQUEUE_PENDING', 'QUEUED', 'IN_PROGRESS', 'DISPATCHED')
-			)`,
-			p.scope.jobID,
-		).Scan(&startDispatchPending)
-		if err != nil {
-			return nil, fmt.Errorf("error checking pending LA start dispatch: %w", err)
-		}
-	}
-	requiresActivityAssociation := p.scope.requiresActivityAssociation(startDispatchPending)
-
 	var rows *sql.Rows
 	var err error
 
 	switch {
-	case requiresActivityAssociation && p.scope.userID != "":
-		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByActivityAndUserQuery, p.scope.activityID, p.scope.userID, cursor, batchSize+1)
-	case requiresActivityAssociation:
-		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByActivityAndTopicQuery, p.scope.activityID, p.scope.topicID, cursor, batchSize+1)
+	case p.scope.action != model.LiveActivityActionStart && p.scope.userID != "":
+		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByActivityAndUserQuery, p.scope.activityID, p.scope.userID, cursor, batchSize+1, p.scope.jobID)
+	case p.scope.action != model.LiveActivityActionStart:
+		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByActivityAndTopicQuery, p.scope.activityID, p.scope.topicID, cursor, batchSize+1, p.scope.jobID)
 	case p.scope.userID != "":
-		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByUserQuery, p.scope.userID, cursor, apnsTokenType, batchSize+1)
+		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByUserQuery, p.scope.userID, cursor, model.LiveActivityTokenTypeStart, batchSize+1)
 	default:
-		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByTopicQuery, p.scope.topicID, cursor, apnsTokenType, batchSize+1)
+		rows, err = p.store.db.QueryContext(ctx, laTokenBatchByTopicQuery, p.scope.topicID, cursor, model.LiveActivityTokenTypeStart, batchSize+1)
 	}
 
 	if err != nil {
@@ -915,27 +887,61 @@ func (s *PostgresStore) ApplyLAOutcomeBatch(ctx context.Context, outcomes []mode
 }
 
 func (s *PostgresStore) completeEmptyLADispatch(ctx context.Context, dispatchID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("error starting empty LA dispatch completion transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var activityID string
+	if err := tx.QueryRowContext(ctx, `SELECT j.activity_id
+		FROM live_activity_dispatches d
+		JOIN live_activity_jobs j ON j.id = d.live_activity_job_id
+		WHERE d.id = $1`, dispatchID).Scan(&activityID); err != nil {
+		return fmt.Errorf("error resolving empty LA dispatch activity: %w", err)
+	}
+	// Provisioning must finish before deciding whether a manual channel keeps
+	// this activity alive. Hold the shared activity lock through the transition.
+	if err := lockLAActivity(ctx, tx, activityID); err != nil {
+		return fmt.Errorf("error locking empty LA dispatch activity: %w", err)
+	}
+
 	var action string
 	var jobID string
-	err := s.db.QueryRowContext(
+	var dispatchStatus string
+	err = tx.QueryRowContext(
 		ctx,
-		`UPDATE live_activity_dispatches
+		// Channel subscribers may have started activities locally without ever
+		// registering a remote-start token. Their logical job must stay active.
+		`UPDATE live_activity_dispatches d
 		 SET total_count = 0,
-		     status = 'COMPLETED',
+		     status = CASE WHEN d.action = 'start' AND NOT EXISTS (
+		         SELECT 1 FROM live_activity_jobs j
+		         JOIN live_activity_channels c ON c.activity_id = j.activity_id AND c.topic_id = j.topic_id
+		         WHERE j.id = d.live_activity_job_id
+		     ) THEN 'FAILED' ELSE 'COMPLETED' END,
 		     completed_at = NOW()
-		 WHERE id = $1
-		 RETURNING action, live_activity_job_id`,
+		 WHERE d.id = $1
+		 RETURNING d.action, d.live_activity_job_id, d.status`,
 		dispatchID,
-	).Scan(&action, &jobID)
+	).Scan(&action, &jobID, &dispatchStatus)
 	if err != nil {
 		return fmt.Errorf("error completing empty LA dispatch: %w", err)
 	}
 
-	switch action {
-	case string(model.LiveActivityActionEnd):
-		if err := s.CloseLAJobIfActive(ctx, jobID, time.Now().UTC()); err != nil && !errors.Is(err, Errors.NotFound) {
-			return fmt.Errorf("error closing empty LA end job: %w", err)
+	if (action == string(model.LiveActivityActionStart) && dispatchStatus == "FAILED") || action == string(model.LiveActivityActionEnd) {
+		status := model.LiveActivityJobStatusClosed
+		if action == string(model.LiveActivityActionStart) {
+			status = model.LiveActivityJobStatusFailed
 		}
+		if _, err := tx.ExecContext(ctx, `UPDATE live_activity_jobs
+			SET status = $1, closed_at = COALESCE(closed_at, NOW()), updated_at = NOW()
+			WHERE id = $2 AND status = 'ACTIVE' AND closed_at IS NULL`, status, jobID); err != nil {
+			return fmt.Errorf("error terminating empty LA job: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("error committing empty LA dispatch completion: %w", err)
 	}
 	return nil
 }
@@ -1210,7 +1216,29 @@ func (s *PostgresStore) InvalidateExpiredLAUpdateTokens(ctx context.Context, lim
 	return int(rowsAffected), nil
 }
 
+// Keep pending-start eligibility and token selection in one statement snapshot;
+// a separate pending-state read can admit tokens registered after start completion.
 const laTokenBatchByActivityAndUserQuery = `
+WITH pending_start AS MATERIALIZED (
+         SELECT EXISTS (
+               SELECT 1 FROM live_activity_dispatches
+               WHERE live_activity_job_id = $5 AND action = 'start'
+                 AND status IN ('ENQUEUE_PENDING', 'QUEUED', 'IN_PROGRESS', 'DISPATCHED')
+         ) AS pending
+       )
+       (
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       WHERE lat.user_id = $2
+         AND lat.id > $3
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND lat.token_type = 'update'
+         AND (SELECT pending FROM pending_start)
+       ORDER BY lat.id
+       LIMIT $4
+       ) UNION ALL (
        SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_token_activities lata
@@ -1221,23 +1249,51 @@ const laTokenBatchByActivityAndUserQuery = `
          AND lat.invalidated_at IS NULL
          AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
          AND lat.token_type = 'update'
+         AND NOT (SELECT pending FROM pending_start)
        ORDER BY lata.token_id
+       LIMIT $4
+       )
+       ORDER BY id
        LIMIT $4`
 
 const laTokenBatchByActivityAndTopicQuery = `
+WITH pending_start AS MATERIALIZED (
+         SELECT EXISTS (
+               SELECT 1 FROM live_activity_dispatches
+               WHERE live_activity_job_id = $5 AND action = 'start'
+                 AND status IN ('ENQUEUE_PENDING', 'QUEUED', 'IN_PROGRESS', 'DISPATCHED')
+         ) AS pending
+       )
+       (
+       SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
+              lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
+       FROM live_activity_tokens lat
+       JOIN live_activity_user_topic_subscriptions sub
+         ON sub.user_id = lat.user_id AND sub.topic_id = $2
+       WHERE lat.id > $3
+         AND lat.invalidated_at IS NULL
+         AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
+         AND lat.token_type = 'update'
+         AND (SELECT pending FROM pending_start)
+       ORDER BY lat.id
+       LIMIT $4
+       ) UNION ALL (
        SELECT lat.id, lat.user_id, lat.platform, lat.token_type, lat.token, lat.supports_broadcast_channels,
               lat.created_at, lat.last_seen_at, lat.expires_at, lat.invalidated_at
        FROM live_activity_token_activities lata
        JOIN live_activity_tokens lat ON lat.id = lata.token_id
        JOIN live_activity_user_topic_subscriptions sub
-         ON sub.user_id = lat.user_id
-        AND sub.topic_id = $2
+         ON sub.user_id = lat.user_id AND sub.topic_id = $2
        WHERE lata.activity_id = $1
          AND lata.token_id > $3
          AND lat.invalidated_at IS NULL
          AND (lat.expires_at IS NULL OR lat.expires_at > NOW())
          AND lat.token_type = 'update'
+         AND NOT (SELECT pending FROM pending_start)
        ORDER BY lata.token_id
+       LIMIT $4
+       )
+       ORDER BY id
        LIMIT $4`
 
 const laTokenBatchByUserQuery = `

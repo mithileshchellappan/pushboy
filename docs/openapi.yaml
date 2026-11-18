@@ -538,8 +538,11 @@ paths:
         creator and reuse its stored mapping without another APNs call;
         different activity IDs remain concurrent. Channel delivery applies to
         topic-scoped Live Activity jobs with the same topicId; user-scoped jobs
-        remain token-only. Reusing the activityId for another topic returns
-        409.
+        remain token-only. Reusing the activityId for another topic, or
+        provisioning for a failed, closed, or expired logical activity,
+        returns 409. Empty-start completion uses the same activity lock, so
+        it cannot fail a logical job while its channel is being provisioned.
+        Provisioning before a logical job exists remains supported.
 
         The identifiers are opaque and are matched without normalization.
         APNs channel creation has no idempotency key. The lock prevents
@@ -625,8 +628,11 @@ paths:
         activityId-to-topicId channel mapping through the same locked operation
         as the channel PUT endpoint. Channel provider, lock, and persistence
         failures are logged and the start continues token-only. A mapping to a
-        different topic, or an existing job for another scope, returns 409
-        before APNs channel creation. User-scoped starts never create channels.
+        different topic, or an existing job for another user, topic, or activity
+        type, returns 409 before APNs channel creation. User-scoped starts
+        never create channels. A repeated start for the same active activity
+        returns already_started. Reusing a failed, closed, or expired activityId
+        returns 409; retry with a new activityId.
         Concurrent same-activity failures retry APNs serially while holding a
         database transaction and connection; no cooldown or provisioning state
         is added.
@@ -637,6 +643,15 @@ paths:
         dispatch on a mapping lookup error so callers can retry instead of
         leaving channel activities open. A missing mapping is normal token-only
         behavior for both actions.
+
+        Dispatch is asynchronous. A token-only start with no eligible
+        recipients marks both its dispatch and job FAILED and releases the
+        active scope. After registering an eligible token, start again with a
+        new activityId. A matching channel-backed job remains active when
+        there are no remote-start targets, because clients may have started
+        activities manually on that channel; its empty start dispatch completes.
+        A broadcast update or end counts one channel request, not one request
+        per subscribed device.
       requestBody:
         required: true
         content:
@@ -690,7 +705,8 @@ paths:
         "409":
           description: |
             The activityId already has a channel mapping or start job for
-            another topic or user scope.
+            another topic or user scope or activity type, or the activityId
+            belongs to a failed, closed, or expired activity.
           content:
             text/plain:
               schema:

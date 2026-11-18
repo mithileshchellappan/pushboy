@@ -245,22 +245,6 @@ func TestFailLADispatchEnqueueRecordsPartialCountWithoutOverwritingTerminalStatu
 	}
 }
 
-func TestCompleteLADispatchEnqueueKeepsJobActiveWhenStartHasNoTargets(t *testing.T) {
-	scenario := &liveActivityFanoutScenario{
-		emptyDispatchAction: model.LiveActivityActionStart,
-		emptyDispatchJobID:  "job-1",
-		jobStatus:           model.LiveActivityJobStatusActive,
-	}
-	store := newLiveActivityFanoutTestStore(t, scenario)
-
-	if err := store.CompleteLADispatchEnqueue(context.Background(), "dispatch-1", 0); err != nil {
-		t.Fatalf("CompleteLADispatchEnqueue error = %v", err)
-	}
-	if got := scenario.currentJobStatus(); got != model.LiveActivityJobStatusActive {
-		t.Fatalf("job status = %q, want %q", got, model.LiveActivityJobStatusActive)
-	}
-}
-
 func TestApplyLAOutcomeBatchUsesSetBasedWrites(t *testing.T) {
 	scenario := &liveActivityFanoutScenario{execRowsAffected: 1}
 	store := newLiveActivityFanoutTestStore(t, scenario)
@@ -323,9 +307,6 @@ type liveActivityFanoutScenario struct {
 	tokenQueries             []string
 	execQueries              []string
 	execRowsAffected         int64
-	emptyDispatchAction      model.LiveActivityAction
-	emptyDispatchJobID       string
-	jobStatus                model.LiveActivityJobStatus
 }
 
 func firstLATokenBatch(
@@ -356,12 +337,6 @@ func (s *liveActivityFanoutScenario) allExecQueries() []string {
 	queries := make([]string, len(s.execQueries))
 	copy(queries, s.execQueries)
 	return queries
-}
-
-func (s *liveActivityFanoutScenario) currentJobStatus() model.LiveActivityJobStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.jobStatus
 }
 
 func (s *liveActivityFanoutScenario) tokenQueryKinds() []string {
@@ -458,16 +433,6 @@ func (c *liveActivityFanoutConn) Begin() (driver.Tx, error) {
 
 func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	switch {
-	case strings.Contains(query, "UPDATE live_activity_dispatches") &&
-		strings.Contains(query, "RETURNING action, live_activity_job_id"):
-		c.scenario.mu.Lock()
-		action := c.scenario.emptyDispatchAction
-		jobID := c.scenario.emptyDispatchJobID
-		c.scenario.mu.Unlock()
-		return &liveActivityFanoutRows{
-			columns: []string{"action", "live_activity_job_id"},
-			values:  [][]driver.Value{{string(action), jobID}},
-		}, nil
 	case strings.Contains(query, "SELECT lad.action") && strings.Contains(query, "JOIN live_activity_jobs"):
 		scope := c.scenario.scope
 		return &liveActivityFanoutRows{
@@ -480,26 +445,19 @@ func (c *liveActivityFanoutConn) QueryContext(ctx context.Context, query string,
 				scope.topicID,
 			}},
 		}, nil
-	case strings.Contains(query, "SELECT EXISTS") && strings.Contains(query, "action = 'start'"):
-		if !strings.Contains(query, "'ENQUEUE_PENDING'") {
-			return nil, fmt.Errorf("start-pending query ignores dispatches accepted by the API but not yet promoted to QUEUED: %s", query)
-		}
-		if len(args) != 1 {
-			return nil, fmt.Errorf("start-pending query args len = %d, want 1", len(args))
-		}
-		return &liveActivityFanoutRows{
-			columns: []string{"exists"},
-			values:  [][]driver.Value{{c.scenario.nextStartDispatchPending()}},
-		}, nil
 	case strings.Contains(query, "SELECT lat.id"):
 		queryKind := "user"
 		wantArgs := 4
 		if strings.Contains(query, "live_activity_token_activities") {
+			wantArgs = 5
 			queryKind = "activity_user"
 			if strings.Contains(query, "live_activity_user_topic_subscriptions") {
 				queryKind = "activity_topic"
 			} else if !strings.Contains(query, "lat.user_id = $2") {
 				return nil, fmt.Errorf("activity token query is missing user/topic scope: %s", query)
+			}
+			if c.scenario.nextStartDispatchPending() {
+				queryKind = strings.TrimPrefix(queryKind, "activity_")
 			}
 		} else if strings.Contains(query, "live_activity_user_topic_subscriptions") {
 			queryKind = "topic"
@@ -537,14 +495,6 @@ func (c *liveActivityFanoutConn) ExecContext(ctx context.Context, query string, 
 		rowsAffected := c.scenario.execRowsAffected
 		c.scenario.mu.Unlock()
 		return driver.RowsAffected(rowsAffected), nil
-	}
-
-	if strings.Contains(query, "UPDATE live_activity_jobs") &&
-		strings.Contains(query, "SET status = 'FAILED'") {
-		c.scenario.mu.Lock()
-		c.scenario.jobStatus = model.LiveActivityJobStatusFailed
-		c.scenario.mu.Unlock()
-		return driver.RowsAffected(1), nil
 	}
 
 	if !strings.Contains(query, "UPDATE live_activity_dispatches") ||

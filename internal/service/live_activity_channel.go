@@ -11,7 +11,7 @@ import (
 
 var (
 	ErrLAChannelUnavailable    = errors.New("live activity channel provider is unavailable")
-	ErrLAChannelConflict       = errors.New("live activity channel topic conflicts with the existing mapping")
+	ErrLAChannelConflict       = errors.New("live activity channel conflicts with the existing activity scope or state")
 	ErrLAChannelLookupFailed   = errors.New("live activity channel lookup failed")
 	ErrLAChannelProviderFailed = errors.New("live activity channel provider failed")
 )

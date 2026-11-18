@@ -117,6 +117,40 @@ func TestCreateLAStartRetryDoesNotProvisionUnusedChannel(t *testing.T) {
 	}
 }
 
+func TestCreateLAStartRejectsTerminalIDWithoutSideEffects(t *testing.T) {
+	past := time.Now().UTC().Add(-time.Hour)
+	for _, test := range []struct {
+		name      string
+		status    model.LiveActivityJobStatus
+		closedAt  *time.Time
+		expiresAt *time.Time
+	}{
+		{name: "failed", status: model.LiveActivityJobStatusFailed},
+		{name: "closed", status: model.LiveActivityJobStatusClosed},
+		{name: "expired", status: model.LiveActivityJobStatusActive, expiresAt: &past},
+		{name: "closed marker", status: model.LiveActivityJobStatusActive, closedAt: &past},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &laDispatchStoreStub{job: &storage.LiveActivityJob{
+				ID: "job-1", ActivityID: "race-1", ActivityType: "race", TopicID: "topic-1",
+				Status: test.status, ClosedAt: test.closedAt, ExpiresAt: test.expiresAt,
+			}}
+			provider := &channelProviderStub{createID: "unused-channel"}
+			service := NewPushBoyService(store, "", provider)
+			_, err := service.CreateLADispatch(context.Background(), LADispatchRequest{
+				Action: model.LiveActivityActionStart, ActivityID: "race-1",
+				ActivityType: "race", TopicID: "topic-1", Payload: json.RawMessage(`{"lap":1}`),
+			})
+			if !errors.Is(err, storage.Errors.Conflict) {
+				t.Fatalf("terminal start error = %v, want conflict", err)
+			}
+			if store.channelEnsured || provider.createCalls != 0 || store.dispatchCreated {
+				t.Fatalf("terminal retry changed state: channel ensured=%v, calls=%d, dispatch created=%v", store.channelEnsured, provider.createCalls, store.dispatchCreated)
+			}
+		})
+	}
+}
+
 func TestCreateLAStartRetryRejectsDifferentScopeWithoutProvisioning(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -151,8 +185,8 @@ func TestCreateLAStartRetryRejectsDifferentScopeWithoutProvisioning(t *testing.T
 				TopicID:      test.requestTopic,
 				Payload:      json.RawMessage(`{"lap":1}`),
 			})
-			if !errors.Is(err, ErrLAChannelConflict) {
-				t.Fatalf("CreateLADispatch error = %v, want channel conflict", err)
+			if !errors.Is(err, storage.Errors.Conflict) {
+				t.Fatalf("CreateLADispatch error = %v, want scope conflict", err)
 			}
 			if store.channelEnsured || provider.createCalls != 0 || store.dispatchCreated {
 				t.Fatalf(
@@ -247,8 +281,8 @@ func TestCreateLAStartRejectsExistingChannelForAnotherTopic(t *testing.T) {
 		TopicID:      "topic-1",
 		Payload:      json.RawMessage(`{"lap":1}`),
 	})
-	if !errors.Is(err, ErrLAChannelConflict) {
-		t.Fatalf("CreateLADispatch error = %v, want channel conflict", err)
+	if !errors.Is(err, storage.Errors.Conflict) {
+		t.Fatalf("CreateLADispatch error = %v, want conflict", err)
 	}
 	if store.startJobCreated {
 		t.Fatal("start job was created despite channel topic conflict")
@@ -270,8 +304,8 @@ func TestCreateLAStartClassifiesAtomicJobConflict(t *testing.T) {
 		TopicID:      "topic-1",
 		Payload:      json.RawMessage(`{"lap":1}`),
 	})
-	if !errors.Is(err, ErrLAChannelConflict) {
-		t.Fatalf("CreateLADispatch error = %v, want channel conflict", err)
+	if !errors.Is(err, storage.Errors.Conflict) {
+		t.Fatalf("CreateLADispatch error = %v, want conflict", err)
 	}
 }
 
@@ -462,7 +496,7 @@ func (s *laDispatchStoreStub) CreateOrGetLAStartJob(
 		return nil, s.startJobError
 	}
 	if s.job != nil {
-		if s.job.TopicID != job.TopicID {
+		if s.job.UserID != job.UserID || s.job.TopicID != job.TopicID || s.job.ActivityType != job.ActivityType {
 			return nil, storage.Errors.Conflict
 		}
 		return &storage.LAStartJobResult{Job: s.job}, nil

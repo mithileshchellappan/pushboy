@@ -84,7 +84,27 @@ transaction advisory lock scoped to `activityId`. Same-activity callers wait,
 then reuse the stored winner without calling APNs. Different activity IDs do
 not block each other. Start-job creation uses the same lock and rejects a
 channel or job for another scope before either record is written. Reusing an
-`activityId` with another topic returns `409` without calling APNs.
+`activityId` with another user, topic, or activity type returns `409` without
+calling APNs. Repeating the same active start returns `already_started`.
+
+A token-only start that finds no eligible recipients marks its dispatch and
+job `FAILED` atomically and releases the active activity-type/audience scope.
+Register an eligible token and use a new `activityId` to retry. Failed, closed,
+or expired activity IDs are retained for history and return `409` when reused
+for a start.
+
+A job with a matching channel remains active when it has no remote-start
+targets: clients may already have started activities manually on that channel.
+Its empty start dispatch completes, and subsequent updates can still publish
+to the channel. This does not establish how many devices subscribed or rendered
+the activity.
+
+Empty-start completion shares the activity lock with channel provisioning.
+Provisioning that finishes first keeps the logical job active; after a job has
+failed, closed, or expired, channel PUT returns `409` without creating a channel.
+Use a new activity ID for a new attempt. Channel GET and DELETE remain available
+for historical mappings, and provisioning before the logical job exists is
+still supported.
 
 The identifiers are opaque. Pushboy does not trim or otherwise normalize
 `activityId`, `topicId`, or the APNs `channelId`; every caller must use the

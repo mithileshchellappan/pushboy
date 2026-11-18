@@ -279,12 +279,12 @@ func (s *PushboyService) createLAStart(ctx context.Context, req LADispatchReques
 	}
 	start, err := s.store.CreateOrGetLAStartJob(ctx, job, createChannel)
 	if err != nil {
-		if errors.Is(err, storage.Errors.Conflict) {
-			return nil, ErrLAChannelConflict
-		}
 		return nil, err
 	}
 	if !start.Created {
+		if start.Job.Status != model.LiveActivityJobStatusActive || start.Job.ClosedAt != nil || laExpired(start.Job.ExpiresAt, now) {
+			return nil, fmt.Errorf("activityId is no longer active; start with a new activityId: %w", storage.Errors.Conflict)
+		}
 		return &LADispatchResult{
 			Job:    start.Job,
 			Status: "already_started",

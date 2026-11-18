@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,7 +22,123 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
+	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
+
+func TestPreprovisionedLAChannelAcceptsUpdatesWithoutStartTokens(t *testing.T) {
+	databaseURL := os.Getenv("PUSHBOY_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PUSHBOY_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	store := openLAChannelTestStores(t, databaseURL)[0]
+	db, err := sql.Open("postgres", databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	topicID, activityID, channelID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	if err := store.CreateTopic(context.Background(), &storage.Topic{ID: topicID, Name: topicID}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := db.Exec(`DELETE FROM live_activity_channels WHERE activity_id = $1`, activityID); err != nil {
+			t.Errorf("delete channel: %v", err)
+		}
+		if err := store.DeleteTopic(context.Background(), topicID); err != nil {
+			t.Errorf("delete topic: %v", err)
+		}
+	})
+	if _, _, err := store.EnsureLAChannel(context.Background(), activityID, topicID, func(context.Context) (string, error) {
+		return channelID, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	laPipeline := &serverLAJobPipeline{t: t}
+	router := testRouter(t, store, &serverJobPipeline{t: t}, laPipeline)
+	for _, action := range []string{"start", "update"} {
+		body := fmt.Sprintf(`{"action":%q,"activityId":%q,"payload":{"lap":1}}`, action, activityID)
+		if action == "start" {
+			body = fmt.Sprintf(`{"action":"start","activityId":%q,"activityType":"RaceAttributes","topicId":%q,"payload":{"lap":1}}`, activityID, topicID)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", strings.NewReader(body))
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("%s status = %d; body: %s", action, recorder.Code, recorder.Body.String())
+		}
+		if action == "start" {
+			if err := store.CompleteLADispatchEnqueue(context.Background(), laPipeline.submitted[0].DispatchID, 0); err != nil {
+				t.Fatal(err)
+			}
+			job, err := store.GetLAJobByActivityID(context.Background(), activityID)
+			if err != nil || job.Status != model.LiveActivityJobStatusActive || job.ClosedAt != nil {
+				t.Fatalf("channel-backed job = %+v, %v; want ACTIVE", job, err)
+			}
+			var status string
+			if err := db.QueryRow(`SELECT status FROM live_activity_dispatches WHERE id = $1`, laPipeline.submitted[0].DispatchID).Scan(&status); err != nil || status != "COMPLETED" {
+				t.Fatalf("empty remote-start dispatch = %q, %v; want COMPLETED", status, err)
+			}
+		}
+	}
+	var tasks []model.LASendTask
+	if err := workers.FanoutLATokens(context.Background(), store, laPipeline.submitted[1], 10, func(_ context.Context, task model.LASendTask) error {
+		tasks = append(tasks, task)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 1 || tasks[0].ChannelID != channelID || tasks[0].Target.TokenID != "" {
+		t.Fatalf("manual activity update tasks = %+v; want one channel target", tasks)
+	}
+}
+
+func TestLAStartHTTPRejectsChangedOwnerAndTerminalID(t *testing.T) {
+	databaseURL := os.Getenv("PUSHBOY_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("set PUSHBOY_TEST_DATABASE_URL to run PostgreSQL integration tests")
+	}
+	store := openLAChannelTestStores(t, databaseURL)[0]
+	users := []string{uuid.NewString(), uuid.NewString()}
+	for _, id := range users {
+		if _, err := store.CreateUser(context.Background(), &storage.User{ID: id}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = store.DeleteUser(context.Background(), id) })
+	}
+	laPipeline := &serverLAJobPipeline{t: t}
+	router := testRouter(t, store, &serverJobPipeline{t: t}, laPipeline)
+	activityID := uuid.NewString()
+	for _, test := range []struct {
+		name     string
+		activity string
+		user     string
+		want     int
+	}{
+		{name: "first start", activity: activityID, user: users[0], want: http.StatusAccepted},
+		{name: "different owner", activity: activityID, user: users[1], want: http.StatusConflict},
+		{name: "terminal retry", activity: activityID, user: users[0], want: http.StatusConflict},
+		{name: "new activity after failure", activity: uuid.NewString(), user: users[0], want: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if test.name == "terminal retry" {
+				if err := store.CompleteLADispatchEnqueue(context.Background(), laPipeline.submitted[0].DispatchID, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			request := httptest.NewRequest(http.MethodPost, "/v1/live-activity/jobs", strings.NewReader(fmt.Sprintf(
+				`{"action":"start","activityId":%q,"activityType":"RaceAttributes","userId":%q,"payload":{"lap":1}}`, test.activity, test.user,
+			)))
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != test.want {
+				t.Errorf("status = %d, want %d; body: %s", recorder.Code, test.want, recorder.Body.String())
+			}
+		})
+	}
+	if len(laPipeline.submitted) != 2 {
+		t.Fatalf("LA submissions = %d, want first and replacement activity only", len(laPipeline.submitted))
+	}
+}
 
 func TestConcurrentLazyLAStartsAcrossInstances(t *testing.T) {
 	databaseURL := os.Getenv("PUSHBOY_TEST_DATABASE_URL")

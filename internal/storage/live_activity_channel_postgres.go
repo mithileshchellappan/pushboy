@@ -49,16 +49,21 @@ func (s *PostgresStore) EnsureLAChannel(
 	}
 
 	var jobTopicID sql.NullString
+	var jobActive bool
+	// The transaction may have waited for the activity lock; expiry must use
+	// this statement's time rather than the transaction-start time of NOW().
 	err = tx.QueryRowContext(
 		ctx,
-		`SELECT topic_id
+		`SELECT topic_id,
+		        status = 'ACTIVE' AND closed_at IS NULL
+		        AND (expires_at IS NULL OR expires_at > statement_timestamp())
 		 FROM live_activity_jobs
 		 WHERE activity_id = $1`,
 		activityID,
-	).Scan(&jobTopicID)
-	if err == nil && (!jobTopicID.Valid || jobTopicID.String != topicID) {
+	).Scan(&jobTopicID, &jobActive)
+	if err == nil && (!jobTopicID.Valid || jobTopicID.String != topicID || !jobActive) {
 		return nil, false, fmt.Errorf(
-			"live activity job topic conflicts with channel topic: %w",
+			"live activity job scope or state conflicts with channel provisioning: %w",
 			Errors.Conflict,
 		)
 	}
