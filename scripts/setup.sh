@@ -66,23 +66,58 @@ fi
 mkdir -p "$INSTALL_DIR/keys"
 
 settings="$INSTALL_DIR/.env"
+if { [ -e "$settings" ] || [ -L "$settings" ]; } && [ ! -f "$settings" ]; then
+  echo "error: ${settings} must be a regular settings file or a link to one" >&2
+  exit 1
+fi
+while [ -L "$settings" ]; do
+  target="$(readlink "$settings")"
+  case "$target" in
+    /*) settings="$target" ;;
+    *) settings="$(dirname "$settings")/$target" ;;
+  esac
+done
 source_settings="$settings"
-if [ ! -f "$settings" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
-  source_settings="$INSTALL_DIR/.env.example"
+if [ ! -f "$settings" ]; then
+  source_settings=/dev/null
+  if [ -f "$INSTALL_DIR/.env.example" ]; then
+    source_settings="$INSTALL_DIR/.env.example"
+  fi
 fi
-updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
-trap 'rm -f "$updated_settings" ${archive:+"$archive"}' EXIT
-if [ -f "$source_settings" ]; then
-  awk '!/^[[:space:]]*(export[[:space:]]+)?PUSHBOY_(IMAGE|COMPOSE_SERVICE)[[:space:]]*=/' \
-    "$source_settings" > "$updated_settings"
-fi
+image=""
 compose_command="docker compose up --build"
 if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
   image="ghcr.io/$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]'):$VERSION"
-  printf '\nPUSHBOY_IMAGE=%s\nPUSHBOY_COMPOSE_SERVICE=release\n' "$image" >> "$updated_settings"
   compose_command="docker compose up --no-build"
 fi
-mv -f "$updated_settings" "$settings"
+
+updated_settings="$(mktemp "$(dirname "$settings")/.env.XXXXXX")"
+trap 'rm -f "$updated_settings" ${preserved_settings:+"$preserved_settings"} ${archive:+"$archive"}' EXIT
+awk -v image="$image" '
+  /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_IMAGE[[:space:]]*=/ {
+    if (image != "" && !found_image++) print "PUSHBOY_IMAGE=" image
+    next
+  }
+  /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_COMPOSE_SERVICE[[:space:]]*=/ {
+    if (image != "" && !found_service++) print "PUSHBOY_COMPOSE_SERVICE=release"
+    next
+  }
+  { print }
+  END {
+    if (image != "" && !found_image) print "PUSHBOY_IMAGE=" image
+    if (image != "" && !found_service) print "PUSHBOY_COMPOSE_SERVICE=release"
+  }
+' "$source_settings" > "$updated_settings"
+if ! cmp -s "$updated_settings" "$settings"; then
+  if [ -f "$settings" ]; then
+    preserved_settings="$(mktemp "$(dirname "$settings")/.env.XXXXXX")"
+    cp -p "$settings" "$preserved_settings"
+    cat "$updated_settings" > "$preserved_settings"
+    mv -f "$preserved_settings" "$settings"
+  else
+    mv -f "$updated_settings" "$settings"
+  fi
+fi
 
 cat <<EOF
 
