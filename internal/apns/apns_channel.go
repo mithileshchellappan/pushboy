@@ -50,7 +50,7 @@ func (c *Client) DeleteLiveActivityChannel(ctx context.Context, channelID string
 		case "ChannelNotRegistered":
 			return nil
 		case "FeatureNotEnabled":
-			return errors.New("APNs broadcast capability is disabled")
+			return fmt.Errorf("APNs broadcast capability is disabled: %w", apnsErr)
 		}
 	}
 	return err

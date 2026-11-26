@@ -3,6 +3,7 @@ package apns
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -149,16 +150,20 @@ func (t *broadcastHostTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: http.NoBody, Header: make(http.Header), Request: r}, nil
 }
 
-func TestDeleteLiveActivityChannelNotRegistered(t *testing.T) {
+func TestDeleteLiveActivityChannelAPNsResponses(t *testing.T) {
 	for _, tc := range []struct {
-		status      int
-		wantSuccess bool
+		status       int
+		reason       string
+		wantSuccess  bool
+		wantRejected bool
 	}{
-		{http.StatusBadRequest, true},
-		{http.StatusGone, false},
-		{http.StatusInternalServerError, false},
+		{http.StatusBadRequest, "ChannelNotRegistered", true, false},
+		{http.StatusGone, "ChannelNotRegistered", false, false},
+		{http.StatusInternalServerError, "ChannelNotRegistered", false, false},
+		{http.StatusBadRequest, "FeatureNotEnabled", false, true},
+		{http.StatusInternalServerError, "FeatureNotEnabled", false, false},
 	} {
-		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+		t.Run(http.StatusText(tc.status)+" "+tc.reason, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodDelete {
 					t.Errorf("method = %s, want DELETE", r.Method)
@@ -170,7 +175,7 @@ func TestDeleteLiveActivityChannelNotRegistered(t *testing.T) {
 					t.Errorf("apns-channel-id = %q, want channel-1", got)
 				}
 				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
+				_ = json.NewEncoder(w).Encode(map[string]string{"reason": tc.reason})
 			}))
 			defer server.Close()
 
@@ -179,6 +184,10 @@ func TestDeleteLiveActivityChannelNotRegistered(t *testing.T) {
 			if (err == nil) != tc.wantSuccess {
 				t.Fatalf("DeleteLiveActivityChannel error = %v, want success %t", err, tc.wantSuccess)
 			}
+			if errors.Is(err, ErrChannelRequestRejected) != tc.wantRejected {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want definite rejection %t", err, tc.wantRejected)
+			}
+
 		})
 	}
 }
