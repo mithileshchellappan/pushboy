@@ -108,6 +108,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      - name: Test installer settings
+        run: sh scripts/test-setup.sh
+
       - name: Build and start Compose stack
         run: docker compose up -d --build
 

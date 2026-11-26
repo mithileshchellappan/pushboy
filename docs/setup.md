@@ -24,7 +24,7 @@ Use the setup script:
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
 ```
 
-Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. The release notes also list the image digest for deployments that pin by digest.
+Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. Installations that link to the same settings file share its release selection. The release notes also list the image digest for deployments that pin by digest.
 
 Set `PUSHBOY_VERSION=main` in the installer to clear the release image selection and build from source. You can also clone the repository manually:
 
