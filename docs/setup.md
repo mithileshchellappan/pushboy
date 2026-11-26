@@ -6,7 +6,7 @@ Pushboy is designed to run behind your own backend, private network, API gateway
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.24+ for source builds
 - Postgres 16 or compatible Postgres server
 - Docker and Docker Compose, if you want the containerized path
 - APNS `.p8` key for iOS sends
@@ -22,11 +22,11 @@ Use the setup script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
-cd ~/pushboy
-docker compose up --build
 ```
 
-Or clone the repository manually:
+Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. Installations that link to the same settings file share its release selection. The release notes also list the image digest for deployments that pin by digest.
+
+Set `PUSHBOY_VERSION=main` in the installer to clear the release image selection and build from source. You can also clone the repository manually:
 
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
@@ -62,6 +62,7 @@ curl http://localhost:8080/v1/topics/
 ```
 
 The Compose file creates a local Postgres database and mounts `./keys` into the Pushboy container as read-only credentials.
+On Linux, grant the container user (UID and GID `10001`) permission to read the mounted credential files and access their directory.
 
 ## Option 2: Local Go Process
 
@@ -92,6 +93,26 @@ go run ./cmd/pushboy
 ```
 
 Pushboy runs Postgres migrations from `db/migrations/postgres` during startup. If startup succeeds, the database schema is ready.
+
+## Install a release binary
+
+Download the archive for your OS and CPU, along with `SHA256SUMS`. Release archives use `darwin` for macOS and `arm64` for Apple silicon. Verify the archive before extracting it:
+
+```bash
+archive=pushboy_v0.1.0_darwin_arm64.tar.gz
+awk -v archive="$archive" '$2 == archive' SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p pushboy &&
+  tar -xzf "$archive" -C pushboy &&
+  (cd pushboy && ./pushboy --version)
+```
+
+On Linux you can use `sha256sum -c` in place of `shasum -a 256 -c`. Set `DATABASE_URL` in the environment or in `.env`. Start `./pushboy` from the extracted directory so it can find the bundled migrations.
+
+## Upgrade and rollback
+
+Keep the current release and take a Postgres backup before starting an upgrade. Start the new binary with the migrations from its archive, or start the new image with the existing Postgres volume. Check `/v1/ping` and the API calls your clients use before resuming traffic.
+
+Rolling back across a schema migration requires a database compatible with the older release. To restore the pre-upgrade database, stop Pushboy, restore the backup and then start the old release with its matching migrations. Restoring that backup discards any database changes made after it was taken.
 
 ## Tenant bootstrap
 
