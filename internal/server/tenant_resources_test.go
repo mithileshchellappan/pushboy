@@ -22,6 +22,7 @@ func TestTenantResourcesRequireBearerAndScope(t *testing.T) {
 	}{
 		{http.MethodPost, "/v2/users", "topics:write"},
 		{http.MethodGet, "/v2/users/" + uuid.NewString(), "users:write"},
+		{http.MethodPut, "/v2/devices/" + uuid.NewString(), "users:write"},
 		{http.MethodPost, "/v2/topics", "users:write"},
 		{http.MethodGet, "/v2/topics/news", "topics:write"},
 	} {
