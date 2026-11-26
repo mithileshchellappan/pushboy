@@ -16,13 +16,12 @@ type provisionLAChannelRequest struct {
 	TopicID string `json:"topicId"`
 }
 
-func laChannelActivityID(r *http.Request) (string, error) {
-	activityID := chi.URLParam(r, "activityID")
+func decodedPathParam(r *http.Request, name string) (string, error) {
+	value := chi.URLParam(r, name)
 	if r.URL.RawPath == "" {
-		return activityID, nil
+		return value, nil
 	}
-	// Chi routes on RawPath when present; otherwise Path is already decoded.
-	return url.PathUnescape(activityID)
+	return url.PathUnescape(value)
 }
 
 func toLAChannelResponse(channel *storage.LiveActivityChannel) map[string]any {
@@ -35,7 +34,7 @@ func toLAChannelResponse(channel *storage.LiveActivityChannel) map[string]any {
 }
 
 func (s *Server) handleProvisionLAChannel(w http.ResponseWriter, r *http.Request) {
-	activityID, err := laChannelActivityID(r)
+	activityID, err := decodedPathParam(r, "activityID")
 	if err != nil {
 		http.Error(w, "Invalid activityId", http.StatusBadRequest)
 		return
@@ -81,7 +80,7 @@ func (s *Server) handleProvisionLAChannel(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleGetLAChannel(w http.ResponseWriter, r *http.Request) {
-	activityID, err := laChannelActivityID(r)
+	activityID, err := decodedPathParam(r, "activityID")
 	if err != nil {
 		http.Error(w, "Invalid activityId", http.StatusBadRequest)
 		return
@@ -101,7 +100,7 @@ func (s *Server) handleGetLAChannel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteLAChannel(w http.ResponseWriter, r *http.Request) {
-	activityID, err := laChannelActivityID(r)
+	activityID, err := decodedPathParam(r, "activityID")
 	if err != nil {
 		http.Error(w, "Invalid activityId", http.StatusBadRequest)
 		return

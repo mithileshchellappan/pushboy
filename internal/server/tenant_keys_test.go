@@ -18,6 +18,7 @@ import (
 )
 
 type keyStoreStub struct {
+	TenantStore
 	authenticate func(context.Context, string) (storage.ServerKeyAccess, error)
 	issue        func(context.Context, storage.ServerKeyAccess, []string, *time.Time) (uuid.UUID, string, error)
 	revoke       func(context.Context, storage.ServerKeyAccess, uuid.UUID) error

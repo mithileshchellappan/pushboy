@@ -8,9 +8,9 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. Only /v2/keys implements
-    tenant server-key authentication. Legacy /v1 routes remain unauthenticated
-    and globally scoped. Deploy behind a trusted backend or private network.
+    notification jobs, and Live Activity dispatches. The /v2 key, user, and topic
+    routes authenticate tenant server keys. The legacy /v1 routes remain
+    unauthenticated and globally scoped. Deploy behind a trusted backend or private network.
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -109,6 +109,178 @@ paths:
           description: Missing keys:manage.
         "404":
           description: Key does not exist within the authenticated tenant.
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/users:
+    post:
+      operationId: createTenantUser
+      tags: [Users]
+      summary: Create a user in the authenticated app tenant
+      description: |
+        Requires users:write. Omit identity or set it to null to create an
+        anonymous user. A supplied identity creates an identified user.
+        Pushboy generates the canonical UID. Invalid UTF-8 and unpaired
+        surrogate escapes return 400.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                identity:
+                  type: [object, "null"]
+                  additionalProperties: false
+                  required: [namespace, externalId]
+                  properties:
+                    namespace:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                      description: Exact identity namespace. The legacy namespace is reserved in all capitalizations.
+                    externalId:
+                      type: string
+                      minLength: 1
+                      maxLength: 512
+                      description: Exact external account identifier in this namespace.
+            examples:
+              anonymous:
+                value: {}
+              identified:
+                value:
+                  identity:
+                    namespace: accounts
+                    externalId: account-42
+      responses:
+        "201":
+          description: User created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantUser"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "409":
+          description: The identity already belongs to a user in this tenant.
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/users/{uid}:
+    get:
+      operationId: getTenantUser
+      tags: [Users]
+      summary: Get a user by canonical UID
+      description: Requires read. Returns the user within the authenticated tenant.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - name: uid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: User in the authenticated tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantUser"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/topics:
+    post:
+      operationId: createTenantTopic
+      tags: [Topics]
+      summary: Create a topic in the authenticated app tenant
+      description: |
+        Requires topics:write. Topic IDs and names match exactly and are unique
+        within the tenant. Invalid UTF-8 and unpaired surrogate escapes return 400.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [id, name]
+              properties:
+                id:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  not:
+                    enum: [".", ".."]
+                  example: releases
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                  example: Release notes
+      responses:
+        "201":
+          description: Topic created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantTopic"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "409":
+          description: The topic ID or name already exists in this tenant.
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/topics/{topicId}:
+    get:
+      operationId: getTenantTopic
+      tags: [Topics]
+      summary: Get a topic by ID
+      description: Requires read. Returns the topic within the authenticated tenant.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - name: topicId
+          in: path
+          required: true
+          description: Exact topic ID, percent-encoded as a path segment.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Topic in the authenticated tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantTopic"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
         "500":
           $ref: "#/components/responses/TextError"
 
@@ -874,6 +1046,17 @@ components:
         enum: [QUEUED, SCHEDULED, IN_PROGRESS, DISPATCHED, COMPLETED, FAILED]
 
   responses:
+    TenantUnauthorized:
+      description: Missing, malformed, invalid, expired, or revoked bearer key, or disabled tenant.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            const: Bearer
+    TenantForbidden:
+      description: The bearer key lacks the required scope.
+    TenantResourceNotFound:
+      description: The resource does not exist in the authenticated tenant.
     TextError:
       description: Plain text error response.
       content:
@@ -883,6 +1066,26 @@ components:
             example: Bad request
 
   schemas:
+    TenantUser:
+      type: object
+      additionalProperties: false
+      required: [uid, kind]
+      properties:
+        uid:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          enum: [anonymous, identified]
+    TenantTopic:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
     Platform:
       type: string
       enum: [apns, fcm]

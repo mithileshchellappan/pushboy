@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. Only `/v2/keys` authenticates tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
+Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. The `/v2` key, user, and topic routes authenticate tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
 
 ## Requirements
 
@@ -120,7 +120,29 @@ curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
 ```
 
-Before rolling down migration 17, stop tenant writes and check that both tenant tables are empty. Once you bootstrap an app, keep migration 17 installed and roll back the application using a compatible executable with a migration bundle that includes version 17. If the guard rejects a down migration and leaves version 16 dirty, stop migration runners, verify the version 17 tables and data are intact, and run `force 17` with the migration tool before restarting Pushboy.
+## Tenant users and topics
+
+Use a tenant server key with `users:write` and `topics:write` for the corresponding create requests.
+
+```bash
+curl -X POST http://localhost:8080/v2/users \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"identity":{"namespace":"accounts","externalId":"account-42"}}'
+
+curl -X POST http://localhost:8080/v2/topics \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"releases","name":"Release notes"}'
+```
+
+Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/users/{uid}` with the returned UUID or `GET /v2/topics/{topicId}` with the percent-encoded topic ID. Migration 18 adds separate tables for these routes and leaves legacy data in place.
+
+## Tenant migration rollback
+
+Pause tenant writes and migration runners before rolling back. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
+
+A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with `force 18` or `force 17` before restarting the application.
 
 ## Provider Credentials
 

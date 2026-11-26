@@ -58,8 +58,8 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 			t.Errorf("close migration runner: %v", errors.Join(sourceErr, databaseErr))
 		}
 	})
-	if err := m.Migrate(17); err != nil {
-		t.Fatalf("apply migration 17: %v", err)
+	if err := m.Migrate(18); err != nil {
+		t.Fatalf("apply migration 18: %v", err)
 	}
 
 	db, err := sql.Open("postgres", databaseURL.String())
@@ -69,39 +69,81 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	store := &PostgresStore{db: db}
 
+	rollBack := func(from uint, blocked bool) {
+		t.Helper()
+		err := m.Steps(-1)
+		if blocked {
+			var migrationErr database.Error
+			var postgresErr *pq.Error
+			if !errors.As(err, &migrationErr) || !errors.As(migrationErr.OrigErr, &postgresErr) || postgresErr.Code != "55000" {
+				t.Fatalf("rollback from %d with tenant data = %v", from, err)
+			}
+		} else if err != nil {
+			t.Fatalf("rollback from %d with empty tables: %v", from, err)
+		}
+		if version, dirty, err := m.Version(); err != nil || version != from-1 || dirty != blocked {
+			t.Fatalf("rollback from %d left version %d, dirty %t, error %v", from, version, dirty, err)
+		}
+	}
+
+	var tenant Tenant
 	var key string
-	if err := store.BootstrapTenant(ctx, "Rollback test", func(_ Tenant, secret string) error {
-		key = secret
+	if err := store.BootstrapTenant(ctx, "Rollback test", func(created Tenant, secret string) error {
+		tenant, key = created, secret
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err = m.Steps(-1)
-	var migrationErr database.Error
-	var postgresErr *pq.Error
-	if !errors.As(err, &migrationErr) || !errors.As(migrationErr.OrigErr, &postgresErr) || postgresErr.Code != "55000" {
-		t.Fatalf("rollback with tenant data = %v", err)
+	user, err := store.CreateTenantUser(ctx, tenant.ID, &TenantUserIdentity{Namespace: "accounts", ExternalID: "account-42"})
+	if err != nil {
+		t.Fatal(err)
 	}
+	if _, err := store.CreateTenantTopic(ctx, tenant.ID, "updates", "Updates"); err != nil {
+		t.Fatal(err)
+	}
+
+	rollBack(18, true)
+	var rowsRemain bool
+	err = db.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM tenant_users u
+			JOIN tenant_user_identities i ON i.tenant_id = u.tenant_id AND i.user_uid = u.uid
+			WHERE u.tenant_id = $1 AND u.uid = $2 AND u.kind = 'identified'
+				AND i.namespace = 'accounts' AND i.external_id = 'account-42'
+		) AND EXISTS (
+			SELECT 1 FROM tenant_topics WHERE tenant_id = $1 AND id = 'updates' AND name = 'Updates'
+		)
+	`, tenant.ID, user.UID).Scan(&rowsRemain)
+	if err != nil || !rowsRemain {
+		t.Fatalf("tenant rows after blocked rollback = %t, error = %v", rowsRemain, err)
+	}
+	if err := m.Force(18); err != nil {
+		t.Fatalf("restore recorded migration version 18: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM tenant_topics; DELETE FROM tenant_users"); err != nil {
+		t.Fatalf("empty test resource tables: %v", err)
+	}
+	rollBack(18, false)
+	var tablesRemain bool
+	err = db.QueryRowContext(ctx, `
+		SELECT to_regclass('tenant_users') IS NOT NULL OR to_regclass('tenant_user_identities') IS NOT NULL
+			OR to_regclass('tenant_topics') IS NOT NULL
+	`).Scan(&tablesRemain)
+	if err != nil || tablesRemain {
+		t.Fatalf("tenant resource tables after empty rollback = %t, error = %v", tablesRemain, err)
+	}
+
+	rollBack(17, true)
 	if _, err := store.AuthenticateServerKey(ctx, key); err != nil {
 		t.Fatalf("bootstrap key after blocked rollback: %v", err)
 	}
-	if version, dirty, err := m.Version(); err != nil || version != 16 || !dirty {
-		t.Fatalf("version after blocked rollback = %d, dirty = %t, error = %v", version, dirty, err)
+	if err := m.Force(17); err != nil {
+		t.Fatalf("restore recorded migration version 17: %v", err)
 	}
-
 	if _, err := db.ExecContext(ctx, "DELETE FROM tenant_api_keys; DELETE FROM tenants"); err != nil {
 		t.Fatalf("empty test tenant tables: %v", err)
 	}
-	if err := m.Force(17); err != nil {
-		t.Fatalf("restore recorded migration version: %v", err)
-	}
-	if err := m.Steps(-1); err != nil {
-		t.Fatalf("rollback with empty tenant tables: %v", err)
-	}
-	if version, dirty, err := m.Version(); err != nil || version != 16 || dirty {
-		t.Fatalf("version after empty rollback = %d, dirty = %t, error = %v", version, dirty, err)
-	}
-	var tablesRemain bool
+	rollBack(17, false)
 	err = db.QueryRowContext(ctx, `
 		SELECT to_regclass('tenants') IS NOT NULL OR to_regclass('tenant_api_keys') IS NOT NULL
 	`).Scan(&tablesRemain)

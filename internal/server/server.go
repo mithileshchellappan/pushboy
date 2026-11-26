@@ -21,15 +21,15 @@ type Server struct {
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
 	laJobPipeline pipeline.Pipeline[model.LAJobItem]
-	serverKeys    ServerKeyStore
+	tenants       TenantStore
 	httpServer    *http.Server
 	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], serverKeys ServerKeyStore) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, serverKeys: serverKeys}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenants TenantStore) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, tenants: tenants}
 }
 
 func (s *Server) Start(addr string) error {
@@ -53,6 +53,10 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Post("/v2/keys", s.handleIssueServerKey)
 	r.Delete("/v2/keys/{keyID}", s.handleRevokeServerKey)
+	r.Post("/v2/users", s.handleCreateTenantUser)
+	r.Get("/v2/users/{uid}", s.handleGetTenantUser)
+	r.Post("/v2/topics", s.handleCreateTenantTopic)
+	r.Get("/v2/topics/{topicID}", s.handleGetTenantTopic)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.Logger)
