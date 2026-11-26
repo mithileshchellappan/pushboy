@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -28,6 +29,25 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		if len(os.Args) != 3 || os.Args[1] != "bootstrap" {
+			fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")
+			os.Exit(2)
+		}
+		cfg := config.Load()
+		store, err := storage.NewPostgresStore(cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("bootstrap: %v", err)
+		}
+		defer store.Close()
+		tenant, key, err := store.BootstrapTenant(context.Background(), os.Args[2])
+		if err != nil {
+			log.Fatalf("bootstrap: %v", err)
+		}
+		fmt.Fprintf(os.Stdout, "tenant_id: %s\nserver_key: %s\n", tenant.ID, key)
+		return
+	}
+
 	cfg := config.Load()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -202,7 +222,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {

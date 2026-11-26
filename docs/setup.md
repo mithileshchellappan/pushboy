@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. The current API does not include built-in auth, rate limiting, tenant isolation, or TLS termination.
+Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. Only `/v2/keys` authenticates tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped; these keys do not isolate legacy data. Rate limiting and TLS termination remain deployment responsibilities.
 
 ## Requirements
 
@@ -92,6 +92,40 @@ go run ./cmd/pushboy
 ```
 
 Pushboy runs Postgres migrations from `db/migrations/postgres` during startup. If startup succeeds, the database schema is ready.
+
+## Tenant bootstrap
+
+With `DATABASE_URL` pointing to the intended database, an operator can create an app tenant and its first server key:
+
+```bash
+go run ./cmd/pushboy bootstrap "Example App"
+```
+
+The command prints the tenant ID and server key once. Store the key in your backend's secret manager; the database stores only its digest. Running bootstrap again with the same app name fails instead of creating another key.
+
+Use this server key only from a trusted backend. Never ship it in an iOS, Android, or web client. `/v1` routes still do not check tenant credentials and remain globally scoped, so keep Pushboy behind your trusted backend or private network until the tenant cutover is complete.
+
+A key with `keys:manage` can issue a replacement key for its own tenant. Set `PUSHBOY_SERVER_KEY` locally from your secret manager, then run:
+
+```bash
+curl -X POST http://localhost:8080/v2/keys \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"scopes":["read","send","keys:manage"]}'
+```
+
+The `201` response is `{"id":"<key UUID>","key":"<new secret>"}` with `Cache-Control: no-store`. Save the secret immediately; it cannot be retrieved later. Choose a nonempty subset of the issuing key's scopes. An optional `expiresAt` must be a future RFC 3339 timestamp; omission or `null` means no expiry when the issuing key has no expiry. If the issuing key expires, supply an expiry no later than its own; longer or unbounded lifetimes return `403`. Invalid scope or expiry requests return `400`; scopes beyond the issuing key's authority return `403`. There is no caller-selected tenant parameter.
+
+Existing keys stay active while you deploy the replacement. After the backend uses the new key, set `PUSHBOY_SERVER_KEY` to the replacement management key from your secret manager, set `OLD_KEY_ID` to the old key's UUID, and revoke the old key:
+
+```bash
+curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
+```
+
+Revocation returns `204`, including repeat revocation within the same tenant. Missing or other-tenant IDs return `404`. Missing, expired, revoked, or invalid credentials (or a disabled tenant) return `401`; an active key without `keys:manage` returns `403`. Revoking the key used for the request succeeds, but that key cannot authenticate another request. Keep an active replacement management key before doing so.
+
+Send credentials only in the Authorization header over HTTPS outside local development. Key-management routes suppress request access logs to avoid recording credentials accidentally included in URLs; configure your proxy and tracing tools to redact them too.
 
 ## Provider Credentials
 
