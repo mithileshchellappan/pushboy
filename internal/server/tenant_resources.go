@@ -62,6 +62,33 @@ func validJSONUnicode(body []byte) bool {
 	return true
 }
 
+type createTenantUserRequest struct {
+	Identity map[string]string
+}
+
+func (req *createTenantUserRequest) UnmarshalJSON(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return storage.ErrInvalidTenantResource
+	}
+	if !decoder.More() {
+		return nil
+	}
+	token, err = decoder.Token()
+	if err != nil || token != "identity" {
+		return storage.ErrInvalidTenantResource
+	}
+	if err := decoder.Decode(&req.Identity); err != nil {
+		return err
+	}
+	token, err = decoder.Token()
+	if err != nil || token != json.Delim('}') {
+		return storage.ErrInvalidTenantResource
+	}
+	return nil
+}
+
 func (s *Server) handleCreateTenantUser(w http.ResponseWriter, r *http.Request) {
 	actor, err := s.authenticateServerKey(w, r, "users:write")
 	if err != nil {
@@ -83,15 +110,13 @@ func (s *Server) handleCreateTenantUser(w http.ResponseWriter, r *http.Request) 
 		requestID = &id
 	}
 
-	var req map[string]map[string]string
-	decoded := decodeTenantResourceRequest(w, r, &req)
-	fields, hasIdentity := req["identity"]
-	if !decoded || req == nil || len(req) > 1 || (len(req) == 1 && !hasIdentity) {
+	var req createTenantUserRequest
+	if !decodeTenantResourceRequest(w, r, &req) {
 		tenantError(w, storage.ErrInvalidTenantResource, false)
 		return
 	}
 	var identity *storage.TenantUserIdentity
-	if fields != nil {
+	if fields := req.Identity; fields != nil {
 		namespace, externalID := fields["namespace"], fields["externalId"]
 		if len(fields) != 2 || namespace == "" || externalID == "" {
 			tenantError(w, storage.ErrInvalidTenantResource, false)

@@ -196,6 +196,8 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 		{"/v2/users", `{"identity":{"Namespace":"accounts","externalId":"case"}}`},
 		{"/v2/users", `{"identity":{"namespace":"accounts","ExternalID":"case"}}`},
 		{"/v2/users", `{"identity":{"namespace":"accounts"},"identity":{"externalId":"split"}}`},
+		{"/v2/users", `{"identity":{"unknown":"x"},"identity":null}`},
+		{"/v2/users", `{"identity":null,"\u0069dentity":null}`},
 		{"/v2/topics", `{"id":"guides","name":"Guides","tenantId":"caller-chosen"}`},
 		{"/v2/topics", `{"ID":"guides","name":"Guides"}`},
 		{"/v2/topics", `{"id":"guides","NAME":"Guides"}`},

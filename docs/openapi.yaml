@@ -120,8 +120,8 @@ paths:
       description: |
         Requires users:write. Omit identity or set it to null to create an
         anonymous user. A supplied identity creates an identified user.
-        Pushboy generates the canonical UID. Invalid UTF-8 and unpaired
-        surrogate escapes return 400.
+        Pushboy generates the canonical UID. A repeated top-level `identity` property,
+        invalid UTF-8, and unpaired surrogate escapes return 400.
       security:
         - TenantServerKey: []
       parameters:
