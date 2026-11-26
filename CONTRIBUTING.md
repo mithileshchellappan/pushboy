@@ -7,7 +7,6 @@ Pushboy is still pre-1.0, so contributions that clarify behavior, harden operati
 ## Ground Rules
 
 - Keep changes narrow and behavior-focused.
-- Follow [AGENTS.md](AGENTS.md) for code cleanliness, testing, ownership, and migration rules.
 - Do not commit secrets, device tokens, APNS `.p8` files, Firebase service-account JSON, `.env` files, database dumps, or production payloads.
 - Do not include real user data in issues, pull requests, tests, fixtures, screenshots, or logs.
 - Prefer explicit docs when behavior is intentionally limited. For example, the current runtime is Postgres-backed and single-node, with in-process worker queues.
@@ -66,7 +65,7 @@ docker compose down -v
 
 ## Verification
 
-Run these before opening a pull request:
+Before opening a pull request, export `PUSHBOY_TEST_DATABASE_URL` with the URL of a disposable PostgreSQL database. The role must be able to create schemas. Both CI suites require the migration and rollback test to pass. Without that URL, the integration test skips locally.
 
 ```bash
 go mod tidy -diff
@@ -78,20 +77,9 @@ npx --yes @redocly/cli@2.30.6 lint docs/openapi.yaml
 git diff --check
 ```
 
-Use focused tests for meaningful behavior that existing tests do not already protect. Changes to scheduling, token lifecycle, dispatch, provider error handling, Live Activity lifecycle, storage, or API behavior need proportionate regression coverage. Database changes also need the relevant disposable-PostgreSQL integration tests to run; skipped integration tests are not verification of the changed database behavior. See [AGENTS.md](AGENTS.md#testing).
+Add focused regression tests for changed behavior.
 
-Set `PUSHBOY_TEST_DATABASE_URL` to a disposable PostgreSQL database when running the Go checks. CI starts PostgreSQL 16 and supplies this variable for both the regular and race suites. The database role needs permission to create a schema for the migration test. Both CI suites require the upgrade and rollback test to pass. Without the URL, local PostgreSQL integration tests are skipped.
-
-The container job builds and runs `compose.yaml` with the `compose.ci.yaml` override. The override requires Docker Compose 2.24.4 or later and reduces worker counts, exposes the API on loopback, and removes the local provider key mount. CI uses a per-run project and database volume to test the default app-to-PostgreSQL configuration.
-
-For Docker-related changes, also run:
-
-```bash
-docker build -t pushboy:dev .
-docker compose up --build
-curl http://localhost:8080/v1/ping
-docker compose down -v
-```
+For the CI container setup, use Docker Compose 2.24.4 or later with `compose.yaml` and `compose.ci.yaml`. The API is exposed at `http://127.0.0.1:18080`.
 
 ## API Changes
 
@@ -129,7 +117,6 @@ Before requesting review:
 Useful starter areas:
 
 - Tests for config parsing, Live Activity option parsing, scheduled date validation, and pipeline close behavior.
-- CI workflow for Go checks, OpenAPI parsing, and Docker build.
 - `SECURITY.md` follow-up once GitHub private vulnerability reporting is enabled.
 - API response DTOs with stable JSON casing.
 - Native API key auth.

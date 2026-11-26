@@ -8,9 +8,6 @@ services:
       SENDER_COUNT: "2"
       JOB_QUEUE_SIZE: "100"
       BATCH_SIZE: "100"
-      APNS_KEY_ID: ""
-      APNS_TEAM_ID: ""
-      APNS_BUNDLE_ID: ""
       APNS_KEY_PATH: ""
       FCM_KEY_PATH: ""
     ports: !override

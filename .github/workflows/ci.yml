@@ -107,17 +107,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
-      - name: Build Docker image
-        run: docker compose build pushboy
-
-      - name: Start Compose stack
-        run: docker compose up -d --no-build
+      - name: Build and start Compose stack
+        run: docker compose up -d --build
 
       - name: Smoke test API
+        shell: bash
         run: |
-          set -euo pipefail
-
-          app_container="$(docker compose ps -q pushboy)"
+          api=http://127.0.0.1:18080/v1
+          app_container="$(docker compose ps -aq pushboy)"
 
           ready=0
           for _ in $(seq 1 60); do
@@ -127,7 +124,7 @@ jobs:
               exit 1
             fi
 
-            if curl -fsS http://127.0.0.1:18080/v1/ping | grep -qx "pong"; then
+            if curl -fsS "$api/ping" | grep -qx "pong"; then
               ready=1
               break
             fi
@@ -141,16 +138,11 @@ jobs:
           fi
 
           user_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          create_response="$(curl -fsS -X POST http://127.0.0.1:18080/v1/users/ \
+          curl -fsS "$api/users/" \
             -H 'Content-Type: application/json' \
-            -d "{\"id\":\"${user_id}\"}")"
-          echo "$create_response" | jq -e --arg id "$user_id" '.ID == $id'
-
-          get_response="$(curl -fsS "http://127.0.0.1:18080/v1/users/${user_id}")"
-          echo "$get_response" | jq -e --arg id "$user_id" '.ID == $id'
-
-          topics_response="$(curl -fsS http://127.0.0.1:18080/v1/topics/)"
-          echo "$topics_response" | jq -e 'any(.[]; .ID == "broadcast")'
+            -d "{\"id\":\"${user_id}\"}" | jq -e --arg id "$user_id" '.ID == $id'
+          curl -fsS "$api/users/$user_id" | jq -e --arg id "$user_id" '.ID == $id'
+          curl -fsS "$api/topics/" | jq -e 'any(.[]; .ID == "broadcast")'
 
           docker compose exec -T postgres sh -ec '
             psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT version > 0 AND NOT dirty FROM schema_migrations;"

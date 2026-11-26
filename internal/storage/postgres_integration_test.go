@@ -92,7 +92,6 @@ func TestPostgresLegacyPublishJob(t *testing.T) {
 		t.Fatalf("migrated job payload = %+v", job.Payload)
 	}
 
-	// Force a late failure after the receipt and counters have been written.
 	if _, err := store.db.ExecContext(ctx, `
 		ALTER TABLE publish_jobs ADD CONSTRAINT reject_test_completion CHECK (status <> 'COMPLETED')
 	`); err != nil {
@@ -127,7 +126,6 @@ func TestPostgresLegacyPublishJob(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, "ALTER TABLE publish_jobs DROP CONSTRAINT reject_test_completion"); err != nil {
 		t.Fatalf("remove completion failure: %v", err)
 	}
-	// Reusing the receipt ID also verifies that the rejected batch left no receipt behind.
 	if err := store.ApplyPushOutcomeBatch(ctx, receipts); err != nil {
 		t.Fatalf("retry batch: %v", err)
 	}
