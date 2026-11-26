@@ -120,7 +120,7 @@ curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
 ```
 
-Before rolling down migration 17, stop tenant writes and check that both tenant tables are empty. Once you bootstrap an app, keep migration 17 installed and use a binary that recognizes version 17 for application rollback. If the guard rejects a down migration and leaves version 16 dirty, stop migration runners, verify the version 17 tables and data are intact, and run `force 17` with the migration tool before restarting Pushboy.
+Before rolling down migration 17, stop tenant writes and check that both tenant tables are empty. Once you bootstrap an app, keep migration 17 installed and roll back the application using a compatible executable with a migration bundle that includes version 17. If the guard rejects a down migration and leaves version 16 dirty, stop migration runners, verify the version 17 tables and data are intact, and run `force 17` with the migration tool before restarting Pushboy.
 
 ## Provider Credentials
 
