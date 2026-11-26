@@ -22,7 +22,11 @@ func decodeTenantRequest(body io.Reader, req any) bool {
 }
 
 func decodeTenantResourceRequest(w http.ResponseWriter, r *http.Request, req any) bool {
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxTenantRequestBytes))
+	return decodeTenantResourceRequestLimit(w, r, req, maxTenantRequestBytes)
+}
+
+func decodeTenantResourceRequestLimit(w http.ResponseWriter, r *http.Request, req any, limit int64) bool {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	return err == nil && validJSONUnicode(body) && decodeTenantRequest(bytes.NewReader(body), req)
 }
 

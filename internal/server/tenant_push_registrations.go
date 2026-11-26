@@ -7,6 +7,8 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
+const maxPushRegistrationRequestBytes = 32 << 10
+
 type pushRegistrationRequest storage.TenantPushRegistrationChange
 
 func (req *pushRegistrationRequest) UnmarshalJSON(body []byte) error {
@@ -21,7 +23,8 @@ func (req *pushRegistrationRequest) UnmarshalJSON(body []byte) error {
 		"expectedRegistrationVersion": &expectedVersion,
 	})
 	if err != nil || len(operationID) != 36 || len(providerConfigID) != 36 || expectedVersion == nil ||
-		*expectedVersion < 0 || (expectedID == nil) != (*expectedVersion == 0) || req.Token == "" {
+		*expectedVersion < 0 || (expectedID == nil) != (*expectedVersion == 0) ||
+		len(req.Token) == 0 || len(req.Token) > storage.MaxPushRegistrationTokenBytes {
 		return storage.ErrInvalidTenantResource
 	}
 	req.OperationID, err = uuid.Parse(operationID)
@@ -77,7 +80,7 @@ func (s *Server) handleRegisterPush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req pushRegistrationRequest
-	if !decodeTenantResourceRequest(w, r, &req) {
+	if !decodeTenantResourceRequestLimit(w, r, &req, maxPushRegistrationRequestBytes) {
 		tenantError(w, storage.ErrInvalidTenantResource, false)
 		return
 	}

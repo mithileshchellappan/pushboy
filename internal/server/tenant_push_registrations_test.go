@@ -33,11 +33,14 @@ func TestPushRegistrationHTTPContract(t *testing.T) {
 	token := "fixture-private-endpoint"
 	base := fmt.Sprintf(`"operationId":"%s","providerConfigId":"%s","token":"%s"`, operationID, routeID, token)
 	request := base + `,"expectedRegistrationVersion":0`
+	escapedToken := strings.Repeat(`\u0041`, storage.MaxPushRegistrationTokenBytes)
+	escapedRequest := strings.Replace(request, token, escapedToken, 1)
 	registration := storage.TenantPushRegistration{
 		ID: uuid.New(), ProviderConfigID: routeID, Provider: model.FCM, RegistrationVersion: 1, Valid: false,
 	}
 	for _, tt := range []struct {
 		name, method, key, scope, body string
+		wantToken                      string
 		status, calls                  int
 		storeErr                       error
 	}{
@@ -46,6 +49,9 @@ func TestPushRegistrationHTTPContract(t *testing.T) {
 		{name: "read scope required", method: "GET", key: "backend", scope: "devices:write", status: 403},
 		{name: "write scope required", method: "PUT", key: "backend", scope: "read", body: request, status: 403},
 		{name: "register", method: "PUT", key: "backend", scope: "devices:write", body: request, status: 200, calls: 1},
+		{name: "accept fully escaped maximum token", method: "PUT", key: "backend", scope: "devices:write", body: escapedRequest, wantToken: strings.Repeat("A", storage.MaxPushRegistrationTokenBytes), status: 200, calls: 1},
+		{name: "reject escaped oversized token", method: "PUT", key: "backend", scope: "devices:write", body: strings.Replace(escapedRequest, escapedToken, escapedToken+`\u0041`, 1), status: 400},
+		{name: "reject oversized encoded body", method: "PUT", key: "backend", scope: "devices:write", body: request + strings.Repeat(" ", maxPushRegistrationRequestBytes), status: 400},
 		{name: "explicit initial version required", method: "PUT", key: "backend", scope: "devices:write", body: base, status: 400},
 		{name: "current ID required", method: "PUT", key: "backend", scope: "devices:write", body: base + `,"expectedRegistrationVersion":1`, status: 400},
 		{name: "reject duplicate token", method: "PUT", key: "backend", scope: "devices:write", body: request + `,"token":"another"`, status: 400},
@@ -56,6 +62,10 @@ func TestPushRegistrationHTTPContract(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
+			wantToken := tt.wantToken
+			if wantToken == "" {
+				wantToken = token
+			}
 			get := func(tenant, device uuid.UUID) (storage.TenantPushRegistration, error) {
 				calls++
 				if tenant != tenantID || device != deviceID {
@@ -69,7 +79,7 @@ func TestPushRegistrationHTTPContract(t *testing.T) {
 				}},
 				get: get,
 				put: func(tenant, device uuid.UUID, change storage.TenantPushRegistrationChange) (storage.TenantPushRegistration, error) {
-					if change.ProviderConfigID != routeID || change.OperationID != operationID || change.Token != token ||
+					if change.ProviderConfigID != routeID || change.OperationID != operationID || change.Token != wantToken ||
 						change.ExpectedRegistrationID != nil || change.ExpectedRegistrationVersion != 0 {
 						t.Fatal("unexpected registration request")
 					}

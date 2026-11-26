@@ -187,7 +187,9 @@ Keep raw registration request bodies out of logs and traces. Existing `/v1` clie
 
 ## Tenant migration rollback
 
-Migration 24 builds a replacement uniqueness index on legacy tokens while holding a table lock. On a restored database, measure the lock window with representative data before scheduling the migration. Drain and replace application processes and workers running a pre-migration-24 version before enabling tenant registration writes. Rollback requires that no tenant push registrations or their operation records exist.
+Migration 24 builds a replacement uniqueness index on legacy tokens while holding a table lock. On a restored database, measure the lock window with representative data before scheduling the migration. Rollback requires that no tenant push registrations or their operation records exist.
+
+For a stopped upgrade, drain and stop every application process and worker running a pre-migration-24 version before starting the new version. For a rolling upgrade, block `PUT /v2/devices/{installationUUID}/push-registration` at every ingress before starting the first upgraded process. Remove the proxy block only after migration 24 completes and all older processes and workers have drained and stopped.
 
 Pause tenant writes and migration runners before rolling back. Migration 23 requires an empty `tenant_live_activity_channels` table. Migration 22 requires empty `tenant_device_ownership_operations` and migration 21 requires empty `tenant_devices`. Migration 20 requires an empty `provider_configs` table. Use a pre-upgrade database backup or a compatible application and migration bundle when provider configurations already exist. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
 

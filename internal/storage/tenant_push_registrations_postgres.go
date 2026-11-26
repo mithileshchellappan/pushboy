@@ -17,6 +17,8 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
+const MaxPushRegistrationTokenBytes = 4096
+
 type TenantPushRegistration struct {
 	ID                  uuid.UUID      `json:"id"`
 	ProviderConfigID    uuid.UUID      `json:"providerConfigId"`
@@ -63,7 +65,7 @@ func (s *PostgresStore) RegisterPush(ctx context.Context, tenantID, deviceID uui
 		change.ExpectedRegistrationVersion < 0 ||
 		(change.ExpectedRegistrationID == nil) != (change.ExpectedRegistrationVersion == 0) ||
 		(change.ExpectedRegistrationID != nil && *change.ExpectedRegistrationID == uuid.Nil) ||
-		len(change.Token) == 0 || len(change.Token) > 4096 || !utf8.ValidString(change.Token) || strings.ContainsRune(change.Token, 0) {
+		len(change.Token) == 0 || len(change.Token) > MaxPushRegistrationTokenBytes || !utf8.ValidString(change.Token) || strings.ContainsRune(change.Token, 0) {
 		return TenantPushRegistration{}, ErrInvalidTenantResource
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
