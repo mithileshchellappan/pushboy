@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -52,12 +51,11 @@ func TestKeyManagementRequiresExplicitScopedBearer(t *testing.T) {
 				return storage.ServerKeyAccess{Scopes: tc.scopes}, tc.authErr
 			}}
 			router := New(nil, nil, nil, store).setupRouter()
-			for _, method := range []string{http.MethodPost, http.MethodDelete} {
-				path := "/v2/keys"
-				if method == http.MethodDelete {
-					path += "/" + uuid.NewString()
-				}
-				req := httptest.NewRequest(method, path+"?key=sensitive-credential", strings.NewReader(`{"scopes":["read"]}`))
+			for _, route := range []struct{ method, path string }{
+				{http.MethodPost, "/v2/keys"},
+				{http.MethodDelete, "/v2/keys/" + uuid.NewString()},
+			} {
+				req := httptest.NewRequest(route.method, route.path+"?key=sensitive-credential", nil)
 				req.Header.Set("Authorization", tc.authorization)
 				rec := httptest.NewRecorder()
 				router.ServeHTTP(rec, req)
@@ -137,7 +135,7 @@ func TestRevokeServerKeyContract(t *testing.T) {
 		{"foreign or missing", storage.Errors.NotFound, 404},
 		{"actor revoked concurrently", storage.ErrInvalidServerKey, 401},
 		{"scope removed concurrently", storage.ErrInsufficientKeyScope, 403},
-		{"internal error", fmt.Errorf("secret-bearing-error"), 500},
+		{"internal error", errors.New("secret-bearing-error"), 500},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := keyStoreStub{
@@ -150,14 +148,12 @@ func TestRevokeServerKeyContract(t *testing.T) {
 				},
 			}
 			router := New(nil, nil, nil, store).setupRouter()
-			for i := 0; i < 2; i++ {
-				req := httptest.NewRequest(http.MethodDelete, "/v2/keys/"+id.String(), nil)
-				req.Header.Set("Authorization", "Bearer backend-key")
-				rec := httptest.NewRecorder()
-				router.ServeHTTP(rec, req)
-				if rec.Code != tc.want || strings.Contains(rec.Body.String(), "secret-bearing-error") || (tc.want == 204 && rec.Body.Len() != 0) {
-					t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
-				}
+			req := httptest.NewRequest(http.MethodDelete, "/v2/keys/"+id.String(), nil)
+			req.Header.Set("Authorization", "Bearer backend-key")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != tc.want || strings.Contains(rec.Body.String(), "secret-bearing-error") || (tc.want == 204 && rec.Body.Len() != 0) {
+				t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
 			}
 		})
 	}

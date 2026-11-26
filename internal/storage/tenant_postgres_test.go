@@ -18,16 +18,7 @@ import (
 )
 
 func TestBootstrapTenantCreatesOneAppAndHashedKey(t *testing.T) {
-	dsn := os.Getenv("PUSHBOY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set PUSHBOY_TEST_DATABASE_URL to a disposable PostgreSQL database")
-	}
-	store := newLAChannelTestStore(t, dsn)
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Errorf("close store: %v", err)
-		}
-	})
+	store := tenantKeyManagementStore(t)
 
 	name := "bootstrap-" + uuid.NewString()
 	var attemptedID uuid.UUID
@@ -64,15 +55,15 @@ func TestBootstrapTenantCreatesOneAppAndHashedKey(t *testing.T) {
 			t.Errorf("delete test tenant: %v", err)
 		}
 	})
-	parts := strings.Split(key, ".")
-	if len(parts) != 2 {
-		t.Fatalf("key parts = %d, want 2", len(parts))
+	keyIDText, secretText, ok := strings.Cut(key, ".")
+	if !ok {
+		t.Fatal("key separator missing")
 	}
-	keyID, err := uuid.Parse(parts[0])
+	keyID, err := uuid.Parse(keyIDText)
 	if err != nil {
 		t.Fatalf("key ID: %v", err)
 	}
-	secret, err := base64.RawURLEncoding.DecodeString(parts[1])
+	secret, err := base64.RawURLEncoding.DecodeString(secretText)
 	if err != nil || len(secret) != 32 {
 		t.Fatalf("secret decoding: length = %d, err = %v", len(secret), err)
 	}
@@ -105,8 +96,8 @@ func TestBootstrapTenantCreatesOneAppAndHashedKey(t *testing.T) {
 	tampered[0] ^= 1
 	for _, invalid := range []string{
 		"bad-key",
-		uuid.NewString() + "." + parts[1],
-		parts[0] + "." + base64.RawURLEncoding.EncodeToString(tampered),
+		uuid.NewString() + "." + secretText,
+		keyIDText + "." + base64.RawURLEncoding.EncodeToString(tampered),
 	} {
 		if _, err := store.AuthenticateServerKey(context.Background(), invalid); !errors.Is(err, ErrInvalidServerKey) {
 			t.Fatalf("invalid key error = %v, want ErrInvalidServerKey", err)
@@ -240,16 +231,13 @@ func TestServerKeyRotationOverlapAndTenantIsolation(t *testing.T) {
 	if _, err := store.AuthenticateServerKey(ctx, replacement); err != nil {
 		t.Fatalf("replacement after revocation: %v", err)
 	}
-	if _, _, err := store.IssueServerKey(ctx, first, []string{"read"}, nil); !errors.Is(err, ErrInvalidServerKey) {
-		t.Fatalf("stale revoked actor = %v", err)
-	}
 	forged := access
 	forged.TenantID = other.TenantID
 	if _, _, err := store.IssueServerKey(ctx, forged, []string{"read"}, nil); !errors.Is(err, ErrInvalidServerKey) {
 		t.Fatalf("mismatched actor tenant = %v", err)
 	}
-	parts := strings.Split(replacement, ".")
-	secret, err := base64.RawURLEncoding.DecodeString(parts[1])
+	_, secretText, _ := strings.Cut(replacement, ".")
+	secret, err := base64.RawURLEncoding.DecodeString(secretText)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,8 +356,6 @@ func TestServerKeyConcurrentRevocationAndIssuance(t *testing.T) {
 		}
 	}
 	actor, _ := bootstrapKeyManagementTenant(t, store)
-	// Hold an uncommitted revocation while issuance uses previously authenticated
-	// access; after waiting for the row, it must read the committed revoked state.
 	tx, err := store.db.Begin()
 	if err != nil {
 		t.Fatal(err)

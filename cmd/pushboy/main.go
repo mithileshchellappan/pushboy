@@ -29,12 +29,13 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		if len(os.Args) != 3 || os.Args[1] != "bootstrap" {
-			fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")
-			os.Exit(2)
-		}
-		cfg := config.Load()
+	bootstrap := len(os.Args) > 1
+	if bootstrap && (len(os.Args) != 3 || os.Args[1] != "bootstrap") {
+		fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")
+		os.Exit(2)
+	}
+	cfg := config.Load()
+	if bootstrap {
 		store, err := storage.NewPostgresStore(cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("bootstrap: %v", err)
@@ -50,8 +51,6 @@ func main() {
 		}
 		return
 	}
-
-	cfg := config.Load()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

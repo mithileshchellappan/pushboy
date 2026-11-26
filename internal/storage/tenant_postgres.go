@@ -38,8 +38,6 @@ var serverKeyScopes = []string{
 	"read", "send", "users:write", "devices:write", "topics:write", "keys:manage", "providers:manage",
 }
 
-// BootstrapTenant creates an app and hands off its first server key before commit.
-// A handoff error rolls back both inserts. The key is provisional until success.
 func (s *PostgresStore) BootstrapTenant(ctx context.Context, name string, handoff func(Tenant, string) error) error {
 	if handoff == nil {
 		return errors.New("server key handoff is required")
@@ -82,8 +80,6 @@ func (s *PostgresStore) BootstrapTenant(ctx context.Context, name string, handof
 	return nil
 }
 
-// AuthenticateServerKey checks the current database state on every request so
-// revocation and tenant disabling take effect without a credential cache.
 func (s *PostgresStore) AuthenticateServerKey(ctx context.Context, key string) (ServerKeyAccess, error) {
 	idText, secretText, ok := strings.Cut(key, ".")
 	if !ok || len(key) != 80 {
@@ -100,16 +96,15 @@ func (s *PostgresStore) AuthenticateServerKey(ctx context.Context, key string) (
 
 	var access ServerKeyAccess
 	var storedHash []byte
-	var revoked, expired, disabled bool
+	var inactive bool
 	err = s.db.QueryRowContext(ctx, `
 		SELECT k.tenant_id, k.secret_hash, k.scopes,
-			k.revoked_at IS NOT NULL,
-			k.expires_at IS NOT NULL AND k.expires_at <= statement_timestamp(),
-			t.disabled_at IS NOT NULL
+			k.revoked_at IS NOT NULL OR t.disabled_at IS NOT NULL OR
+				COALESCE(k.expires_at <= statement_timestamp(), false)
 		FROM tenant_api_keys k
 		JOIN tenants t ON t.id = k.tenant_id
 		WHERE k.id = $1`, keyID,
-	).Scan(&access.TenantID, &storedHash, pq.Array(&access.Scopes), &revoked, &expired, &disabled)
+	).Scan(&access.TenantID, &storedHash, pq.Array(&access.Scopes), &inactive)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServerKeyAccess{}, ErrInvalidServerKey
 	}
@@ -117,7 +112,7 @@ func (s *PostgresStore) AuthenticateServerKey(ctx context.Context, key string) (
 		return ServerKeyAccess{}, fmt.Errorf("lookup server key: %w", err)
 	}
 	hash := sha256.Sum256(secret)
-	if subtle.ConstantTimeCompare(storedHash, hash[:]) != 1 || revoked || expired || disabled {
+	if subtle.ConstantTimeCompare(storedHash, hash[:]) != 1 || inactive {
 		return ServerKeyAccess{}, ErrInvalidServerKey
 	}
 	access.KeyID = keyID
@@ -130,8 +125,6 @@ type keyManagementAuthorization struct {
 	now    time.Time
 }
 
-// lockKeyManagement serializes management within an app before locking keys.
-// The common tenant-first order also prevents reciprocal revocations deadlocking.
 func lockKeyManagement(ctx context.Context, tx *sql.Tx, actor ServerKeyAccess) (keyManagementAuthorization, error) {
 	var access keyManagementAuthorization
 	var disabled bool
@@ -150,8 +143,6 @@ func lockKeyManagement(ctx context.Context, tx *sql.Tx, actor ServerKeyAccess) (
 	if err != nil {
 		return access, fmt.Errorf("lock acting key: %w", err)
 	}
-	// Read the database clock after acquiring locks: a waiting transaction may
-	// have started before the key expired.
 	if err := tx.QueryRowContext(ctx, `SELECT clock_timestamp()`).Scan(&access.now); err != nil {
 		return access, fmt.Errorf("read key validation time: %w", err)
 	}
@@ -164,8 +155,6 @@ func lockKeyManagement(ctx context.Context, tx *sql.Tx, actor ServerKeyAccess) (
 	return access, nil
 }
 
-// createServerKey keeps bootstrap and delegated credentials on the same format
-// and digest-only persistence path. The caller commits before exposing the key.
 func createServerKey(ctx context.Context, tx *sql.Tx, tenantID uuid.UUID, scopes []string, expiresAt *time.Time) (uuid.UUID, string, error) {
 	id, err := uuid.NewRandom()
 	if err != nil {
@@ -182,18 +171,13 @@ func createServerKey(ctx context.Context, tx *sql.Tx, tenantID uuid.UUID, scopes
 	return id, id.String() + "." + base64.RawURLEncoding.EncodeToString(secret), nil
 }
 
-// IssueServerKey creates an independent credential so callers can rotate with
-// overlap, then explicitly revoke the old key once their backend has switched.
 func (s *PostgresStore) IssueServerKey(ctx context.Context, actor ServerKeyAccess, scopes []string, expiresAt *time.Time) (uuid.UUID, string, error) {
 	if len(scopes) == 0 {
 		return uuid.Nil, "", ErrInvalidKeyRequest
 	}
 	seen := make(map[string]bool, len(scopes))
 	for _, scope := range scopes {
-		if !slices.Contains(serverKeyScopes, scope) {
-			return uuid.Nil, "", ErrInvalidKeyRequest
-		}
-		if seen[scope] {
+		if seen[scope] || !slices.Contains(serverKeyScopes, scope) {
 			return uuid.Nil, "", ErrInvalidKeyRequest
 		}
 		seen[scope] = true
@@ -229,8 +213,6 @@ func (s *PostgresStore) IssueServerKey(ctx context.Context, actor ServerKeyAcces
 	return id, key, nil
 }
 
-// RevokeServerKey is idempotent for keys belonging to the acting app. A key
-// belonging to another app is indistinguishable from a missing key.
 func (s *PostgresStore) RevokeServerKey(ctx context.Context, actor ServerKeyAccess, id uuid.UUID) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -9,9 +9,8 @@ info:
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
     notification jobs, and Live Activity dispatches. Only /v2/keys implements
-    tenant server-key authentication. The legacy /v1 routes remain unauthenticated
-    and globally scoped; tenant credentials do not isolate their data. Deploy
-    behind a trusted backend, private network, gateway, or reverse proxy.
+    tenant server-key authentication. Legacy /v1 routes remain unauthenticated
+    and globally scoped. Deploy behind a trusted backend or private network.
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -31,12 +30,9 @@ paths:
       tags: [ServerKeys]
       summary: Issue a server key for the authenticated app tenant
       description: |
-        Trusted backends only. Requires keys:manage. Requested scopes must be a
-        nonempty subset of the actor's scopes. An expiring actor must supply an
-        expiresAt no later than its own expiry; longer or unbounded lifetimes
-        return 403. Existing keys remain active for
-        overlapping rotation. The new secret is returned once and cannot be read
-        back. No caller-supplied tenant ID establishes authority.
+        Requires keys:manage. The bearer key determines the tenant and bounds
+        the new key's scopes and expiry. Existing keys stay active until expiry
+        or revocation.
       security:
         - TenantServerKey: []
       requestBody:
@@ -58,10 +54,10 @@ paths:
                 expiresAt:
                   type: [string, "null"]
                   format: date-time
-                  description: Optional future expiry; omitted or null means no expiry, allowed only when the actor has no expiry.
+                  description: Future expiry at or before the issuer's expiry. Omit or pass null for an unbounded key only if the issuer has no expiry.
       responses:
         "201":
-          description: Key issued; save the secret in a backend secret manager.
+          description: Key issued.
           headers:
             Cache-Control:
               schema:
@@ -85,7 +81,7 @@ paths:
         "401":
           description: Missing, malformed, invalid, expired, or revoked bearer key, or disabled tenant.
         "403":
-          description: Missing keys:manage or requested scopes exceed the actor's authority.
+          description: Missing keys:manage or the requested scopes or expiry exceed the issuer's authority.
         "500":
           $ref: "#/components/responses/TextError"
 
@@ -94,9 +90,7 @@ paths:
       tags: [ServerKeys]
       summary: Revoke a server key within the authenticated tenant
       description: |
-        Requires keys:manage. Repeated revocation of a key in the same tenant is
-        successful. Keys belonging to other tenants are indistinguishable from
-        missing keys. Revocation takes effect on subsequent authentication.
+        Requires keys:manage. Revocation takes effect on subsequent authentication.
       security:
         - TenantServerKey: []
       parameters:
@@ -815,7 +809,7 @@ components:
     TenantServerKey:
       type: http
       scheme: bearer
-      description: Tenant server key for trusted backends; never embed it in a client application.
+      description: Tenant server key for trusted backends only.
   parameters:
     UserID:
       name: userID

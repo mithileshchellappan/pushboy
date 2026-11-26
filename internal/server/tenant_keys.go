@@ -15,7 +15,6 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
-// ServerKeyStore owns tenant authorization and key lifecycle together.
 type ServerKeyStore interface {
 	AuthenticateServerKey(context.Context, string) (storage.ServerKeyAccess, error)
 	IssueServerKey(context.Context, storage.ServerKeyAccess, []string, *time.Time) (uuid.UUID, string, error)
@@ -42,11 +41,11 @@ func (s *Server) authenticateKeyManager(w http.ResponseWriter, r *http.Request) 
 		keyManagementError(w, err)
 		return storage.ServerKeyAccess{}, false
 	}
-	if slices.Contains(actor.Scopes, "keys:manage") {
-		return actor, true
+	if !slices.Contains(actor.Scopes, "keys:manage") {
+		keyManagementError(w, storage.ErrInsufficientKeyScope)
+		return storage.ServerKeyAccess{}, false
 	}
-	keyManagementError(w, storage.ErrInsufficientKeyScope)
-	return storage.ServerKeyAccess{}, false
+	return actor, true
 }
 
 func (s *Server) handleIssueServerKey(w http.ResponseWriter, r *http.Request) {
@@ -60,11 +59,7 @@ func (s *Server) handleIssueServerKey(w http.ResponseWriter, r *http.Request) {
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		keyManagementError(w, storage.ErrInvalidKeyRequest)
-		return
-	}
-	if decoder.Decode(&struct{}{}) != io.EOF || req.Scopes == nil {
+	if err := decoder.Decode(&req); err != nil || req.Scopes == nil || decoder.Decode(&struct{}{}) != io.EOF {
 		keyManagementError(w, storage.ErrInvalidKeyRequest)
 		return
 	}

@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. Only `/v2/keys` authenticates tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped; these keys do not isolate legacy data. Rate limiting and TLS termination remain deployment responsibilities.
+Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. Only `/v2/keys` authenticates tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
 
 ## Requirements
 
@@ -95,43 +95,32 @@ Pushboy runs Postgres migrations from `db/migrations/postgres` during startup. I
 
 ## Tenant bootstrap
 
-With `DATABASE_URL` pointing to the intended database, an operator can create an app tenant and its first server key:
+Set `DATABASE_URL` to the intended PostgreSQL database before creating the app and its first key.
 
 ```bash
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-The command writes the tenant ID and server key to stdout before committing. A write error rolls back both records. Check that the command exits successfully before using the key, then store it in your backend's secret manager. PostgreSQL stores only the key's digest. If the command reports a commit error after printing a complete key, keep the key private and verify whether it authenticates before retrying. An existing app name cannot be bootstrapped twice.
+On success, save the server key from stdout in your backend's secret manager. If the command prints a complete key and reports a commit error, verify that the key authenticates before retrying. App names must be unique. Keep server keys on trusted backends and send them in the Authorization header over HTTPS outside local development. Redact credentials in proxy and tracing logs.
 
-Use this server key only from a trusted backend. Never ship it in an iOS, Android, or web client. `/v1` routes still do not check tenant credentials and remain globally scoped, so keep Pushboy behind your trusted backend or private network until the tenant cutover is complete.
-
-A key with `keys:manage` can issue a replacement key for its own tenant. The example rotates the bootstrap key with all of its original scopes. For a different key, use the scopes the replacement needs within the issuing key's authority. Set `PUSHBOY_SERVER_KEY` locally from your secret manager, then run:
+To rotate a bootstrap key, load it into `PUSHBOY_SERVER_KEY` and issue a replacement with `keys:manage`.
 
 ```bash
+OLD_KEY_ID=${PUSHBOY_SERVER_KEY%%.*}
 curl -X POST http://localhost:8080/v2/keys \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
   -H "Content-Type: application/json" \
   -d '{"scopes":["read","send","users:write","devices:write","topics:write","keys:manage","providers:manage"]}'
 ```
 
-The `201` response is `{"id":"<key UUID>","key":"<new secret>"}` with `Cache-Control: no-store`. Save the secret immediately; it cannot be retrieved later. Choose a nonempty subset of the issuing key's scopes. An optional `expiresAt` must be a future RFC 3339 timestamp; omission or `null` means no expiry when the issuing key has no expiry. If the issuing key expires, supply an expiry no later than its own; longer or unbounded lifetimes return `403`. Invalid scope or expiry requests return `400`; scopes beyond the issuing key's authority return `403`. There is no caller-selected tenant parameter.
-
-Existing keys stay active while you deploy the replacement. After the backend uses the new key, set `PUSHBOY_SERVER_KEY` to the replacement management key from your secret manager, set `OLD_KEY_ID` to the old key's UUID, and revoke the old key:
+Save the new `key` from the response immediately. For a scoped issuer, request only scopes it has and supply an `expiresAt` within its lifetime if it expires. Once the backend has switched, load the replacement into `PUSHBOY_SERVER_KEY` and revoke the old key.
 
 ```bash
 curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
 ```
 
-Revocation returns `204`, including repeat revocation within the same tenant. Missing or other-tenant IDs return `404`. Missing, expired, revoked, or invalid credentials (or a disabled tenant) return `401`; an active key without `keys:manage` returns `403`. Revoking the key used for the request succeeds, but that key cannot authenticate another request. Keep an active replacement management key before doing so.
-
-Send credentials only in the Authorization header over HTTPS outside local development. Key-management routes suppress request access logs to avoid recording credentials accidentally included in URLs; configure your proxy and tracing tools to redact them too.
-
-### Rollback after bootstrap
-
-Before rolling down migration 17, stop tenant writes and verify that both `tenants` and `tenant_api_keys` are empty. After creating tenants or keys, leave migration 17 installed for a data-preserving application rollback. Use a compatible binary with a migration bundle that recognizes version 17 and verify compatibility before deployment.
-
-If a down attempt is blocked by the populated-table guard, golang-migrate can report a dirty version 16 even though both version 17 tables and their rows remain intact. Stop migration runners, verify the version 17 schema and data are intact, and use the migration tool's `force 17` to restore the recorded version before restarting the application.
+Before rolling down migration 17, stop tenant writes and check that both tenant tables are empty. Once you bootstrap an app, keep migration 17 installed and use a binary that recognizes version 17 for application rollback. If the guard rejects a down migration and leaves version 16 dirty, stop migration runners, verify the version 17 tables and data are intact, and run `force 17` with the migration tool before restarting Pushboy.
 
 ## Provider Credentials
 
