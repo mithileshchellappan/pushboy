@@ -58,7 +58,7 @@ func (s *Server) handleProvisionTenantLAChannel(w http.ResponseWriter, r *http.R
 	} else if created {
 		status = http.StatusCreated
 	}
-	s.respond(w, r, ch, status)
+	s.respond(w, r, tenantLAChannelResponse(ch), status)
 }
 
 func (s *Server) handleGetTenantLAChannel(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +71,7 @@ func (s *Server) handleGetTenantLAChannel(w http.ResponseWriter, r *http.Request
 		tenantLAChannelError(w, err)
 		return
 	}
-	s.respond(w, r, channel, http.StatusOK)
+	s.respond(w, r, tenantLAChannelResponse(channel), http.StatusOK)
 }
 
 func (s *Server) handleDeleteTenantLAChannel(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +84,13 @@ func (s *Server) handleDeleteTenantLAChannel(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func tenantLAChannelResponse(channel storage.TenantLAChannel) storage.TenantLAChannel {
+	if channel.State == storage.TenantLAChannelDeleting {
+		channel.ChannelID = ""
+	}
+	return channel
 }
 
 func tenantLAChannelError(w http.ResponseWriter, err error) {

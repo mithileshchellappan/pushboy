@@ -47,7 +47,7 @@ func (s *TenantLAChannels) Provision(ctx context.Context, tenantID uuid.UUID, re
 	}
 	channelID, err := client.CreateLiveActivityChannel(createCtx)
 
-	if errors.Is(err, apns.ErrChannelCreateRejected) {
+	if errors.Is(err, apns.ErrChannelRequestRejected) {
 		providerErr := s.routes.ObserveResult(createCtx, ref, client.CredentialVersion(), err)
 		return s.releaseProvision(ctx, tenantID, channel, tenantLAChannelProviderError(providerErr))
 	}
@@ -109,7 +109,7 @@ func (s *TenantLAChannels) Delete(ctx context.Context, tenantID uuid.UUID, activ
 	if err != nil {
 		return err
 	}
-	if channel.State != storage.TenantLAChannelActive {
+	if channel.State != storage.TenantLAChannelActive && channel.State != storage.TenantLAChannelDeleting {
 		return storage.Errors.Conflict
 	}
 	ref := model.ProviderRef{TenantID: tenantID, RouteID: channel.ProviderConfigID}
@@ -117,15 +117,24 @@ func (s *TenantLAChannels) Delete(ctx context.Context, tenantID uuid.UUID, activ
 	if err != nil {
 		return err
 	}
-	if err := s.store.AdmitTenantLAChannelOperation(deleteCtx, tenantID, channel, client.CredentialVersion()); err != nil {
+	deleting, err := s.store.BeginTenantLAChannelDeletion(deleteCtx, tenantID, channel, client.CredentialVersion())
+	if err != nil {
 		return err
 	}
-	if err := client.DeleteLiveActivityChannel(deleteCtx, channel.ChannelID); err != nil {
-		return tenantLAChannelProviderError(s.routes.ObserveResult(deleteCtx, ref, client.CredentialVersion(), err))
-	}
+	providerErr := client.DeleteLiveActivityChannel(deleteCtx, deleting.ChannelID)
+	rejected := errors.Is(providerErr, apns.ErrChannelRequestRejected)
+	providerErr = s.routes.ObserveResult(deleteCtx, ref, client.CredentialVersion(), providerErr)
 	saveCtx, saveCancel := context.WithTimeout(context.WithoutCancel(deleteCtx), 2*time.Second)
 	defer saveCancel()
-	return s.store.RemoveTenantLAChannel(saveCtx, tenantID, channel)
+	if providerErr == nil {
+		return s.store.RemoveTenantLAChannel(saveCtx, tenantID, deleting)
+	}
+	if channel.State == storage.TenantLAChannelActive && rejected {
+		if err := s.store.RestoreTenantLAChannel(saveCtx, tenantID, deleting); err != nil {
+			return err
+		}
+	}
+	return tenantLAChannelProviderError(providerErr)
 }
 
 func tenantLAChannelProviderError(err error) error {

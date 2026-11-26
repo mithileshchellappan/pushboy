@@ -130,7 +130,7 @@ paths:
         Requires send. Use this route for manual starts of public, non-personal topic activities.
         The topic and the APNs route must belong to the bearer key's tenant.
         Repeating the request for the same active activity, topic, and route returns its stored channel.
-        An unresolved provisioning attempt returns its state until an operator resolves it.
+        An unresolved provisioning or deletion attempt returns its state. The channel ID is omitted while deleting.
       security:
         - TenantServerKey: []
       requestBody:
@@ -172,7 +172,7 @@ paths:
         "404":
           $ref: "#/components/responses/TenantResourceNotFound"
         "409":
-          description: The activity uses a different topic or route, or its provisioning attempt is unresolved.
+          description: The activity uses a different topic or route, or its provisioning or deletion is unresolved.
           content:
             application/json:
               schema:
@@ -183,13 +183,13 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
         "502":
-          description: APNs rejected the channel operation.
+          description: The APNs channel operation failed.
         "503":
           description: The tenant APNs route is unavailable.
     get:
       tags: [LiveActivity]
       summary: Get a public topic activity channel in the bearer key's tenant
-      description: Requires read.
+      description: Requires read. A deleting channel has no usable channel ID in the response.
       security:
         - TenantServerKey: []
       responses:
@@ -212,7 +212,9 @@ paths:
     delete:
       tags: [LiveActivity]
       summary: Delete a public topic activity channel in the bearer key's tenant
-      description: Requires send. Pushboy uses the APNs route recorded on the channel.
+      description: |
+        Requires send. Pushboy uses the APNs route recorded on the channel.
+        Retry DELETE on a deleting mapping to reconcile an unconfirmed result.
       security:
         - TenantServerKey: []
       responses:
@@ -227,11 +229,11 @@ paths:
         "404":
           $ref: "#/components/responses/TenantResourceNotFound"
         "409":
-          description: Channel provisioning remains unresolved.
+          description: Channel provisioning is unresolved or a concurrent operation changed the mapping.
         "500":
           $ref: "#/components/responses/TextError"
         "502":
-          description: APNs rejected the channel operation.
+          description: The APNs channel operation failed.
         "503":
           description: The tenant APNs route is unavailable.
 
@@ -1627,10 +1629,10 @@ components:
           format: uuid
         state:
           type: string
-          enum: [provisioning, ambiguous, active]
+          enum: [provisioning, ambiguous, active, deleting]
         channelId:
           type: string
-          description: The APNs channel ID if known. Use the channel for a manual start when state is active.
+          description: The APNs channel ID if known, omitted during deletion. Use it for manual starts only in the active state.
         createdAt:
           type: string
           format: date-time
