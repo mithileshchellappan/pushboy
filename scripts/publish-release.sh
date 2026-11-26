@@ -30,6 +30,17 @@ release_for_tag() {
             if length > 1 then error("Multiple releases for tag") else .[0] // {} end'
 }
 
+version_image_digest() {
+    local result
+    if result="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$image" 2>&1)"; then
+        [[ "$result" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Invalid image digest for $image" >&2; return 1; }
+        printf '%s\n' "$result"
+    elif [[ "$result" != *"$image: not found"* && "$result" != *"manifest unknown"* ]]; then
+        printf '%s\n' "$result" >&2
+        return 1
+    fi
+}
+
 verify_tag
 release="$(release_for_tag)"
 marker="Built from commit \`$revision\`."
@@ -86,29 +97,21 @@ fi
 
 verify_tag
 printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-if ! manifest="$(docker buildx imagetools inspect --raw "$image" 2>&1)"; then
-    if [[ "$manifest" != *"$image: not found"* && "$manifest" != *"manifest unknown"* ]]; then
-        printf '%s\n' "$manifest" >&2
-        exit 1
-    fi
+digest="$(version_image_digest)"
+if [[ -z "$digest" ]]; then
+    stage="$(mktemp -d)"
+    trap 'rm -rf "$stage"' EXIT
     source="org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
     version="org.opencontainers.image.version=$VERSION"
     rev="org.opencontainers.image.revision=$revision"
-    docker buildx build --platform linux/amd64,linux/arm64 --push --tag "$image" \
+    docker buildx build --platform linux/amd64,linux/arm64 --metadata-file "$stage/image.json" \
+        --output "type=image,name=${image%:*},push=true,push-by-digest=true,name-canonical=true,oci-mediatypes=true" \
         --build-arg "VERSION=$VERSION" --build-arg "REVISION=$revision" \
         --label "$source" --label "$version" --label "$rev" \
         --annotation "index:$source" --annotation "index:$version" --annotation "index:$rev" .
+    digest="$(jq -er '."containerimage.digest" | select(test("^sha256:[0-9a-f]{64}$"))' "$stage/image.json")"
 fi
 
-if ! token="$(curl -fsS --get --data-urlencode "scope=repository:$package:pull" \
-    'https://ghcr.io/token?service=ghcr.io' | jq -er .token)" ||
-   ! headers="$(curl -fsSI -H "Authorization: Bearer $token" \
-    -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/$package/manifests/$VERSION")"; then
-    echo "$image is not publicly pullable. Set the package visibility to Public and rerun the workflow." >&2
-    exit 1
-fi
-digest="$(awk 'tolower($1) == "docker-content-digest:" { sub(/\r$/, "", $2); print $2 }' <<< "$headers")"
-[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 pinned="${image%:*}@$digest"
 manifest="$(docker buildx imagetools inspect --raw "$pinned")"
 jq -e --arg version "$VERSION" --arg revision "$revision" --arg source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" '
@@ -120,6 +123,28 @@ jq -e --arg version "$VERSION" --arg revision "$revision" --arg source "$GITHUB_
 for arch in amd64 arm64; do
     test "$(docker run --rm --pull=always --platform "linux/$arch" "$pinned" --version)" = "pushboy $VERSION ($revision)"
 done
+
+verify_tag
+current_digest="$(version_image_digest)"
+if [[ -z "$current_digest" ]]; then
+    docker buildx imagetools create --tag "$image" "$pinned"
+elif [[ "$current_digest" != "$digest" ]]; then
+    echo "$image already points to another digest" >&2
+    exit 1
+fi
+
+if ! token="$(curl -fsS --get --data-urlencode "scope=repository:$package:pull" \
+    'https://ghcr.io/token?service=ghcr.io' | jq -er .token)" ||
+   ! headers="$(curl -fsSI -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/$package/manifests/$VERSION")"; then
+    echo "$image is not publicly pullable. Set the package visibility to Public and rerun the workflow." >&2
+    exit 1
+fi
+public_digest="$(awk 'tolower($1) == "docker-content-digest:" { sub(/\r$/, "", $2); print $2 }' <<< "$headers")"
+if [[ "$public_digest" != "$digest" ]]; then
+    echo "$image does not resolve to the verified digest" >&2
+    exit 1
+fi
 
 verify_tag
 notes="$(jq -er .body <<< "$release")"

@@ -58,7 +58,7 @@ Fast Docker setup:
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
 ```
 
-Run the Compose command printed by the installer. It selects the latest stable release by default. To pin a specific release:
+Run the Compose command printed by the installer. It selects the latest stable release by default and saves the image selection for future runs. To pin a specific release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | PUSHBOY_VERSION=v0.1.0 sh

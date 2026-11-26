@@ -65,15 +65,24 @@ fi
 
 mkdir -p "$INSTALL_DIR/keys"
 
-if [ ! -f "$INSTALL_DIR/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
-  cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+settings="$INSTALL_DIR/.env"
+source_settings="$settings"
+if [ ! -f "$settings" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
+  source_settings="$INSTALL_DIR/.env.example"
 fi
-
+updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
+trap 'rm -f "$updated_settings" ${archive:+"$archive"}' EXIT
+if [ -f "$source_settings" ]; then
+  awk '!/^[[:space:]]*(export[[:space:]]+)?PUSHBOY_(IMAGE|COMPOSE_SERVICE)[[:space:]]*=/' \
+    "$source_settings" > "$updated_settings"
+fi
 compose_command="docker compose up --build"
 if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
   image="ghcr.io/$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]'):$VERSION"
-  compose_command="PUSHBOY_IMAGE=$image docker compose up --no-build --pull always"
+  printf '\nPUSHBOY_IMAGE=%s\nPUSHBOY_COMPOSE_SERVICE=release\n' "$image" >> "$updated_settings"
+  compose_command="docker compose up --no-build"
 fi
+mv -f "$updated_settings" "$settings"
 
 cat <<EOF
 

@@ -16,9 +16,10 @@ services:
       retries: 20
 
   pushboy:
+    extends:
+      file: compose.pushboy.yaml
+      service: ${PUSHBOY_COMPOSE_SERVICE:-source}
     image: ${PUSHBOY_IMAGE:-${COMPOSE_PROJECT_NAME}-pushboy}
-    build:
-      context: .
     depends_on:
       postgres:
         condition: service_healthy

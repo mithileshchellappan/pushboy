@@ -24,9 +24,9 @@ Use the setup script:
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
 ```
 
-Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The release notes also list the image digest for deployments that pin by digest.
+Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. The release notes also list the image digest for deployments that pin by digest.
 
-To build from source, set `PUSHBOY_VERSION=main` in the installer or clone the repository manually:
+Set `PUSHBOY_VERSION=main` in the installer to clear the release image selection and build from source. You can also clone the repository manually:
 
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
@@ -100,11 +100,10 @@ Download the archive for your OS and CPU, along with `SHA256SUMS`. Release archi
 
 ```bash
 archive=pushboy_v0.1.0_darwin_arm64.tar.gz
-grep -F "  $archive" SHA256SUMS | shasum -a 256 -c
-mkdir -p pushboy
-tar -xzf "$archive" -C pushboy
-cd pushboy
-./pushboy --version
+awk -v archive="$archive" '$2 == archive' SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p pushboy &&
+  tar -xzf "$archive" -C pushboy &&
+  (cd pushboy && ./pushboy --version)
 ```
 
 On Linux you can use `sha256sum -c` in place of `shasum -a 256 -c`. Set `DATABASE_URL` in the environment or in `.env`. Start `./pushboy` from the extracted directory so it can find the bundled migrations.
