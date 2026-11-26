@@ -91,8 +91,8 @@ if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
   compose_command="docker compose up --no-build"
 fi
 
-updated_settings="$(mktemp "$(dirname "$settings")/.env.XXXXXX")"
-trap 'rm -f "$updated_settings" ${preserved_settings:+"$preserved_settings"} ${archive:+"$archive"}' EXIT
+updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
+trap 'rm -f "$updated_settings" ${replacement_settings:+"$replacement_settings"} ${archive:+"$archive"}' EXIT
 awk -v image="$image" '
   /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_IMAGE[[:space:]]*=/ {
     if (image != "" && !found_image++) print "PUSHBOY_IMAGE=" image
@@ -109,14 +109,17 @@ awk -v image="$image" '
   }
 ' "$source_settings" > "$updated_settings"
 if ! cmp -s "$updated_settings" "$settings"; then
-  if [ -f "$settings" ]; then
-    preserved_settings="$(mktemp "$(dirname "$settings")/.env.XXXXXX")"
-    cp -p "$settings" "$preserved_settings"
-    cat "$updated_settings" > "$preserved_settings"
-    mv -f "$preserved_settings" "$settings"
-  else
-    mv -f "$updated_settings" "$settings"
+  settings_dir="$(dirname "$settings")"
+  if [ ! -w "$settings_dir" ] || { [ -f "$settings" ] && [ ! -w "$settings" ]; }; then
+    echo "error: cannot update ${settings}: settings file or directory is not writable" >&2
+    exit 1
   fi
+  replacement_settings="$(mktemp "$settings_dir/.env.XXXXXX")"
+  if [ -f "$settings" ]; then
+    cp -p "$settings" "$replacement_settings"
+  fi
+  cat "$updated_settings" > "$replacement_settings"
+  mv -f "$replacement_settings" "$settings"
 fi
 
 cat <<EOF
