@@ -14,50 +14,65 @@ require_cmd() {
 }
 
 latest_release() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest" \
-      | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-      | head -n 1
-  fi
+  release="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")" || return
+  printf '%s\n' "$release" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 if [ -z "$VERSION" ]; then
-  VERSION="$(latest_release || true)"
+  require_cmd curl
+  if ! VERSION="$(latest_release)" || [ -z "$VERSION" ]; then
+    echo "error: could not resolve the latest release. Set PUSHBOY_VERSION to a release tag or main." >&2
+    exit 1
+  fi
 fi
 
-if [ -z "$VERSION" ]; then
-  VERSION="main"
+if [ "$VERSION" = "main" ]; then
+  SOURCE_REF=refs/heads/main
+elif printf '%s\n' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'; then
+  SOURCE_REF="refs/tags/$VERSION"
+else
+  echo "error: expected a release tag or main, got $VERSION" >&2
+  exit 1
 fi
 
 echo "Installing Pushboy ${VERSION} into ${INSTALL_DIR}"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  require_cmd git
-  git -C "$INSTALL_DIR" fetch --quiet --tags --depth 1 origin "$VERSION"
-  git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout --quiet "$VERSION"
-elif [ -e "$INSTALL_DIR" ] && [ "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
-  echo "error: ${INSTALL_DIR} already exists and is not empty" >&2
-  echo "Set PUSHBOY_HOME to a different directory or clear the existing path." >&2
+if [ -e "$INSTALL_DIR" ] && [ ! -e "$INSTALL_DIR/.git" ] &&
+   { [ ! -d "$INSTALL_DIR" ] || [ "$(ls -A "$INSTALL_DIR")" ]; }; then
+  echo "error: ${INSTALL_DIR} already exists and is not an empty directory" >&2
+  echo "Set PUSHBOY_HOME to a different directory." >&2
   exit 1
-elif command -v git >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$VERSION" "$REPO_URL" "$INSTALL_DIR"
+fi
+
+if [ -e "$INSTALL_DIR/.git" ] || command -v git >/dev/null 2>&1; then
+  require_cmd git
+  if [ ! -e "$INSTALL_DIR/.git" ]; then
+    mkdir -p "$INSTALL_DIR"
+    git init --quiet "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
+  fi
+  git -C "$INSTALL_DIR" fetch --quiet --depth 1 --no-tags origin "$SOURCE_REF"
+  git -C "$INSTALL_DIR" checkout --quiet --detach FETCH_HEAD
 else
   require_cmd curl
   require_cmd tar
+  archive="$(mktemp)"
+  trap 'rm -f "$archive"' EXIT
+  curl -fsSL "https://github.com/${REPO_SLUG}/archive/${SOURCE_REF}.tar.gz" -o "$archive"
   mkdir -p "$INSTALL_DIR"
-  if [ "$VERSION" = "main" ]; then
-    archive_url="https://github.com/${REPO_SLUG}/archive/refs/heads/main.tar.gz"
-  else
-    archive_url="https://github.com/${REPO_SLUG}/archive/refs/tags/${VERSION}.tar.gz"
-  fi
-  curl -fsSL "$archive_url" | tar -xz --strip-components=1 -C "$INSTALL_DIR"
+  tar -xzf "$archive" --strip-components=1 -C "$INSTALL_DIR"
 fi
 
 mkdir -p "$INSTALL_DIR/keys"
 
 if [ ! -f "$INSTALL_DIR/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
   cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
+fi
+
+compose_command="docker compose up --build"
+if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
+  image="ghcr.io/$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]'):$VERSION"
+  compose_command="PUSHBOY_IMAGE=$image docker compose up --no-build --pull always"
 fi
 
 cat <<EOF
@@ -68,7 +83,7 @@ Pushboy is ready at:
 Next steps:
   cd "${INSTALL_DIR}"
   edit .env
-  docker compose up --build
+  ${compose_command}
 
 Health check:
   curl http://localhost:8080/v1/ping

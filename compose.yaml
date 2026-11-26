@@ -16,6 +16,7 @@ services:
       retries: 20
 
   pushboy:
+    image: ${PUSHBOY_IMAGE:-${COMPOSE_PROJECT_NAME}-pushboy}
     build:
       context: .
     depends_on:
@@ -29,12 +30,12 @@ services:
       JOB_QUEUE_SIZE: "1000"
       BATCH_SIZE: "5000"
       MAX_RETRY_NOTIFICATION: "3"
-      APNS_KEY_ID: ""
-      APNS_TEAM_ID: ""
-      APNS_BUNDLE_ID: ""
-      APNS_KEY_PATH: /app/keys/AuthKey_YOUR_KEY_ID.p8
-      APNS_USE_SANDBOX: "true"
-      FCM_KEY_PATH: /app/keys/service-account.json
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_BUNDLE_ID: ${APNS_BUNDLE_ID:-${APNS_TOPIC_ID:-}}
+      APNS_KEY_PATH: ${APNS_KEY_PATH:-/app/keys/AuthKey_YOUR_KEY_ID.p8}
+      APNS_USE_SANDBOX: ${APNS_USE_SANDBOX:-true}
+      FCM_KEY_PATH: ${FCM_KEY_PATH:-/app/keys/service-account.json}
       BROADCAST_TOPIC_NAME: broadcast
     ports:
       - "8080:8080"

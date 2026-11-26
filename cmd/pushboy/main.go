@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -27,7 +28,17 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
 
+var (
+	version  = "dev"
+	revision = "unknown"
+)
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("pushboy %s (%s)\n", version, revision)
+		return
+	}
+
 	cfg := config.Load()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

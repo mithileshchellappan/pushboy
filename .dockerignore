@@ -4,6 +4,7 @@
 .air.toml
 .DS_Store
 .env
+dist/
 *.env
 keys
 *.p8
