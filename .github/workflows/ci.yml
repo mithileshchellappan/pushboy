@@ -111,6 +111,9 @@ jobs:
       - name: Test installer settings
         run: sh scripts/test-setup.sh
 
+      - name: Test release draft visibility
+        run: bash scripts/test-release-draft.sh
+
       - name: Build and start Compose stack
         run: docker compose up -d --build
 
