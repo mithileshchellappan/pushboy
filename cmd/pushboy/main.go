@@ -65,7 +65,7 @@ func main() {
 
 	providers, err := storage.NewTenantProviderStore(store, cfg.ProviderEncryptionActiveKeyID, cfg.ProviderEncryptionKeys)
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("WARNING: %v", err)
 	}
 
 	// Initialize dispatchers - only add successfully created clients

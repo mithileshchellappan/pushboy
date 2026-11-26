@@ -119,7 +119,7 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	create := `{"provider":"apns","environment":"production","applicationId":"com.example.app","credentials":` + string(credentials) + `}`
+	create := `{"provider":"apns","environment":"production","applicationId":"com.example.App","credentials":` + string(credentials) + `}`
 	toRoute := func(res *httptest.ResponseRecorder) storage.TenantProvider {
 		t.Helper()
 		var route storage.TenantProvider
@@ -130,11 +130,12 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 	}
 	a := toRoute(request(router, http.MethodPost, path, manageOnly, create, http.StatusCreated))
 	b := toRoute(request(router, http.MethodPost, path, keyB, create, http.StatusCreated))
-	if !a.Ready || !b.Ready || a.ID == b.ID || a.CredentialVersion != 1 {
+	if !a.Ready || !b.Ready || a.ID == b.ID || a.CredentialVersion != 1 || a.ApplicationID != "com.example.App" {
 		t.Fatalf("ready isolated routes: %+v and %+v", a, b)
 	}
 	routePath := path + "/" + a.ID.String()
 	request(router, http.MethodPost, path, keyA, create, http.StatusConflict)
+	request(router, http.MethodPost, path, keyA, strings.Replace(create, "com.example.App", "com.example.app", 1), http.StatusConflict)
 	request(router, http.MethodGet, routePath, keyB, "", http.StatusNotFound)
 	rotation := `{"credentialVersion":1,"credentials":` + string(credentials) + `}`
 	request(router, http.MethodPut, routePath, keyB, rotation, http.StatusNotFound)
@@ -148,6 +149,21 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 		t.Fatalf("rotated route = %+v", rotated)
 	}
 	request(router, http.MethodPut, routePath, keyA, rotation, http.StatusConflict)
+
+	malformed, err := storage.NewTenantProviderStore(store, "new-active", `{
+		"test-key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		"new-active":"synthetic-malformed-entry",
+		"wrong-type":{"unused":"synthetic-object-entry"}
+	}`)
+	if err == nil || strings.Contains(err.Error(), "synthetic-") || strings.Contains(err.Error(), "new-active") {
+		t.Fatalf("expected a redacted keyring diagnostic, got %v", err)
+	}
+	malformedRouter := New(nil, nil, nil, store, malformed).setupRouter()
+	retained := toRoute(request(malformedRouter, http.MethodGet, routePath, keyA, "", http.StatusOK))
+	if !retained.Ready {
+		t.Fatalf("valid retained key with malformed active key = %+v", retained)
+	}
+	request(malformedRouter, http.MethodPost, path, keyA, strings.Replace(create, "production", "sandbox", 1), http.StatusServiceUnavailable)
 
 	unavailable, err := storage.NewTenantProviderStore(store, "", "")
 	if err != nil {
@@ -164,7 +180,7 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 		t.Fatalf("disabled route = %+v", disabled)
 	}
 	res = httptest.NewRecorder()
-	unavailableRouter.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/ping", nil))
+	malformedRouter.ServeHTTP(res, httptest.NewRequest(http.MethodGet, "/v1/ping", nil))
 	if res.Code != http.StatusOK {
 		t.Fatalf("liveness status = %d", res.Code)
 	}

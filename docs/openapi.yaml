@@ -119,7 +119,8 @@ paths:
       tags: [ProviderConfigs]
       summary: Create a provider route for the authenticated tenant
       description: |
-        Requires providers:manage. The APNs bundle or FCM project and environment define the route.
+        Requires providers:manage. The APNs bundle or FCM target project and environment define the route.
+        APNs compares bundle IDs without regard to case and preserves the submitted spelling.
         A duplicate namespace returns 409. Use the route ID to rotate credentials.
       security:
         - TenantServerKey: []
@@ -141,7 +142,7 @@ paths:
                   enum: [sandbox, production]
                 applicationId:
                   type: string
-                  description: APNs bundle ID or Firebase project ID.
+                  description: APNs bundle ID or Firebase target project ID.
                 enabled:
                   type: [boolean, "null"]
                   default: true
@@ -1368,7 +1369,7 @@ components:
               const: service_account
             project_id:
               type: string
-              description: Must match applicationId.
+              description: The service account's sender project. For a different target, grant the account access in the target project's IAM.
             private_key_id:
               type: string
             private_key:

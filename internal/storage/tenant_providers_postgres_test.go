@@ -70,7 +70,8 @@ func TestTenantProviderOfflineValidation(t *testing.T) {
 		valid  bool
 	}{
 		{"service account", func(*fcmCredentials) {}, true},
-		{"different project", func(c *fcmCredentials) { c.ProjectID = "different-project" }, false},
+		{"different sender project", func(c *fcmCredentials) { c.ProjectID = "different-project" }, true},
+		{"invalid sender project", func(c *fcmCredentials) { c.ProjectID = "../invalid-project" }, false},
 		{"alternate endpoint", func(c *fcmCredentials) { c.TokenURI = "http://localhost/token" }, false},
 		{"external account", func(c *fcmCredentials) { c.Type = "external_account" }, false},
 		{"unparseable key", func(c *fcmCredentials) { c.PrivateKey = "invalid" }, false},
@@ -157,12 +158,12 @@ func TestPostgresTenantProviderEncryptionAndRotation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fcmRoute, err := rotating.Create(ctx, first, TenantProviderNamespace{"fcm", "production", fcmCreds.ProjectID}, true, fcmJSON)
+	fcmRoute, err := rotating.Create(ctx, first, TenantProviderNamespace{"fcm", "production", "example-target"}, true, fcmJSON)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mixed, err := restored.List(ctx, first)
-	if err != nil || len(mixed) != 2 || mixed[0].ID != firstRoute.ID || mixed[0].Ready || mixed[1].ID != fcmRoute.ID || !mixed[1].Ready {
+	if err != nil || len(mixed) != 2 || mixed[0].ID != firstRoute.ID || mixed[0].Ready || mixed[1].ID != fcmRoute.ID || !mixed[1].Ready || mixed[1].ApplicationID != "example-target" {
 		t.Fatalf("unavailable APNs key alongside independently ready FCM: %+v, %v", mixed, err)
 	}
 

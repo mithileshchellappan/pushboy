@@ -144,7 +144,7 @@ To retry user creation after a lost response, generate and save a UUID before se
 
 Set `PROVIDER_ENCRYPTION_ACTIVE_KEY_ID` to a versioned ID such as `v1`. Inject `PROVIDER_ENCRYPTION_KEYS` from your deployment secret manager as a JSON object mapping key IDs to standard base64-encoded 32-byte random keys. Generate each key independently, for example with `openssl rand -base64 32`. Keep the JSON out of source control, logs, and database backups. Docker Compose passes both variables through to Pushboy when they are set.
 
-Each tenant can configure separate APNs sandbox and production routes and FCM production routes. The bearer key determines the tenant. Use a key with `providers:manage` to create a route. Send the APNs key ID and team ID associated with the downloaded signing key.
+Each tenant can configure separate APNs sandbox and production routes and FCM production routes. APNs bundle comparisons ignore case and the route retains the registered bundle spelling. The bearer key determines the tenant. Use a key with `providers:manage` to create a route. Send the APNs key ID and team ID associated with the downloaded signing key.
 
 ```bash
 jq -n --rawfile privateKey keys/AuthKey_YOUR_KEY_ID.p8 \
@@ -155,13 +155,13 @@ jq -n --rawfile privateKey keys/AuthKey_YOUR_KEY_ID.p8 \
     -H "Content-Type: application/json" --data-binary @-
 ```
 
-For FCM, set `provider` to `fcm`, `environment` to `production`, and `applicationId` to the `project_id` of the Firebase service account JSON. Supply the JSON object in `credentials`. Pushboy validates Google's OAuth token endpoint and the RSA signing key. Use HTTPS outside local development and exclude provider request bodies and authorization headers from logs and traces.
+For FCM, set `provider` to `fcm`, `environment` to `production`, and `applicationId` to the Firebase project that will receive the send request. A service account from another project needs permission to send messages in the target project. Supply the JSON object in `credentials`. Pushboy validates Google's OAuth token endpoint and the RSA signing key. Use HTTPS outside local development and exclude provider request bodies and authorization headers from logs and traces.
 
 With a key that has `read`, use `GET /v2/providers` or `GET /v2/providers/{providerId}` to check each route's `ready` flag. An unready route reports a reason such as `encryption_key_unavailable` or `credential_unreadable`. Readiness covers local decryption and signer or token source setup. Apple and Google authorization are verified through provider responses during delivery. These tenant routes currently support configuration and local readiness. Notification sends, Live Activity sends, and channel management continue through the legacy deployment configuration.
 
 Provider, environment, and application ID define the stable route namespace. A duplicate create returns `409`. To rotate a provider credential, send `PUT /v2/providers/{providerId}` with the current `credentialVersion` and the replacement `credentials`. The route keeps its ID and advances the credential version. A stale version returns `409`. Read the route after a lost response before issuing a new rotation. To disable a route, send its current `credentialVersion` and `enabled: false` in the PUT body. Re-enable it by uploading credentials with `enabled: true`.
 
-Back up every encryption key ID and value in a secret store independently of PostgreSQL. A database restore needs the keys referenced by the restored rows. Test recovery with a restored database and keyring on an isolated deployment, then verify readiness for each enabled route. Missing keys make their routes unready. Without an active key, credential writes receive `503` and stored routes can still be checked with their retained keys.
+Back up every encryption key ID and value in a secret store independently of PostgreSQL. A database restore needs the keys referenced by the restored rows. Test recovery with a restored database and keyring on an isolated deployment, then verify readiness for each enabled route. Missing keys make their routes unready. Pushboy skips malformed encryption key entries and logs a diagnostic without including key material. If the active key is missing or malformed, credential writes receive `503` and stored routes can still be checked with their valid retained keys.
 
 To rotate the deployment encryption key, distribute the new and old keys to every instance first. Then set the new active key ID everywhere and re-upload each route's credential with its current version. Check readiness for each enabled route. In PostgreSQL, verify that every row in `provider_configs` uses the new `credential_key_id` before retiring the old key from the running keyring. Retain old keys for backups that reference them.
 

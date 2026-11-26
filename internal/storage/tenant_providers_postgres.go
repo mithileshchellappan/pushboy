@@ -34,10 +34,7 @@ type TenantProviderStore struct {
 
 func NewTenantProviderStore(store *PostgresStore, activeKeyID, keysJSON string) (*TenantProviderStore, error) {
 	keys, err := parseProviderEncryptionKeys(activeKeyID, keysJSON)
-	if err != nil {
-		return nil, err
-	}
-	return &TenantProviderStore{db: store.db, keys: keys}, nil
+	return &TenantProviderStore{db: store.db, keys: keys}, err
 }
 
 func (s *TenantProviderStore) Create(ctx context.Context, tenantID uuid.UUID, namespace TenantProviderNamespace, enabled bool, credentials json.RawMessage) (TenantProvider, error) {
@@ -58,7 +55,7 @@ func (s *TenantProviderStore) Create(ctx context.Context, tenantID uuid.UUID, na
 		INSERT INTO provider_configs (tenant_id, id, provider, environment, application_id, enabled,
 			credential_version, credential_key_id, credential_nonce, credential_ciphertext)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (tenant_id, provider, environment, application_id) DO NOTHING
+		ON CONFLICT DO NOTHING
 		RETURNING created_at, updated_at`,
 		tenantID, id, route.Provider, route.Environment, route.ApplicationID, enabled,
 		route.CredentialVersion, encrypted.keyID, encrypted.nonce, encrypted.ciphertext,

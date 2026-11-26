@@ -79,7 +79,7 @@ func validateProviderCredentials(ctx context.Context, n TenantProviderNamespace,
 		return json.Marshal(creds)
 	case "fcm":
 		var creds fcmCredentials
-		if json.Unmarshal(raw, &creds) != nil || creds.Type != "service_account" || creds.ProjectID != n.ApplicationID ||
+		if json.Unmarshal(raw, &creds) != nil || creds.Type != "service_account" || !googleProjectPattern.MatchString(creds.ProjectID) ||
 			creds.TokenURI != googleServiceAccountTokenURL || (creds.Universe != "" && creds.Universe != "googleapis.com") ||
 			!validTenantResourceText(creds.PrivateKeyID, 128) {
 			return nil, ErrInvalidTenantResource
@@ -111,34 +111,55 @@ type providerEncryptionKeys struct {
 }
 
 func parseProviderEncryptionKeys(activeID, keysJSON string) (providerEncryptionKeys, error) {
-	invalid := errors.New("invalid tenant provider encryption key configuration")
 	keys := providerEncryptionKeys{active: activeID, keys: make(map[string]cipher.AEAD)}
+	var diagnostic error
 	if activeID != "" && !encodingKeyIDPattern.MatchString(activeID) {
-		return providerEncryptionKeys{}, invalid
+		keys.active = ""
+		diagnostic = errors.New("invalid tenant provider active encryption key ID")
 	}
 	if keysJSON == "" {
-		return keys, nil
+		return keys, diagnostic
 	}
-	var encoded map[string]string
+	var encoded map[string]json.RawMessage
 	if json.Unmarshal([]byte(keysJSON), &encoded) != nil || encoded == nil {
-		return providerEncryptionKeys{}, invalid
+		return keys, errors.Join(diagnostic, errors.New("invalid tenant provider encryption key map"))
 	}
-	for id, value := range encoded {
-		key, err := base64.StdEncoding.Strict().DecodeString(value)
-		if err != nil || len(key) != 32 || !encodingKeyIDPattern.MatchString(id) {
-			return providerEncryptionKeys{}, invalid
+	badEntries := 0
+	for id, raw := range encoded {
+		if !encodingKeyIDPattern.MatchString(id) {
+			badEntries++
+			continue
 		}
-		block, err := aes.NewCipher(key)
+		key, err := parseProviderEncryptionKey(raw)
 		if err != nil {
-			return providerEncryptionKeys{}, invalid
+			badEntries++
+			continue
 		}
-		gcm, err := cipher.NewGCM(block)
-		if err != nil {
-			return providerEncryptionKeys{}, invalid
-		}
-		keys.keys[id] = gcm
+		keys.keys[id] = key
 	}
-	return keys, nil
+	if badEntries != 0 {
+		diagnostic = errors.Join(diagnostic, fmt.Errorf("ignored %d invalid tenant provider encryption key entries", badEntries))
+	}
+	return keys, diagnostic
+}
+
+func parseProviderEncryptionKey(raw json.RawMessage) (cipher.AEAD, error) {
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != 32 {
+		return nil, errors.New("provider encryption key must be 32 bytes")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
 }
 
 type encryptedProviderCredentials struct {
