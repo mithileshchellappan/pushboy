@@ -100,14 +100,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      COMPOSE_FILE: compose.ci.yaml
+      COMPOSE_FILE: compose.yaml:compose.ci.yaml
+      COMPOSE_DISABLE_ENV_FILE: "true"
       COMPOSE_PROJECT_NAME: pushboy-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Build Docker image
-        run: docker build -t pushboy:ci .
+        run: docker compose build pushboy
 
       - name: Start Compose stack
         run: docker compose up -d --no-build
@@ -151,7 +152,9 @@ jobs:
           topics_response="$(curl -fsS http://127.0.0.1:18080/v1/topics/)"
           echo "$topics_response" | jq -e 'any(.[]; .ID == "broadcast")'
 
-          docker compose exec -T postgres psql -U pushboy -d pushboy -Atc "SELECT version > 0 AND NOT dirty FROM schema_migrations;" | grep -qx t
+          docker compose exec -T postgres sh -ec '
+            psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT version > 0 AND NOT dirty FROM schema_migrations;"
+          ' | grep -qx t
 
       - name: Show Compose status
         if: always()

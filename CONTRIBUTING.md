@@ -80,7 +80,9 @@ git diff --check
 
 Use focused tests for meaningful behavior that existing tests do not already protect. Changes to scheduling, token lifecycle, dispatch, provider error handling, Live Activity lifecycle, storage, or API behavior need proportionate regression coverage. Database changes also need the relevant disposable-PostgreSQL integration tests to run; skipped integration tests are not verification of the changed database behavior. See [AGENTS.md](AGENTS.md#testing).
 
-Set `PUSHBOY_TEST_DATABASE_URL` to a disposable PostgreSQL database when running the Go checks. CI starts PostgreSQL 16 and supplies this variable for both the regular and race suites. The database role needs permission to create a schema for the migration test. Both CI suites require the upgrade and rollback test to pass. Without the URL, local PostgreSQL integration tests are skipped. The container job separately builds the image and starts an isolated Compose stack to check the API and migrations.
+Set `PUSHBOY_TEST_DATABASE_URL` to a disposable PostgreSQL database when running the Go checks. CI starts PostgreSQL 16 and supplies this variable for both the regular and race suites. The database role needs permission to create a schema for the migration test. Both CI suites require the upgrade and rollback test to pass. Without the URL, local PostgreSQL integration tests are skipped.
+
+The container job builds and runs `compose.yaml` with the `compose.ci.yaml` override. The override requires Docker Compose 2.24.4 or later and reduces worker counts, exposes the API on loopback, and removes the local provider key mount. CI uses a per-run project and database volume to test the default app-to-PostgreSQL configuration.
 
 For Docker-related changes, also run:
 
