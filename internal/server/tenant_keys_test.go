@@ -51,7 +51,7 @@ func TestKeyManagementRequiresExplicitScopedBearer(t *testing.T) {
 			store := keyStoreStub{authenticate: func(context.Context, string) (storage.ServerKeyAccess, error) {
 				return storage.ServerKeyAccess{Scopes: tc.scopes}, tc.authErr
 			}}
-			router := New(nil, nil, nil, store, nil).setupRouter()
+			router := New(nil, nil, nil, store, nil, nil).setupRouter()
 			for _, route := range []struct{ method, path string }{
 				{http.MethodPost, "/v2/keys"},
 				{http.MethodDelete, "/v2/keys/" + uuid.NewString()},
@@ -95,7 +95,7 @@ func TestIssueServerKeyContract(t *testing.T) {
 			return id, "new-secret", nil
 		},
 	}
-	router := New(nil, nil, nil, store, nil).setupRouter()
+	router := New(nil, nil, nil, store, nil, nil).setupRouter()
 	request := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/v2/keys?tenantId=untrusted&key=query-secret", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer backend-key")
@@ -148,7 +148,7 @@ func TestRevokeServerKeyContract(t *testing.T) {
 					return tc.err
 				},
 			}
-			router := New(nil, nil, nil, store, nil).setupRouter()
+			router := New(nil, nil, nil, store, nil, nil).setupRouter()
 			req := httptest.NewRequest(http.MethodDelete, "/v2/keys/"+id.String(), nil)
 			req.Header.Set("Authorization", "Bearer backend-key")
 			rec := httptest.NewRecorder()
@@ -180,7 +180,7 @@ func TestIssueServerKeyStorageRejection(t *testing.T) {
 					return uuid.Nil, "credential-must-not-leak", tc.err
 				},
 			}
-			router := New(nil, nil, nil, store, nil).setupRouter()
+			router := New(nil, nil, nil, store, nil, nil).setupRouter()
 			req := httptest.NewRequest(http.MethodPost, "/v2/keys", strings.NewReader(`{"scopes":["read"]}`))
 			req.Header.Set("Authorization", "Bearer key")
 			rec := httptest.NewRecorder()

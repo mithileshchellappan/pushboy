@@ -12,6 +12,7 @@ import (
 )
 
 var (
+	ErrProviderRouteUnavailable      = errors.New("tenant provider route unavailable")
 	ErrProviderEncryptionUnavailable = errors.New("provider encryption key unavailable")
 	ErrProviderVersionConflict       = errors.New("provider credential version changed")
 )
@@ -118,7 +119,7 @@ func (s *TenantProviderStore) Update(ctx context.Context, tenantID, id uuid.UUID
 func (s *TenantProviderStore) replaceCredentials(ctx context.Context, tenantID uuid.UUID, route TenantProvider, version int64, enabled *bool, encrypted encryptedProviderCredentials) (TenantProvider, error) {
 	err := s.db.QueryRowContext(ctx, `
 		UPDATE provider_configs SET enabled = COALESCE($4, enabled), credential_version = $5, credential_key_id = $6,
-			credential_nonce = $7, credential_ciphertext = $8, updated_at = now()
+			credential_nonce = $7, credential_ciphertext = $8, authorization_failed = false, updated_at = now()
 		WHERE tenant_id = $1 AND id = $2 AND credential_version = $3
 		RETURNING enabled, created_at, updated_at`,
 		tenantID, route.ID, version, enabled, route.CredentialVersion, encrypted.keyID, encrypted.nonce, encrypted.ciphertext,
@@ -133,7 +134,7 @@ func (s *TenantProviderStore) replaceCredentials(ctx context.Context, tenantID u
 }
 
 const providerConfigSelect = `SELECT id, provider, environment, application_id, enabled,
-	credential_version, created_at, updated_at, credential_key_id, credential_nonce, credential_ciphertext
+	credential_version, created_at, updated_at, authorization_failed, credential_key_id, credential_nonce, credential_ciphertext
 	FROM provider_configs WHERE tenant_id = $1`
 
 func (s *TenantProviderStore) Get(ctx context.Context, tenantID, id uuid.UUID) (TenantProvider, error) {
@@ -171,12 +172,20 @@ func (s *TenantProviderStore) List(ctx context.Context, tenantID uuid.UUID) ([]T
 func (s *TenantProviderStore) providerWithReadiness(ctx context.Context, tenantID uuid.UUID, row interface{ Scan(...any) error }) (TenantProvider, error) {
 	var route TenantProvider
 	var credentials encryptedProviderCredentials
+	var authorizationFailed bool
 	if err := row.Scan(&route.ID, &route.Provider, &route.Environment, &route.ApplicationID, &route.Enabled,
-		&route.CredentialVersion, &route.CreatedAt, &route.UpdatedAt, &credentials.keyID, &credentials.nonce,
+		&route.CredentialVersion, &route.CreatedAt, &route.UpdatedAt, &authorizationFailed, &credentials.keyID, &credentials.nonce,
 		&credentials.ciphertext); err != nil {
 		return TenantProvider{}, err
 	}
-	return route.withReadiness(s.keys.readiness(ctx, tenantID, route, credentials)), nil
+	if !route.Enabled {
+		return route.withReadiness("disabled"), nil
+	}
+	if authorizationFailed {
+		return route.withReadiness("provider_authorization_failed"), nil
+	}
+	_, reason := s.keys.open(ctx, tenantID, route, credentials)
+	return route.withReadiness(reason), nil
 }
 
 func (route TenantProvider) withReadiness(reason string) TenantProvider {

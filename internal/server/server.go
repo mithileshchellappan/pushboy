@@ -18,19 +18,20 @@ import (
 )
 
 type Server struct {
-	service       *service.PushboyService
-	jobPipeline   pipeline.Pipeline[model.JobItem]
-	laJobPipeline pipeline.Pipeline[model.LAJobItem]
-	tenants       TenantStore
-	providers     *storage.TenantProviderStore
-	httpServer    *http.Server
-	router        chi.Router
+	service        *service.PushboyService
+	jobPipeline    pipeline.Pipeline[model.JobItem]
+	laJobPipeline  pipeline.Pipeline[model.LAJobItem]
+	tenants        TenantStore
+	providers      *storage.TenantProviderStore
+	tenantChannels *service.TenantLAChannels
+	httpServer     *http.Server
+	router         chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenants TenantStore, providers *storage.TenantProviderStore) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, tenants: tenants, providers: providers}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenants TenantStore, providers *storage.TenantProviderStore, tenantChannels *service.TenantLAChannels) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, tenants: tenants, providers: providers, tenantChannels: tenantChannels}
 }
 
 func (s *Server) Start(addr string) error {
@@ -66,6 +67,10 @@ func (s *Server) setupRouter() chi.Router {
 	r.Get("/v2/providers", s.handleListTenantProviders)
 	r.Get("/v2/providers/{providerID}", s.handleGetTenantProvider)
 	r.Put("/v2/providers/{providerID}", s.handleUpdateTenantProvider)
+
+	r.Put("/v2/live-activity/channels/{activityID}", s.handleProvisionTenantLAChannel)
+	r.Get("/v2/live-activity/channels/{activityID}", s.handleGetTenantLAChannel)
+	r.Delete("/v2/live-activity/channels/{activityID}", s.handleDeleteTenantLAChannel)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.Logger)

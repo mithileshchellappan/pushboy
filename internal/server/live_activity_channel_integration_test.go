@@ -207,6 +207,7 @@ func TestConcurrentLazyLAStartsAcrossInstances(t *testing.T) {
 			laPipeline,
 			nil,
 			nil,
+			nil,
 		).setupRouter()
 	}
 

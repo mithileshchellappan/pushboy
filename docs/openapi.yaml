@@ -114,6 +114,127 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
 
+  /v2/live-activity/channels/{activityId}:
+    parameters:
+      - name: activityId
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+    put:
+      tags: [LiveActivity]
+      summary: Provision an APNs channel for a tenant's public topic activity
+      description: |
+        Requires send. Use this route for manual starts of public, non-personal topic activities.
+        The topic and the APNs route must belong to the bearer key's tenant.
+        Repeating the request for the same active activity, topic, and route returns its stored channel.
+        An unresolved provisioning attempt returns its state until an operator resolves it.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [public, topicId, providerConfigId]
+              properties:
+                public:
+                  type: boolean
+                  const: true
+                topicId:
+                  type: string
+                providerConfigId:
+                  type: string
+                  format: uuid
+      responses:
+        "200":
+          description: Existing channel.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantLAChannel"
+        "201":
+          description: Channel provisioned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantLAChannel"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          description: The activity uses a different topic or route, or its provisioning attempt is unresolved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantLAChannel"
+            text/plain:
+              schema:
+                type: string
+        "500":
+          $ref: "#/components/responses/TextError"
+        "502":
+          description: APNs rejected the channel operation.
+        "503":
+          description: The tenant APNs route is unavailable.
+    get:
+      tags: [LiveActivity]
+      summary: Get a public topic activity channel in the bearer key's tenant
+      description: Requires read.
+      security:
+        - TenantServerKey: []
+      responses:
+        "200":
+          description: Channel metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantLAChannel"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "500":
+          $ref: "#/components/responses/TextError"
+    delete:
+      tags: [LiveActivity]
+      summary: Delete a public topic activity channel in the bearer key's tenant
+      description: Requires send. Pushboy uses the APNs route recorded on the channel.
+      security:
+        - TenantServerKey: []
+      responses:
+        "204":
+          description: Channel deleted.
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          description: Channel provisioning remains unresolved.
+        "500":
+          $ref: "#/components/responses/TextError"
+        "502":
+          description: APNs rejected the channel operation.
+        "503":
+          description: The tenant APNs route is unavailable.
+
   /v2/providers:
     post:
       tags: [ProviderConfigs]
@@ -1488,6 +1609,31 @@ components:
             example: Bad request
 
   schemas:
+    TenantLAChannel:
+      type: object
+      additionalProperties: false
+      required: [activityId, topicId, providerConfigId, provisioningId, state, createdAt]
+      properties:
+        activityId:
+          type: string
+          maxLength: 128
+        topicId:
+          type: string
+        providerConfigId:
+          type: string
+          format: uuid
+        provisioningId:
+          type: string
+          format: uuid
+        state:
+          type: string
+          enum: [provisioning, ambiguous, active]
+        channelId:
+          type: string
+          description: The APNs channel ID if known. Use the channel for a manual start when state is active.
+        createdAt:
+          type: string
+          format: date-time
     ProviderCredentials:
       description: Use the credential format for the route's provider.
       oneOf:
@@ -1558,10 +1704,10 @@ components:
           format: date-time
         ready:
           type: boolean
-          description: The enabled route passed local credential checks. Provider acceptance has not been checked.
+          description: The enabled route passed local credential checks and the current credential version has no recorded authorization failure.
         readinessReason:
           type: string
-          enum: [disabled, encryption_key_unavailable, credential_unreadable, credential_invalid]
+          enum: [disabled, encryption_key_unavailable, credential_unreadable, credential_invalid, provider_authorization_failed]
     TenantUser:
       type: object
       additionalProperties: false

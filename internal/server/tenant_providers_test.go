@@ -78,7 +78,7 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := New(nil, nil, nil, store, providers).setupRouter()
+	router := New(nil, nil, nil, store, providers, nil).setupRouter()
 	request := func(handler http.Handler, method, path, key, body string, want int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -158,7 +158,7 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "synthetic-") || strings.Contains(err.Error(), "new-active") {
 		t.Fatalf("expected a redacted keyring diagnostic, got %v", err)
 	}
-	malformedRouter := New(nil, nil, nil, store, malformed).setupRouter()
+	malformedRouter := New(nil, nil, nil, store, malformed, nil).setupRouter()
 	retained := toRoute(request(malformedRouter, http.MethodGet, routePath, keyA, "", http.StatusOK))
 	if !retained.Ready {
 		t.Fatalf("valid retained key with malformed active key = %+v", retained)
@@ -169,7 +169,7 @@ func TestTenantProviderHTTPIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unavailableRouter := New(nil, nil, nil, store, unavailable).setupRouter()
+	unavailableRouter := New(nil, nil, nil, store, unavailable, nil).setupRouter()
 	missing := toRoute(request(unavailableRouter, http.MethodGet, routePath, keyA, "", http.StatusOK))
 	if missing.Ready || missing.ReadinessReason != "encryption_key_unavailable" {
 		t.Fatalf("missing key route = %+v", missing)
@@ -190,7 +190,7 @@ func TestTenantProviderRequiresBearerAndScope(t *testing.T) {
 	store := keyStoreStub{authenticate: func(context.Context, string) (storage.ServerKeyAccess, error) {
 		return storage.ServerKeyAccess{TenantID: uuid.New(), Scopes: []string{"send"}}, nil
 	}}
-	router := New(nil, nil, nil, store, nil).setupRouter()
+	router := New(nil, nil, nil, store, nil, nil).setupRouter()
 	for _, route := range []struct{ method, path string }{
 		{http.MethodGet, "/v2/providers"},
 		{http.MethodGet, "/v2/providers/" + uuid.NewString()},

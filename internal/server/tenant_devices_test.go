@@ -54,7 +54,7 @@ func TestInstallationEnrollmentHTTP(t *testing.T) {
 			return device, calls == 1, nil
 		},
 	}
-	router := New(nil, nil, nil, store, nil).setupRouter()
+	router := New(nil, nil, nil, store, nil, nil).setupRouter()
 	request := func(id, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPut, "/v2/devices/"+id+"?tenantId="+uuid.NewString(), strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer backend-key")

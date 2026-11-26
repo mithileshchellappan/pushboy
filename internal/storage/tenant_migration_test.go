@@ -120,17 +120,60 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	if err := m.Migrate(20); err != nil {
 		t.Fatalf("reapply migration 20: %v", err)
 	}
+	providerID := uuid.New()
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO provider_configs (tenant_id, id, provider, environment, application_id,
 			enabled, credential_version, credential_key_id, credential_nonce, credential_ciphertext)
 		VALUES ($1, $2, 'apns', 'production', 'com.example.app', true, 1, 'test',
-			decode(repeat('00', 12), 'hex'), decode(repeat('00', 16), 'hex'))`, tenant.ID, uuid.New()); err != nil {
+			decode(repeat('00', 12), 'hex'), decode(repeat('00', 16), 'hex'))`, tenant.ID, providerID); err != nil {
 		t.Fatal(err)
 	}
 	rollBack(20, true)
 	if err := m.Force(20); err != nil {
 		t.Fatalf("restore recorded migration version 20: %v", err)
 	}
+	if err := m.Migrate(22); err != nil {
+		t.Fatalf("apply installations and ownership migrations: %v", err)
+	}
+	deviceID := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tenant_devices (tenant_id, id, user_uid, origin)
+		VALUES ($1, $2, $3, 'registered')`, tenant.ID, deviceID, priorUID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Migrate(23); err != nil {
+		t.Fatalf("upgrade from migration 22 with existing tenant data: %v", err)
+	}
+	var authFailed bool
+	if err := db.QueryRowContext(ctx, `
+		SELECT authorization_failed FROM provider_configs WHERE tenant_id = $1 AND id = $2`,
+		tenant.ID, providerID).Scan(&authFailed); err != nil || authFailed {
+		t.Fatalf("existing provider authorization flag = %t, %v", authFailed, err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tenant_live_activity_channels (tenant_id, activity_id, topic_id, provider_config_id, channel_id, provisioning_id, state)
+		VALUES ($1, 'upgrade-activity', 'updates', $2, 'upgrade-channel', $3, 'active')`, tenant.ID, providerID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(23, true)
+	if channel, err := store.GetTenantLAChannel(ctx, tenant.ID, "upgrade-activity"); err != nil || channel.ProviderConfigID != providerID {
+		t.Fatalf("channel after blocked rollback = %+v, %v", channel, err)
+	}
+	if err := m.Force(23); err != nil {
+		t.Fatalf("restore recorded migration version 23: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM tenant_live_activity_channels WHERE tenant_id = $1 AND activity_id = 'upgrade-activity'`, tenant.ID); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(23, false)
+	if res, err := db.ExecContext(ctx, "DELETE FROM tenant_devices WHERE tenant_id = $1 AND id = $2", tenant.ID, deviceID); err != nil {
+		t.Fatal(err)
+	} else if count, err := res.RowsAffected(); count != 1 || err != nil {
+		t.Fatalf("expected installation to survive migration and rollback, deleted %d rows: %v", count, err)
+	}
+	rollBack(22, false)
+	rollBack(21, false)
+
 	res, err := db.ExecContext(ctx, "DELETE FROM provider_configs WHERE tenant_id = $1", tenant.ID)
 	if err != nil {
 		t.Fatal(err)

@@ -149,25 +149,37 @@ func (t *broadcastHostTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: http.NoBody, Header: make(http.Header), Request: r}, nil
 }
 
-func TestDeleteLiveActivityChannelTreatsMissingChannelAsDeleted(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			t.Fatalf("method = %s, want DELETE", r.Method)
-		}
-		if r.URL.Path != "/1/apps/com.example.app/channels" {
-			t.Fatalf("path = %q", r.URL.Path)
-		}
-		if got := r.Header.Get("apns-channel-id"); got != "channel-1" {
-			t.Fatalf("apns-channel-id = %q, want channel-1", got)
-		}
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
-	}))
-	defer server.Close()
+func TestDeleteLiveActivityChannelNotRegistered(t *testing.T) {
+	for _, tc := range []struct {
+		status      int
+		wantSuccess bool
+	}{
+		{http.StatusBadRequest, true},
+		{http.StatusGone, false},
+		{http.StatusInternalServerError, false},
+	} {
+		t.Run(http.StatusText(tc.status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("method = %s, want DELETE", r.Method)
+				}
+				if r.URL.Path != "/1/apps/com.example.app/channels" {
+					t.Errorf("path = %q", r.URL.Path)
+				}
+				if got := r.Header.Get("apns-channel-id"); got != "channel-1" {
+					t.Errorf("apns-channel-id = %q, want channel-1", got)
+				}
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
+			}))
+			defer server.Close()
 
-	client := testChannelClient(server)
-	if err := client.DeleteLiveActivityChannel(context.Background(), "channel-1"); err != nil {
-		t.Fatalf("DeleteLiveActivityChannel error = %v", err)
+			client := testChannelClient(server)
+			err := client.DeleteLiveActivityChannel(t.Context(), "channel-1")
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want success %t", err, tc.wantSuccess)
+			}
+		})
 	}
 }
 

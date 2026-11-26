@@ -46,7 +46,7 @@ func (n TenantProviderNamespace) valid() bool {
 	}
 }
 
-type apnsCredentials struct {
+type APNsCredentials struct {
 	KeyID      string `json:"keyId"`
 	TeamID     string `json:"teamId"`
 	PrivateKey string `json:"privateKey"`
@@ -68,7 +68,7 @@ func validateProviderCredentials(ctx context.Context, n TenantProviderNamespace,
 	}
 	switch n.Provider {
 	case "apns":
-		var creds apnsCredentials
+		var creds APNsCredentials
 		if json.Unmarshal(raw, &creds) != nil || !appleIDPattern.MatchString(creds.KeyID) || !appleIDPattern.MatchString(creds.TeamID) {
 			return nil, ErrInvalidTenantResource
 		}
@@ -186,24 +186,22 @@ func (keys providerEncryptionKeys) encrypt(tenantID uuid.UUID, route TenantProvi
 	return encryptedProviderCredentials{keys.active, nonce, key.Seal(nil, nonce, plaintext, aad)}, nil
 }
 
-func (keys providerEncryptionKeys) readiness(ctx context.Context, tenantID uuid.UUID, route TenantProvider, credential encryptedProviderCredentials) string {
-	if !route.Enabled {
-		return "disabled"
-	}
+func (keys providerEncryptionKeys) open(ctx context.Context, tenantID uuid.UUID, route TenantProvider, credential encryptedProviderCredentials) ([]byte, string) {
 	key := keys.keys[credential.keyID]
 	if key == nil {
-		return "encryption_key_unavailable"
+		return nil, "encryption_key_unavailable"
 	}
 	if len(credential.nonce) != key.NonceSize() {
-		return "credential_unreadable"
+		return nil, "credential_unreadable"
 	}
 	aad := providerCredentialContext(tenantID, route, credential.keyID)
 	plaintext, err := key.Open(nil, credential.nonce, credential.ciphertext, aad)
 	if err != nil {
-		return "credential_unreadable"
+		return nil, "credential_unreadable"
 	}
-	if _, err := validateProviderCredentials(ctx, route.TenantProviderNamespace, plaintext); err != nil {
-		return "credential_invalid"
+	validated, err := validateProviderCredentials(ctx, route.TenantProviderNamespace, plaintext)
+	if err != nil {
+		return nil, "credential_invalid"
 	}
-	return ""
+	return validated, ""
 }

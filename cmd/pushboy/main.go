@@ -229,7 +229,8 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store, providers)
+	tenantChannels := service.NewTenantLAChannels(store, dispatch.NewTenantChannelRouter(providers, cfg))
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store, providers, tenantChannels)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
