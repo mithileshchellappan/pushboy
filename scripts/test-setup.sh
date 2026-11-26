@@ -6,10 +6,10 @@ unset PUSHBOY_COMPOSE_SERVICE PUSHBOY_IMAGE
 fixture="$(mktemp -d)"
 settings_dir="$fixture/shared"
 mkdir "$settings_dir"
-trap 'chmod u+w "$settings_dir"; rm -rf "$fixture"' EXIT
 origin="$fixture/origin"
 install="$fixture/install"
 settings="$settings_dir/settings.env"
+trap 'chmod u+w "$settings_dir"; if [ -d "$install" ]; then chmod u+w "$install"; fi; rm -rf "$fixture"' EXIT
 git init -q -b main "$origin"
 cp compose.yaml compose.pushboy.yaml "$origin"
 printf 'FIXTURE_VERSION=release\n' > "$origin/.env.example"
@@ -61,6 +61,11 @@ config | jq -e '.services.pushboy |
   .environment.FCM_KEY_PATH == "keys/later.json" and .environment.APNS_TEAM_ID == "from-local-override"'
 
 ln "$settings" "$fixture/unmodified.env"
+chmod 550 "$install"
+setup v0.1.0
+test "$settings" -ef "$fixture/unmodified.env"
+chmod 750 "$install"
+
 chmod 550 "$settings_dir"
 setup v0.1.0
 test "$settings" -ef "$fixture/unmodified.env"

@@ -71,7 +71,7 @@ prepare_settings() {
       source_settings="$INSTALL_DIR/.env.example"
     fi
   fi
-  updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
+  updated_settings="$(mktemp)"
   awk -v image="$image" '
   /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_IMAGE[[:space:]]*=/ {
     if (image != "" && !found_image++) print "PUSHBOY_IMAGE=" image
