@@ -18,6 +18,7 @@ Requirements:
 
 - Go 1.24+
 - Postgres
+- Node.js 22 and npm for OpenAPI validation
 - Docker Desktop or a compatible Docker runtime if you want to test containers
 
 Clone the repo and copy the example environment:
@@ -64,7 +65,7 @@ docker compose down -v
 
 ## Verification
 
-Run these before opening a pull request:
+Before opening a pull request, export `PUSHBOY_TEST_DATABASE_URL` with the URL of a disposable PostgreSQL database. The role must be able to create schemas. Both CI suites require the migration and rollback test to pass. Without that URL, the integration test skips locally.
 
 ```bash
 go mod tidy -diff
@@ -72,20 +73,13 @@ go test ./...
 go test -race ./...
 go vet ./...
 go build ./cmd/pushboy
-ruby -e "require 'yaml'; YAML.load_file('docs/openapi.yaml')"
+npx --yes @redocly/cli@2.30.6 lint docs/openapi.yaml
 git diff --check
 ```
 
-The repository currently has no committed test files. If your change touches scheduling, token lifecycle, dispatch, provider error handling, Live Activity lifecycle, storage, or API behavior, add focused tests as part of the change.
+Add focused regression tests for changed behavior.
 
-For Docker-related changes, also run:
-
-```bash
-docker build -t pushboy:dev .
-docker compose up --build
-curl http://localhost:8080/v1/ping
-docker compose down -v
-```
+For the CI container setup, use Docker Compose 2.24.4 or later with `compose.yaml` and `compose.ci.yaml`. The API is exposed at `http://127.0.0.1:18080`.
 
 ## API Changes
 
@@ -123,7 +117,6 @@ Before requesting review:
 Useful starter areas:
 
 - Tests for config parsing, Live Activity option parsing, scheduled date validation, and pipeline close behavior.
-- CI workflow for Go checks, OpenAPI parsing, and Docker build.
 - `SECURITY.md` follow-up once GitHub private vulnerability reporting is enabled.
 - API response DTOs with stable JSON casing.
 - Native API key auth.
