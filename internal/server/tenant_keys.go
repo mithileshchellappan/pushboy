@@ -19,6 +19,7 @@ type TenantStore interface {
 	RevokeServerKey(context.Context, storage.ServerKeyAccess, uuid.UUID) error
 	CreateTenantUser(context.Context, uuid.UUID, *storage.TenantUserIdentity, *uuid.UUID) (storage.TenantUser, error)
 	GetTenantUser(context.Context, uuid.UUID, uuid.UUID) (storage.TenantUser, error)
+	EnrollInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationObservations) (storage.TenantInstallation, bool, error)
 	CreateTenantTopic(context.Context, uuid.UUID, string, string) (storage.TenantTopic, error)
 	GetTenantTopic(context.Context, uuid.UUID, string) (storage.TenantTopic, error)
 }
@@ -104,6 +105,8 @@ func tenantError(w http.ResponseWriter, err error, keyManagement bool) {
 		http.Error(w, "Invalid key request", http.StatusBadRequest)
 	case errors.Is(err, storage.ErrInvalidTenantResource):
 		http.Error(w, "Invalid resource request", http.StatusBadRequest)
+	case errors.Is(err, storage.ErrTenantInstallationRetired):
+		http.Error(w, "Installation retired", http.StatusGone)
 	case errors.Is(err, storage.Errors.NotFound):
 		http.Error(w, notFound, http.StatusNotFound)
 	case errors.Is(err, storage.Errors.AlreadyExists):

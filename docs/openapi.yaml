@@ -8,8 +8,8 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. The /v2 key, user, topic, and provider
-    routes authenticate tenant server keys. The legacy /v1 routes remain
+    notification jobs, and Live Activity dispatches. The /v2 key, user, device, topic,
+    and provider routes authenticate tenant server keys. The legacy /v1 routes remain
     unauthenticated and globally scoped. Deploy behind a trusted backend or private network.
 servers:
   - url: http://localhost:8080
@@ -19,6 +19,7 @@ tags:
   - name: ProviderConfigs
   - name: Health
   - name: Users
+  - name: Devices
   - name: Tokens
   - name: Topics
   - name: Subscriptions
@@ -375,6 +376,108 @@ paths:
           $ref: "#/components/responses/TenantForbidden"
         "404":
           $ref: "#/components/responses/TenantResourceNotFound"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/devices/{installationUUID}:
+    put:
+      operationId: enrollInstallation
+      tags: [Devices]
+      summary: Enroll an installation or refresh its observations
+      description: |
+        Requires devices:write on a trusted backend key. Generate a random UUID
+        per app installation and reuse it for each refresh. First enrollment
+        creates an anonymous Pushboy user. Every refresh returns the current
+        association and preserves omitted observations. An empty JSON object
+        records a heartbeat. Location changes only when the reported observation
+        is newer.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - name: installationUUID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                os:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                osVersion:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                appVersion:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                locale:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                timezone:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                notificationPermission:
+                  type: string
+                  enum: [notDetermined, denied, authorized, provisional, ephemeral]
+                location:
+                  type: object
+                  additionalProperties: false
+                  required: [latitude, longitude, source, observedAt]
+                  properties:
+                    latitude:
+                      type: number
+                      minimum: -90
+                      maximum: 90
+                    longitude:
+                      type: number
+                      minimum: -180
+                      maximum: 180
+                    source:
+                      type: string
+                      minLength: 1
+                      maxLength: 64
+                    observedAt:
+                      type: string
+                      format: date-time
+      responses:
+        "200":
+          description: Current installation association after refresh.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantInstallation"
+        "201":
+          description: Installation created and associated with a new anonymous user.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantInstallation"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "410":
+          description: This tenant's installation has been retired.
+          content:
+            text/plain:
+              schema:
+                type: string
         "500":
           $ref: "#/components/responses/TextError"
 
@@ -1325,6 +1428,21 @@ components:
         kind:
           type: string
           enum: [anonymous, identified]
+    TenantInstallation:
+      type: object
+      additionalProperties: false
+      required: [id, uid, ownershipVersion]
+      properties:
+        id:
+          type: string
+          format: uuid
+        uid:
+          type: string
+          format: uuid
+        ownershipVersion:
+          type: integer
+          format: int64
+          minimum: 1
     TenantTopic:
       type: object
       additionalProperties: false
