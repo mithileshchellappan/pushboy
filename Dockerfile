@@ -1,15 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.24-bookworm AS build
+FROM --platform=$BUILDPLATFORM golang:1.24-bookworm AS build
 
 WORKDIR /src
-ENV CGO_ENABLED=1
+ENV CGO_ENABLED=0
 
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -trimpath -ldflags="-s -w" -o /out/pushboy ./cmd/pushboy
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
+ARG REVISION=unknown
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -buildvcs=false \
+    -ldflags="-s -w -X main.version=$VERSION -X main.revision=$REVISION" -o /out/pushboy ./cmd/pushboy
 
 FROM debian:bookworm-slim
 
