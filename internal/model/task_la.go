@@ -19,14 +19,20 @@ type LAJobItem struct {
 	UserID     string
 	TotalCount int
 	CreatedAt  time.Time
+
+	ChannelID string
 }
 
 type LASendTask struct {
 	Target SendTarget
 	LAJob  *LAJobItem
+
+	SupportsBroadcastChannels bool
+	ChannelID                 string
 }
 
 type LASendOutcome struct {
-	Task    LASendTask
-	Receipt DeliveryReceipt
+	Task           LASendTask
+	Receipt        DeliveryReceipt
+	ProviderReason string
 }

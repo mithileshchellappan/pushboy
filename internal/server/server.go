@@ -93,6 +93,9 @@ func (s *Server) setupRouter() chi.Router {
 			r.Post("/tokens", s.handleRegisterLAToken)
 			r.Delete("/tokens", s.handleDeleteLAToken)
 			r.Post("/topics/{topicID}/users/{userID}", s.handleRegisterUserToLATopic)
+			r.Put("/channels/{activityID}", s.handleProvisionLAChannel)
+			r.Get("/channels/{activityID}", s.handleGetLAChannel)
+			r.Delete("/channels/{activityID}", s.handleDeleteLAChannel)
 			r.Post("/jobs", s.handleCreateLAJob)
 		})
 	})
@@ -563,6 +566,10 @@ func (s *Server) handleDeleteTopic(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			http.Error(w, "Topic not found", http.StatusNotFound)
+			return
+		}
+		if errors.Is(err, storage.Errors.Conflict) {
+			http.Error(w, "Topic is still referenced by a Live Activity channel", http.StatusConflict)
 			return
 		}
 		http.Error(w, "Error deleting topic", http.StatusInternalServerError)
