@@ -118,7 +118,7 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		method, path, kid, topic, channel string
 	}
 	calls := make(chan providerCall, 32)
-	var expired atomic.Bool
+	var expired, featureDenied atomic.Bool
 	var retryRequests, absentResponses, confirmedDeletes atomic.Int32
 	jwtHeaders := make(chan string, 2)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -163,6 +163,9 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		case r.URL.Path == "/1/apps/com.example.Known/channels":
 			w.Header().Set("apns-channel-id", "known-provider-channel")
 			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodDelete && kid == "AAAA000001" && featureDenied.CompareAndSwap(false, true):
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"reason":"FeatureNotEnabled"}`))
 		case r.Method == http.MethodDelete && kid == "AAAA000001":
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"reason":"InvalidProviderToken","secret":"https://provider.invalid/3/device/rejected-token"}`))
@@ -183,6 +186,9 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 				w.WriteHeader(http.StatusInternalServerError)
 				_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
 			case 3:
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"reason":"FeatureNotEnabled"}`))
+			case 4:
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`{"reason":"InvalidProviderToken"}`))
 			default:
@@ -357,13 +363,16 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		t.Fatalf("another tenant reused the channel client: %v", err)
 	}
 
-	request(http.MethodDelete, channelPath, keyA, "", http.StatusBadGateway)
-	expectProvider(providerCall{method: http.MethodDelete, path: "/1/apps/com.example.Race/channels", kid: "AAAA000001", channel: "shared-provider-channel"})
-	active := request(http.MethodGet, channelPath, keyA, "", http.StatusOK)
-	var restored storage.TenantLAChannel
-	if err := json.Unmarshal(active.Body.Bytes(), &restored); err != nil || restored.State != storage.TenantLAChannelActive ||
-		restored.ChannelID != "shared-provider-channel" {
-		t.Fatalf("definite initial rejection did not restore the channel: %s, %v", active.Body.String(), err)
+	aInitialDelete := providerCall{method: http.MethodDelete, path: "/1/apps/com.example.Race/channels", kid: "AAAA000001", channel: "shared-provider-channel"}
+	for _, restriction := range []string{"FeatureNotEnabled", "InvalidProviderToken"} {
+		request(http.MethodDelete, channelPath, keyA, "", http.StatusBadGateway)
+		expectProvider(aInitialDelete)
+		active := request(http.MethodGet, channelPath, keyA, "", http.StatusOK)
+		var restored storage.TenantLAChannel
+		if err := json.Unmarshal(active.Body.Bytes(), &restored); err != nil || restored.State != storage.TenantLAChannelActive ||
+			restored.ChannelID != "shared-provider-channel" {
+			t.Fatalf("definite %s rejection did not restore the channel: %s, %v", restriction, active.Body.String(), err)
+		}
 	}
 
 	if route, err := providers.Get(ctx, tenantA, routeA.ID); err != nil || route.Ready || route.ReadinessReason != "provider_authorization_failed" {
@@ -401,6 +410,10 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDeleting(keyB, routeB.ID)
+	request(http.MethodDelete, channelPath, keyB, "", http.StatusBadGateway)
+	expectProvider(bDelete)
+	assertDeleting(keyB, routeB.ID)
+
 	if _, err := providers.Update(ctx, tenantB, routeB.ID, 1, nil, syntheticChannelCredentials(t, "BBBB000004")); err != nil {
 		t.Fatal(err)
 	}
