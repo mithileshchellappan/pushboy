@@ -452,6 +452,7 @@ paths:
                     observedAt:
                       type: string
                       format: date-time
+                      description: The server rejects observations more than five minutes ahead of its clock.
       responses:
         "200":
           description: Current installation association after refresh.
