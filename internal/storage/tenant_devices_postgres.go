@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const maxLocationClockSkew = 5 * time.Minute
+
 var ErrTenantInstallationRetired = errors.New("tenant installation retired")
 
 type TenantInstallation struct {
@@ -58,7 +60,8 @@ func (s *PostgresStore) EnrollInstallation(ctx context.Context, tenantID, id uui
 		observedAtUTC := location.ObservedAt.UTC()
 		if !(location.Latitude >= -90 && location.Latitude <= 90 && location.Longitude >= -180 && location.Longitude <= 180) ||
 			!validTenantResourceText(location.Source, 64) || observedAtUTC.IsZero() ||
-			observedAtUTC.Year() < 1 || observedAtUTC.Year() > 9999 {
+			observedAtUTC.Year() < 1 || observedAtUTC.Year() > 9999 ||
+			observedAtUTC.After(time.Now().Add(maxLocationClockSkew)) {
 			return TenantInstallation{}, false, ErrInvalidTenantResource
 		}
 		latitude, longitude, source, observedAt = location.Latitude, location.Longitude, location.Source, observedAtUTC

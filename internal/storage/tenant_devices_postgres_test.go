@@ -27,7 +27,8 @@ func TestPostgresInstallationEnrollment(t *testing.T) {
 
 	os, osVersion, appVersion, locale, timezone := "iOS", "26.1", "1.0", "en-DE", "Europe/Berlin"
 	permission := "provisional"
-	observedAt := time.Date(2026, 11, 26, 5, 0, 0, 0, time.UTC)
+	testTime := time.Now().UTC().Truncate(time.Microsecond)
+	observedAt := testTime.Add(-time.Minute)
 	observations := InstallationObservations{
 		OS: &os, OSVersion: &osVersion, AppVersion: &appVersion, Locale: &locale,
 		Timezone: &timezone, NotificationPermission: &permission,
@@ -124,12 +125,27 @@ func TestPostgresInstallationEnrollment(t *testing.T) {
 	}
 	assertObservations(*observations.Location)
 
+	futureLocation := InstallationLocation{Latitude: 45, Longitude: 90, Source: "future", ObservedAt: testTime.Add(10 * time.Minute)}
+	for _, installation := range []uuid.UUID{uuid.New(), id} {
+		if _, created, err := store.EnrollInstallation(ctx, tenantID, installation, InstallationObservations{Location: &futureLocation}); !errors.Is(err, ErrInvalidTenantResource) || created {
+			t.Fatalf("future observation on installation %v = %t, %v, want ErrInvalidTenantResource", installation, created, err)
+		}
+	}
+	assertCounts(2, 1)
+	assertObservations(*observations.Location)
+
 	offset := time.FixedZone("", 16*60*60)
-	freshLocation := InstallationLocation{Latitude: 0, Longitude: 0, Source: "gps", ObservedAt: observedAt.Add(time.Minute).In(offset)}
+	freshLocation := InstallationLocation{Latitude: 0, Longitude: 0, Source: "gps", ObservedAt: testTime.In(offset)}
 	if current, created, err := store.EnrollInstallation(ctx, tenantID, id, InstallationObservations{Location: &freshLocation}); err != nil || created || current != want {
 		t.Fatalf("refresh with newer location = %+v, %t, %v", current, created, err)
 	}
 	assertObservations(freshLocation)
+
+	clockSkew := InstallationLocation{Latitude: 7, Longitude: 12, Source: "gps", ObservedAt: testTime.Add(4 * time.Minute)}
+	if current, created, err := store.EnrollInstallation(ctx, tenantID, id, InstallationObservations{Location: &clockSkew}); err != nil || created || current != want {
+		t.Fatalf("refresh with tolerated clock skew = %+v, %t, %v, want %+v", current, created, err, want)
+	}
+	assertObservations(clockSkew)
 	assertCounts(2, 1)
 
 	if _, err := store.db.ExecContext(ctx, `UPDATE tenant_devices SET retired_at = now() WHERE tenant_id = $1 AND id = $2`, tenantID, id); err != nil {
