@@ -56,11 +56,22 @@ jobs:
       - name: Check module tidiness
         run: go mod tidy -diff
 
-      - name: Test including PostgreSQL integration
-        run: go test -count=1 ./...
+      - name: Test and race test including required PostgreSQL integration
+        shell: bash
+        run: |
+          run_go_tests() {
+            local results="$RUNNER_TEMP/go-test.json"
+            go test -json -count=1 "$@" ./... | tee "$results" | jq -j '.Output // empty'
+            if ! jq -es 'any(.[]; .Action == "pass" and
+                .Package == "github.com/mithileshchellappan/pushboy/internal/storage" and
+                .Test == "TestPostgresLegacyPublishJob")' "$results" > /dev/null; then
+              echo "::error::TestPostgresLegacyPublishJob did not pass"
+              return 1
+            fi
+          }
 
-      - name: Race test including PostgreSQL integration
-        run: go test -race -count=1 ./...
+          run_go_tests
+          run_go_tests -race
 
       - name: Vet
         run: go vet ./...
