@@ -94,14 +94,50 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	user, err := store.CreateTenantUser(ctx, tenant.ID, &TenantUserIdentity{Namespace: "accounts", ExternalID: "account-42"})
-	if err != nil {
+	priorUID := uuid.New()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tenant_users (tenant_id, uid, kind) VALUES ($1, $2, 'identified')`, tenant.ID, priorUID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tenant_user_identities (tenant_id, user_uid, namespace, external_id)
+		VALUES ($1, $2, 'accounts', 'account-42')`, tenant.ID, priorUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.CreateTenantTopic(ctx, tenant.ID, "updates", "Updates"); err != nil {
 		t.Fatal(err)
 	}
 
+	if err := m.Migrate(19); err != nil {
+		t.Fatalf("upgrade from migration 18 with existing tenant resources: %v", err)
+	}
+	var metadataAbsent bool
+	err = db.QueryRowContext(ctx, `
+		SELECT creation_request_id IS NULL AND creation_request_digest IS NULL
+		FROM tenant_users WHERE tenant_id = $1 AND uid = $2`, tenant.ID, priorUID,
+	).Scan(&metadataAbsent)
+	if err != nil || !metadataAbsent {
+		t.Fatalf("request metadata absent from pre-upgrade user = %t, %v", metadataAbsent, err)
+	}
+	rollBack(19, false)
+	if err := m.Migrate(19); err != nil {
+		t.Fatalf("reapply migration 19: %v", err)
+	}
+	requestID := uuid.New()
+	user, err := store.CreateTenantUser(ctx, tenant.ID, nil, &requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rollBack(19, true)
+	if replay, err := store.CreateTenantUser(ctx, tenant.ID, nil, &requestID); err != nil || replay != user {
+		t.Fatalf("replay after blocked rollback = %+v, %v, want %+v", replay, err, user)
+	}
+	if err := m.Force(19); err != nil {
+		t.Fatalf("restore recorded migration version 19: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM tenant_users WHERE tenant_id = $1 AND uid = $2`, tenant.ID, user.UID); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(19, false)
 	rollBack(18, true)
 	var rowsRemain bool
 	err = db.QueryRowContext(ctx, `
@@ -113,7 +149,7 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		) AND EXISTS (
 			SELECT 1 FROM tenant_topics WHERE tenant_id = $1 AND id = 'updates' AND name = 'Updates'
 		)
-	`, tenant.ID, user.UID).Scan(&rowsRemain)
+	`, tenant.ID, priorUID).Scan(&rowsRemain)
 	if err != nil || !rowsRemain {
 		t.Fatalf("tenant rows after blocked rollback = %t, error = %v", rowsRemain, err)
 	}

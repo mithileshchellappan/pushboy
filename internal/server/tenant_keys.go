@@ -17,7 +17,7 @@ type TenantStore interface {
 	AuthenticateServerKey(context.Context, string) (storage.ServerKeyAccess, error)
 	IssueServerKey(context.Context, storage.ServerKeyAccess, []string, *time.Time) (uuid.UUID, string, error)
 	RevokeServerKey(context.Context, storage.ServerKeyAccess, uuid.UUID) error
-	CreateTenantUser(context.Context, uuid.UUID, *storage.TenantUserIdentity) (storage.TenantUser, error)
+	CreateTenantUser(context.Context, uuid.UUID, *storage.TenantUserIdentity, *uuid.UUID) (storage.TenantUser, error)
 	GetTenantUser(context.Context, uuid.UUID, uuid.UUID) (storage.TenantUser, error)
 	CreateTenantTopic(context.Context, uuid.UUID, string, string) (storage.TenantTopic, error)
 	GetTenantTopic(context.Context, uuid.UUID, string) (storage.TenantTopic, error)

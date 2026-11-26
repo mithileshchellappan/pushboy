@@ -94,11 +94,14 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 	_, keyA := bootstrap()
 	tenantB, keyB := bootstrap()
 	router := New(nil, nil, nil, store).setupRouter()
-	request := func(method, path, key, body string, want int) *httptest.ResponseRecorder {
+	request := func(method, path, key, body string, want int, idempotencyKeys ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+key)
 		req.Header.Set("Content-Type", "application/json")
+		for _, idempotencyKey := range idempotencyKeys {
+			req.Header.Add("Idempotency-Key", idempotencyKey)
+		}
 		res := httptest.NewRecorder()
 		router.ServeHTTP(res, req)
 		if res.Code != want {
@@ -108,9 +111,9 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 	}
 
 	identity := `{"identity":{"namespace":"accounts","externalId":"account-42"}}`
-	createUser := func(key, body, wantKind string) string {
+	createUser := func(key, body, wantKind string, idempotencyKeys ...string) string {
 		t.Helper()
-		res := request(http.MethodPost, "/v2/users?tenantId="+tenantB.ID.String(), key, body, http.StatusCreated)
+		res := request(http.MethodPost, "/v2/users?tenantId="+tenantB.ID.String(), key, body, http.StatusCreated, idempotencyKeys...)
 		var user map[string]string
 		if err := json.Unmarshal(res.Body.Bytes(), &user); err != nil {
 			t.Fatal(err)
@@ -121,8 +124,18 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 		}
 		return uid.String()
 	}
-	userA := createUser(keyA, identity, "identified")
+	idempotencyKey := uuid.NewString()
+	userA := createUser(keyA, identity, "identified", idempotencyKey)
+	retryBody := `{"identity":{"externalId":"account-42","namespace":"accounts"}}`
+	if recovered := createUser(keyA, retryBody, "identified", strings.ToUpper(idempotencyKey)); recovered != userA {
+		t.Fatalf("retry returned UID %s, want %s", recovered, userA)
+	}
+	request(http.MethodPost, "/v2/users", keyA, `{}`, http.StatusConflict, idempotencyKey)
+	request(http.MethodPost, "/v2/users", keyA, identity, http.StatusConflict, uuid.NewString())
 	request(http.MethodPost, "/v2/users", keyA, identity, http.StatusConflict)
+	for _, values := range [][]string{{""}, {"x" + idempotencyKey + "y"}, {strings.Repeat("x", 36)}, {idempotencyKey, idempotencyKey}} {
+		request(http.MethodPost, "/v2/users", keyA, `{}`, http.StatusBadRequest, values...)
+	}
 	request(http.MethodGet, "/v2/users/"+userA+"?tenantId="+tenantB.ID.String(), keyA, "", http.StatusOK)
 	request(http.MethodGet, "/v2/users/"+strings.ToUpper(userA), keyA, "", http.StatusOK)
 	request(http.MethodGet, "/v2/users/"+strings.Replace(userA, "-", "%2D", 1), keyA, "", http.StatusOK)
@@ -137,7 +150,7 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 	if foreign.Body.String() != missing.Body.String() {
 		t.Fatal("foreign user response differs from missing user")
 	}
-	if userB := createUser(keyB, identity, "identified"); userA == userB {
+	if userB := createUser(keyB, identity, "identified", idempotencyKey); userA == userB {
 		t.Fatal("tenants received the same canonical user ID")
 	}
 	createUser(keyA, `{}`, "anonymous")

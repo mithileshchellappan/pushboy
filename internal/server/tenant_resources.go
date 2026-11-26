@@ -69,6 +69,20 @@ func (s *Server) handleCreateTenantUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	var requestID *uuid.UUID
+	if keys := r.Header.Values("Idempotency-Key"); len(keys) != 0 {
+		if len(keys) != 1 || len(keys[0]) != 36 {
+			tenantError(w, storage.ErrInvalidTenantResource, false)
+			return
+		}
+		id, err := uuid.Parse(keys[0])
+		if err != nil {
+			tenantError(w, storage.ErrInvalidTenantResource, false)
+			return
+		}
+		requestID = &id
+	}
+
 	var req map[string]map[string]string
 	decoded := decodeTenantResourceRequest(w, r, &req)
 	fields, hasIdentity := req["identity"]
@@ -85,7 +99,7 @@ func (s *Server) handleCreateTenantUser(w http.ResponseWriter, r *http.Request) 
 		}
 		identity = &storage.TenantUserIdentity{Namespace: namespace, ExternalID: externalID}
 	}
-	user, err := s.tenants.CreateTenantUser(r.Context(), actor.TenantID, identity)
+	user, err := s.tenants.CreateTenantUser(r.Context(), actor.TenantID, identity, requestID)
 	if err != nil {
 		tenantError(w, err, false)
 		return

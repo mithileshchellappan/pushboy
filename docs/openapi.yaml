@@ -124,6 +124,16 @@ paths:
         surrogate escapes return 400.
       security:
         - TenantServerKey: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: |
+            A single hyphenated UUID for retrying this create request. In the
+            same tenant, retrying with this key and the same identity returns
+            the original user. An omitted or null identity counts as anonymous.
+          schema:
+            type: string
+            format: uuid
       requestBody:
         required: true
         content:
@@ -157,7 +167,7 @@ paths:
                     externalId: account-42
       responses:
         "201":
-          description: User created.
+          description: User created or returned from the original request with this idempotency key.
           content:
             application/json:
               schema:
@@ -169,7 +179,7 @@ paths:
         "403":
           $ref: "#/components/responses/TenantForbidden"
         "409":
-          description: The identity already belongs to a user in this tenant.
+          description: The identity already belongs to a user in this tenant, or this idempotency key was used with a different identity.
         "500":
           $ref: "#/components/responses/TextError"
 

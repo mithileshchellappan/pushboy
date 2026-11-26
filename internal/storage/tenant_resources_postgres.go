@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -34,7 +35,7 @@ func validTenantResourceText(value string, maxRunes int) bool {
 		strings.TrimSpace(value) != "" && utf8.RuneCountInString(value) <= maxRunes
 }
 
-func (s *PostgresStore) CreateTenantUser(ctx context.Context, tenantID uuid.UUID, identity *TenantUserIdentity) (TenantUser, error) {
+func (s *PostgresStore) CreateTenantUser(ctx context.Context, tenantID uuid.UUID, identity *TenantUserIdentity, requestID *uuid.UUID) (TenantUser, error) {
 	kind := "anonymous"
 	if identity != nil {
 		if !validTenantResourceText(identity.Namespace, 128) || strings.EqualFold(identity.Namespace, "legacy") {
@@ -46,18 +47,46 @@ func (s *PostgresStore) CreateTenantUser(ctx context.Context, tenantID uuid.UUID
 		kind = "identified"
 	}
 
+	var requestDigest any
+	if requestID != nil {
+		payload := kind
+		if identity != nil {
+			payload += "\x00" + identity.Namespace + "\x00" + identity.ExternalID
+		}
+		digest := sha256.Sum256([]byte(payload))
+		requestDigest = digest[:]
+	}
+
 	uid, err := uuid.NewRandom()
 	if err != nil {
 		return TenantUser{}, fmt.Errorf("generate user UID: %w", err)
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return TenantUser{}, fmt.Errorf("begin tenant user creation: %w", err)
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `INSERT INTO tenant_users (tenant_id, uid, kind) VALUES ($1, $2, $3)`, tenantID, uid, kind); err != nil {
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO tenant_users (tenant_id, uid, kind, creation_request_id, creation_request_digest)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (tenant_id, creation_request_id) WHERE creation_request_id IS NOT NULL DO NOTHING
+		RETURNING uid`, tenantID, uid, kind, requestID, requestDigest).Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		err := tx.QueryRowContext(ctx, `
+			SELECT uid FROM tenant_users
+			WHERE tenant_id = $1 AND creation_request_id = $2 AND creation_request_digest = $3`,
+			tenantID, requestID, requestDigest).Scan(&uid)
+		if errors.Is(err, sql.ErrNoRows) {
+			return TenantUser{}, Errors.AlreadyExists
+		}
+		if err != nil {
+			return TenantUser{}, fmt.Errorf("get tenant user creation replay: %w", err)
+		}
+		return TenantUser{UID: uid, Kind: kind}, nil
+	}
+	if err != nil {
 		return TenantUser{}, fmt.Errorf("create tenant user: %w", err)
 	}
 	if identity != nil {

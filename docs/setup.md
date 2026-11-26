@@ -138,11 +138,13 @@ curl -X POST http://localhost:8080/v2/topics \
 
 Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/users/{uid}` with the returned UUID or `GET /v2/topics/{topicId}` with the percent-encoded topic ID. Migration 18 adds separate tables for these routes and leaves legacy data in place.
 
+To retry user creation after a lost response, generate and save a UUID before sending it in the `Idempotency-Key` header. Send the same key and identity on the retry to receive the original `201` and UID.
+
 ## Tenant migration rollback
 
-Pause tenant writes and migration runners before rolling back. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
+Pause tenant writes and migration runners before rolling back. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
 
-A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with `force 18` or `force 17` before restarting the application.
+A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with `force 19`, `force 18`, or `force 17` before restarting the application.
 
 ## Provider Credentials
 

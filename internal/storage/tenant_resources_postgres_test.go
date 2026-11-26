@@ -62,7 +62,7 @@ func TestTenantResourceIsolationAndLegacyCoexistence(t *testing.T) {
 	}
 
 	identity := TenantUserIdentity{Namespace: "account", ExternalID: " Account-42 "}
-	firstUser, err := store.CreateTenantUser(ctx, first, &identity)
+	firstUser, err := store.CreateTenantUser(ctx, first, &identity, nil)
 	if err != nil || firstUser.Kind != "identified" || firstUser.UID == uuid.Nil {
 		t.Fatalf("identified user = %+v, err = %v", firstUser, err)
 	}
@@ -81,7 +81,7 @@ func TestTenantResourceIsolationAndLegacyCoexistence(t *testing.T) {
 		{Namespace: "account", ExternalID: " account-42 "},
 		{Namespace: "Account", ExternalID: identity.ExternalID},
 	} {
-		if _, err := store.CreateTenantUser(ctx, first, &variant); err != nil {
+		if _, err := store.CreateTenantUser(ctx, first, &variant, nil); err != nil {
 			t.Fatalf("case-sensitive identity creation: %v", err)
 		}
 	}
@@ -90,7 +90,7 @@ func TestTenantResourceIsolationAndLegacyCoexistence(t *testing.T) {
 		codePoints[i] = rune(0x10000 + i*104729%0x100000)
 	}
 	longIdentity := TenantUserIdentity{Namespace: string(codePoints[:128]), ExternalID: string(codePoints[128:])}
-	if _, err := store.CreateTenantUser(ctx, first, &longIdentity); err != nil {
+	if _, err := store.CreateTenantUser(ctx, first, &longIdentity, nil); err != nil {
 		t.Fatalf("create a maximum-length identity: %v", err)
 	}
 	_, err = store.db.Exec(`
@@ -127,7 +127,7 @@ func TestConcurrentTenantUserCreationRollsBackDuplicateIdentities(t *testing.T) 
 	const callers = 8
 	results := make([]error, callers)
 	runLAChannelConcurrent(callers, func(i int) {
-		_, results[i] = store.CreateTenantUser(ctx, tenantID, &identity)
+		_, results[i] = store.CreateTenantUser(ctx, tenantID, &identity, nil)
 	})
 
 	var created int
@@ -153,6 +153,89 @@ func TestConcurrentTenantUserCreationRollsBackDuplicateIdentities(t *testing.T) 
 	}
 }
 
+func TestTenantUserCreationReplay(t *testing.T) {
+	ctx := t.Context()
+	store := tenantKeyManagementStore(t)
+	first := createTenantResourceTestTenant(t, store)
+	second := createTenantResourceTestTenant(t, store)
+	identity := TenantUserIdentity{Namespace: "account:42", ExternalID: " Person "}
+	requestID := uuid.New()
+	user, err := store.CreateTenantUser(ctx, first, &identity, &requestID)
+	if err != nil || user.UID == uuid.Nil || user.Kind != "identified" {
+		t.Fatalf("create identified user = %+v, %v", user, err)
+	}
+	if got, err := store.CreateTenantUser(ctx, first, &identity, &requestID); err != nil || got != user {
+		t.Fatalf("identified replay = %+v, %v, want %+v", got, err, user)
+	}
+	for _, conflictingIdentity := range []*TenantUserIdentity{
+		nil,
+		{Namespace: "account", ExternalID: "42: Person "},
+		{Namespace: "account:42", ExternalID: " person "},
+		{Namespace: "account:42", ExternalID: "Person"},
+	} {
+		if _, err := store.CreateTenantUser(ctx, first, conflictingIdentity, &requestID); !errors.Is(err, Errors.AlreadyExists) {
+			t.Fatalf("replay with conflicting identity %+v = %v, want AlreadyExists", conflictingIdentity, err)
+		}
+	}
+	other, err := store.CreateTenantUser(ctx, second, &identity, &requestID)
+	if err != nil || other.UID == uuid.Nil || other.UID == user.UID || other.Kind != user.Kind {
+		t.Fatalf("same key in second tenant = %+v, %v", other, err)
+	}
+
+	anonymousRequestID := uuid.New()
+	if _, err := store.CreateTenantUser(ctx, first, &identity, &anonymousRequestID); !errors.Is(err, Errors.AlreadyExists) {
+		t.Fatalf("claim existing identity with a new key = %v, want AlreadyExists", err)
+	}
+	anonymous, err := store.CreateTenantUser(ctx, first, nil, &anonymousRequestID)
+	if err != nil || anonymous.UID == uuid.Nil || anonymous.UID == user.UID || anonymous.Kind != "anonymous" {
+		t.Fatalf("create anonymous user with reusable key = %+v, %v", anonymous, err)
+	}
+	if got, err := store.CreateTenantUser(ctx, first, nil, &anonymousRequestID); err != nil || got != anonymous {
+		t.Fatalf("anonymous replay = %+v, %v, want %+v", got, err, anonymous)
+	}
+	if _, err := store.CreateTenantUser(ctx, first, &identity, &anonymousRequestID); !errors.Is(err, Errors.AlreadyExists) {
+		t.Fatalf("replay anonymous request with an identity = %v, want AlreadyExists", err)
+	}
+	for _, query := range []string{
+		`UPDATE tenant_user_identities SET external_id = 'new external ID' WHERE tenant_id = $1 AND user_uid = $2`,
+		`UPDATE tenant_users SET kind = 'anonymous' WHERE tenant_id = $1 AND uid = $2`,
+	} {
+		if _, err := store.db.ExecContext(ctx, query, first, user.UID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := store.CreateTenantUser(ctx, first, &identity, &requestID); err != nil || got != user {
+		t.Fatalf("replay after user changes = %+v, %v, want original %+v", got, err, user)
+	}
+}
+
+func TestConcurrentTenantUserCreationReplaysSameRequest(t *testing.T) {
+	ctx := t.Context()
+	store := tenantKeyManagementStore(t)
+	tenantID := createTenantResourceTestTenant(t, store)
+	identity := TenantUserIdentity{Namespace: "account", ExternalID: "account-42"}
+	requestID := uuid.New()
+	const callers = 8
+	users := make([]TenantUser, callers)
+	errs := make([]error, callers)
+	runLAChannelConcurrent(callers, func(i int) {
+		users[i], errs[i] = store.CreateTenantUser(ctx, tenantID, &identity, &requestID)
+	})
+	for i, err := range errs {
+		if err != nil || users[i].UID == uuid.Nil || users[i].Kind != "identified" || users[i] != users[0] {
+			t.Fatalf("create attempt %d = %+v, %v, want same identified user across attempts", i, users[i], err)
+		}
+	}
+	var userCount, identityCount int
+	err := store.db.QueryRowContext(ctx, `
+		SELECT (SELECT count(*) FROM tenant_users WHERE tenant_id = $1),
+		       (SELECT count(*) FROM tenant_user_identities WHERE tenant_id = $1)`, tenantID,
+	).Scan(&userCount, &identityCount)
+	if err != nil || userCount != 1 || identityCount != 1 {
+		t.Fatalf("stored users = %d, identities = %d, err = %v, want 1 of each", userCount, identityCount, err)
+	}
+}
+
 func TestTenantResourceCreateRejectsInvalidFields(t *testing.T) {
 	ctx := t.Context()
 	store := &PostgresStore{}
@@ -163,7 +246,7 @@ func TestTenantResourceCreateRejectsInvalidFields(t *testing.T) {
 		{Namespace: "account", ExternalID: strings.Repeat("界", 513)},
 		{Namespace: "account", ExternalID: "id\x00"},
 	} {
-		if _, err := store.CreateTenantUser(ctx, tenantID, &identity); !errors.Is(err, ErrInvalidTenantResource) {
+		if _, err := store.CreateTenantUser(ctx, tenantID, &identity, nil); !errors.Is(err, ErrInvalidTenantResource) {
 			t.Fatalf("invalid tenant user create = %v, want ErrInvalidTenantResource", err)
 		}
 	}
