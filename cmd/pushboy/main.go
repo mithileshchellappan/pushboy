@@ -28,7 +28,17 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
 
+var (
+	version  = "dev"
+	revision = "unknown"
+)
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("pushboy %s (%s)\n", version, revision)
+		return
+	}
+
 	bootstrap := len(os.Args) > 1
 	if bootstrap && (len(os.Args) != 3 || os.Args[1] != "bootstrap") {
 		fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")

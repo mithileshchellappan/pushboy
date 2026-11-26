@@ -42,7 +42,7 @@ APNS and FCM deliver to devices, but most apps still need a backend layer that o
 
 ## Project Status
 
-`v0.0.0` is the first OSS preview release. It packages the core HTTP service, Postgres-backed storage, APNS/FCM dispatch, Live Activity jobs, Docker setup, OpenAPI docs, and setup scripts. The roadmap is tracked in GitHub milestones for CI, tests, auth, metrics, durable queue adapters, targeting, templates, imports, and dashboard work.
+Pushboy 0.x releases are previews and may include breaking changes. See the [changelog](CHANGELOG.md) for changes between versions.
 
 ## Quick Start
 
@@ -56,15 +56,15 @@ Fast Docker setup:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
-cd ~/pushboy
-docker compose up --build
 ```
 
-To pin a specific release:
+Run the Compose command printed by the installer. It selects the latest stable release by default and saves the image selection for future runs. To pin a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | PUSHBOY_VERSION=v0.0.0 sh
+curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | PUSHBOY_VERSION=v0.1.0 sh
 ```
+
+Use `PUSHBOY_VERSION=main` to build the development branch locally. The historical `v0.0.0` tag also builds from source.
 
 Manual local setup:
 
