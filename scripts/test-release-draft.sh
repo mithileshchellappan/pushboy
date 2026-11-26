@@ -20,6 +20,9 @@ case "${0##*/}:$*" in
         printf '%s\n' "$revision"
         ;;
     git:ls-remote\ origin\ *)
+        if [[ "$scenario" == moved-tag && -s "$calls.create" ]]; then
+            revision=abcdef0123456789abcdef0123456789abcdef01
+        fi
         printf '%s\trefs/tags/%s\n' "$revision" "$VERSION"
         ;;
     gh:api\ --paginate\ --slurp\ repos/fixture/pushboy/releases)
@@ -37,6 +40,9 @@ case "${0##*/}:$*" in
         ;;
     gh:release\ create\ *)
         printf 'create\n' >> "$calls.create"
+        if [[ "$scenario" == wrong-url ]]; then
+            url="$url-other"
+        fi
         printf '%s\n' "$url"
         ;;
     gh:release\ upload\ *)
@@ -76,3 +82,5 @@ check_scenario() {
 check_scenario delayed 73 1 1
 check_scenario timeout 1 1 0 'is not yet visible in the release list'
 check_scenario mismatching 1 0 0 'does not match this build'
+check_scenario wrong-url 1 1 0 'does not match the newly created draft'
+check_scenario moved-tag 1 1 0 'Remote tag v1.2.3 no longer points to'
