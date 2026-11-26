@@ -96,9 +96,9 @@ func TestChannelCreationFailureClassification(t *testing.T) {
 		{http.StatusBadRequest, `{"reason":"BadTopic"}`, false, true},
 	} {
 		err := newResponseError(tc.status, []byte(tc.body))
-		if errors.Is(err, model.ErrProviderAuthorization) != tc.permanentAuth || errors.Is(err, ErrChannelCreateRejected) != tc.safeRetry {
+		if errors.Is(err, model.ErrProviderAuthorization) != tc.permanentAuth || errors.Is(err, ErrChannelRequestRejected) != tc.safeRetry {
 			t.Errorf("[%d %s] auth=%t, safe retry=%t", tc.status, tc.body,
-				errors.Is(err, model.ErrProviderAuthorization), errors.Is(err, ErrChannelCreateRejected))
+				errors.Is(err, model.ErrProviderAuthorization), errors.Is(err, ErrChannelRequestRejected))
 		}
 	}
 }

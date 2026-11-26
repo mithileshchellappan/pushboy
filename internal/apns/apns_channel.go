@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
+	"syscall"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
@@ -20,7 +23,7 @@ const (
 	productionBroadcastEndpoint  = "https://api-broadcast.push.apple.com"
 )
 
-var ErrChannelCreateRejected = errors.New("APNs channel creation did not succeed")
+var ErrChannelRequestRejected = errors.New("APNs channel request was rejected or not sent")
 
 func (c *Client) CreateLiveActivityChannel(ctx context.Context) (string, error) {
 	body := []byte(`{"message-storage-policy":0,"push-type":"LiveActivity"}`)
@@ -42,8 +45,13 @@ func (c *Client) DeleteLiveActivityChannel(ctx context.Context, channelID string
 
 	_, err := c.channelManagementRequest(ctx, http.MethodDelete, nil, channelID)
 	var apnsErr *responseError
-	if errors.As(err, &apnsErr) && apnsErr.status == http.StatusBadRequest && apnsErr.reason == "ChannelNotRegistered" {
-		return nil
+	if errors.As(err, &apnsErr) && apnsErr.status == http.StatusBadRequest {
+		switch apnsErr.reason {
+		case "ChannelNotRegistered":
+			return nil
+		case "FeatureNotEnabled":
+			return errors.New("APNs broadcast capability is disabled")
+		}
 	}
 	return err
 }
@@ -98,7 +106,7 @@ func (c *Client) channelManagementRequest(
 	for attempt := 0; ; attempt++ {
 		jwtToken, err := c.getJWT()
 		if err != nil {
-			return nil, fmt.Errorf("%w: cannot sign APNs channel request", ErrChannelCreateRejected)
+			return nil, fmt.Errorf("%w: cannot sign APNs channel request", ErrChannelRequestRejected)
 		}
 		headers, err := c.doChannelManagementRequest(ctx, method, body, channelID, jwtToken)
 		var providerErr *responseError
@@ -118,7 +126,7 @@ func (c *Client) channelManagementRequest(
 
 func (c *Client) doChannelManagementRequest(ctx context.Context, method string, body []byte, channelID, jwtToken string) (http.Header, error) {
 	if c.bundleID == "" || c.channelManagementEndpoint == "" {
-		return nil, fmt.Errorf("%w: missing APNs channel configuration", ErrChannelCreateRejected)
+		return nil, fmt.Errorf("%w: missing APNs channel configuration", ErrChannelRequestRejected)
 	}
 
 	endpoint := fmt.Sprintf(
@@ -128,7 +136,7 @@ func (c *Client) doChannelManagementRequest(ctx context.Context, method string, 
 	)
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("%w: invalid APNs channel request", ErrChannelCreateRejected)
+		return nil, fmt.Errorf("%w: invalid APNs channel request", ErrChannelRequestRejected)
 	}
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
@@ -139,7 +147,7 @@ func (c *Client) doChannelManagementRequest(ctx context.Context, method string, 
 	}
 
 	if err := c.acquire(ctx); err != nil {
-		return nil, errors.Join(ErrChannelCreateRejected, err)
+		return nil, errors.Join(ErrChannelRequestRejected, err)
 	}
 	client := *c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))]
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -148,6 +156,12 @@ func (c *Client) doChannelManagementRequest(ctx context.Context, method string, 
 	resp, err := client.Do(req)
 	c.release()
 	if err != nil {
+		if requestErr, ok := err.(*url.Error); ok {
+			if dialErr, ok := requestErr.Err.(*net.OpError); ok && dialErr.Op == "dial" &&
+				strings.HasPrefix(dialErr.Net, "tcp") && errors.Is(dialErr, syscall.ECONNREFUSED) {
+				return nil, fmt.Errorf("%w: APNs TCP connection refused", ErrChannelRequestRejected)
+			}
+		}
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}

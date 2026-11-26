@@ -92,7 +92,7 @@ func (e *responseError) Is(target error) bool {
 		case "TopicDisallowed":
 			return e.status == http.StatusBadRequest || e.status == http.StatusForbidden
 		}
-	case ErrChannelCreateRejected:
+	case ErrChannelRequestRejected:
 		if e.Is(model.ErrProviderAuthorization) {
 			return true
 		}

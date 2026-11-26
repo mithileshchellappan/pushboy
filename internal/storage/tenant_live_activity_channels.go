@@ -15,6 +15,7 @@ const (
 	TenantLAChannelProvisioning TenantLAChannelState = "provisioning"
 	TenantLAChannelAmbiguous    TenantLAChannelState = "ambiguous"
 	TenantLAChannelActive       TenantLAChannelState = "active"
+	TenantLAChannelDeleting     TenantLAChannelState = "deleting"
 )
 
 type TenantLAChannel struct {
@@ -25,15 +26,16 @@ type TenantLAChannel struct {
 	ChannelID        string               `json:"channelId,omitempty"`
 	State            TenantLAChannelState `json:"state"`
 	CreatedAt        time.Time            `json:"createdAt"`
+	DeletionAttempt  int64                `json:"-"`
 }
 
-const tenantLAChannelColumns = `topic_id, provider_config_id, provisioning_id, COALESCE(channel_id, ''), state, created_at`
+const tenantLAChannelColumns = `topic_id, provider_config_id, provisioning_id, COALESCE(channel_id, ''), state, created_at, deletion_attempt`
 const selectTenantLAChannel = `SELECT ` + tenantLAChannelColumns + `
 	FROM tenant_live_activity_channels WHERE tenant_id = $1 AND activity_id = $2`
 
 func scanTenantLAChannel(row *sql.Row, activityID string) (TenantLAChannel, error) {
 	ch := TenantLAChannel{ActivityID: activityID}
-	err := row.Scan(&ch.TopicID, &ch.ProviderConfigID, &ch.ProvisioningID, &ch.ChannelID, &ch.State, &ch.CreatedAt)
+	err := row.Scan(&ch.TopicID, &ch.ProviderConfigID, &ch.ProvisioningID, &ch.ChannelID, &ch.State, &ch.CreatedAt, &ch.DeletionAttempt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TenantLAChannel{}, Errors.NotFound
 	}
@@ -124,8 +126,44 @@ func (s *PostgresStore) AdmitTenantLAChannelOperation(ctx context.Context, tenan
 	return err
 }
 
+func (s *PostgresStore) BeginTenantLAChannelDeletion(ctx context.Context, tenantID uuid.UUID, ch TenantLAChannel, version int64) (TenantLAChannel, error) {
+	deleting, err := scanTenantLAChannel(s.db.QueryRowContext(ctx, `
+		UPDATE tenant_live_activity_channels ch
+		SET state = 'deleting', deletion_attempt = deletion_attempt + 1
+		WHERE ch.tenant_id = $1 AND ch.activity_id = $2 AND ch.provisioning_id = $3 AND ch.channel_id = $4
+		  AND ch.state = $5 AND ch.state IN ('active', 'deleting') AND ch.deletion_attempt = $6
+		  AND EXISTS (
+			SELECT 1 FROM provider_configs pc JOIN tenants t ON t.id = pc.tenant_id
+			WHERE pc.tenant_id = ch.tenant_id AND pc.id = ch.provider_config_id AND pc.credential_version = $7
+			  AND pc.enabled AND NOT pc.authorization_failed AND t.disabled_at IS NULL
+		  )
+		RETURNING `+tenantLAChannelColumns, tenantID, ch.ActivityID, ch.ProvisioningID, ch.ChannelID, ch.State, ch.DeletionAttempt, version,
+	), ch.ActivityID)
+	if !errors.Is(err, Errors.NotFound) {
+		return deleting, err
+	}
+	current, err := s.GetTenantLAChannel(ctx, tenantID, ch.ActivityID)
+	if err != nil {
+		return TenantLAChannel{}, err
+	}
+	if current != ch {
+		return TenantLAChannel{}, Errors.Conflict
+	}
+	return TenantLAChannel{}, ErrProviderRouteUnavailable
+}
+
+func (s *PostgresStore) RestoreTenantLAChannel(ctx context.Context, tenantID uuid.UUID, ch TenantLAChannel) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE tenant_live_activity_channels SET state = 'active'
+		WHERE tenant_id = $1 AND activity_id = $2 AND provisioning_id = $3 AND channel_id = $4
+		  AND state = 'deleting' AND deletion_attempt = $5`,
+		tenantID, ch.ActivityID, ch.ProvisioningID, ch.ChannelID, ch.DeletionAttempt,
+	)
+	return err
+}
+
 func (s *PostgresStore) RemoveTenantLAChannel(ctx context.Context, tenantID uuid.UUID, ch TenantLAChannel) error {
-	return s.removeTenantLAChannel(ctx, tenantID, ch, TenantLAChannelActive)
+	return s.removeTenantLAChannel(ctx, tenantID, ch, TenantLAChannelDeleting)
 }
 
 func (s *PostgresStore) removeTenantLAChannel(ctx context.Context, tenantID uuid.UUID, ch TenantLAChannel, state TenantLAChannelState) error {
