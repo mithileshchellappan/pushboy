@@ -13,11 +13,15 @@ CREATE TABLE provider_configs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, id, provider),
-    UNIQUE (tenant_id, provider, environment, application_id),
     CHECK (
         (provider = 'apns' AND environment IN ('sandbox', 'production')
          AND length(application_id) <= 255 AND application_id ~ '^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$')
         OR
         (provider = 'fcm' AND environment = 'production' AND application_id ~ '^[a-z][a-z0-9-]{4,28}[a-z0-9]$')
     )
+);
+
+CREATE UNIQUE INDEX provider_configs_namespace_idx ON provider_configs (
+    tenant_id, provider, environment,
+    (CASE WHEN provider = 'apns' THEN lower(application_id COLLATE "C") ELSE application_id END)
 );
