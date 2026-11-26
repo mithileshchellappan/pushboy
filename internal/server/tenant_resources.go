@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
@@ -70,14 +69,23 @@ func (s *Server) handleCreateTenantUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req *struct {
-		Identity *storage.TenantUserIdentity `json:"identity"`
-	}
-	if !decodeTenantResourceRequest(w, r, &req) || req == nil {
+	var req map[string]map[string]string
+	decoded := decodeTenantResourceRequest(w, r, &req)
+	fields, hasIdentity := req["identity"]
+	if !decoded || req == nil || len(req) > 1 || (len(req) == 1 && !hasIdentity) {
 		tenantError(w, storage.ErrInvalidTenantResource, false)
 		return
 	}
-	user, err := s.tenants.CreateTenantUser(r.Context(), actor.TenantID, req.Identity)
+	var identity *storage.TenantUserIdentity
+	if fields != nil {
+		namespace, externalID := fields["namespace"], fields["externalId"]
+		if len(fields) != 2 || namespace == "" || externalID == "" {
+			tenantError(w, storage.ErrInvalidTenantResource, false)
+			return
+		}
+		identity = &storage.TenantUserIdentity{Namespace: namespace, ExternalID: externalID}
+	}
+	user, err := s.tenants.CreateTenantUser(r.Context(), actor.TenantID, identity)
 	if err != nil {
 		tenantError(w, err, false)
 		return
@@ -92,7 +100,12 @@ func (s *Server) handleGetTenantUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	uid, err := uuid.Parse(chi.URLParam(r, "uid"))
+	param, err := decodedPathParam(r, "uid")
+	if err != nil || len(param) != 36 {
+		tenantError(w, storage.Errors.NotFound, false)
+		return
+	}
+	uid, err := uuid.Parse(param)
 	if err != nil {
 		tenantError(w, storage.Errors.NotFound, false)
 		return
@@ -112,15 +125,12 @@ func (s *Server) handleCreateTenantTopic(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	var req struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	if !decodeTenantResourceRequest(w, r, &req) {
+	var req map[string]string
+	if !decodeTenantResourceRequest(w, r, &req) || len(req) != 2 || req["id"] == "" || req["name"] == "" {
 		tenantError(w, storage.ErrInvalidTenantResource, false)
 		return
 	}
-	topic, err := s.tenants.CreateTenantTopic(r.Context(), actor.TenantID, req.ID, req.Name)
+	topic, err := s.tenants.CreateTenantTopic(r.Context(), actor.TenantID, req["id"], req["name"])
 	if err != nil {
 		tenantError(w, err, false)
 		return

@@ -124,6 +124,14 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 	userA := createUser(keyA, identity, "identified")
 	request(http.MethodPost, "/v2/users", keyA, identity, http.StatusConflict)
 	request(http.MethodGet, "/v2/users/"+userA+"?tenantId="+tenantB.ID.String(), keyA, "", http.StatusOK)
+	request(http.MethodGet, "/v2/users/"+strings.ToUpper(userA), keyA, "", http.StatusOK)
+	request(http.MethodGet, "/v2/users/"+strings.Replace(userA, "-", "%2D", 1), keyA, "", http.StatusOK)
+	for _, malformed := range []string{
+		"x" + userA + "y",
+		"%7B" + userA + "%7D",
+	} {
+		request(http.MethodGet, "/v2/users/"+malformed, keyA, "", http.StatusNotFound)
+	}
 	foreign := request(http.MethodGet, "/v2/users/"+userA, keyB, "", http.StatusNotFound)
 	missing := request(http.MethodGet, "/v2/users/"+uuid.NewString(), keyB, "", http.StatusNotFound)
 	if foreign.Body.String() != missing.Body.String() {
@@ -133,6 +141,7 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 		t.Fatal("tenants received the same canonical user ID")
 	}
 	createUser(keyA, `{}`, "anonymous")
+	createUser(keyA, `{"identity":null}`, "anonymous")
 
 	topicID := "release notes/mobile%"
 	topicPath := "/v2/topics/" + url.PathEscape(topicID)
@@ -170,7 +179,13 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 		{"/v2/users", `null`},
 		{"/v2/users", `{"uid":"caller-chosen"}`},
 		{"/v2/users", `{"identity":{"namespace":"accounts","externalId":"account-42","tenantId":"caller-chosen"}}`},
+		{"/v2/users", `{"Identity":{"namespace":"accounts","externalId":"case"}}`},
+		{"/v2/users", `{"identity":{"Namespace":"accounts","externalId":"case"}}`},
+		{"/v2/users", `{"identity":{"namespace":"accounts","ExternalID":"case"}}`},
+		{"/v2/users", `{"identity":{"namespace":"accounts"},"identity":{"externalId":"split"}}`},
 		{"/v2/topics", `{"id":"guides","name":"Guides","tenantId":"caller-chosen"}`},
+		{"/v2/topics", `{"ID":"guides","name":"Guides"}`},
+		{"/v2/topics", `{"id":"guides","NAME":"Guides"}`},
 		{"/v2/topics", `{"id":"guides","name":"Guides"} {}`},
 		{"/v2/topics", `{"id":"\ud800","name":"Invalid"}`},
 	} {
