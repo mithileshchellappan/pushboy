@@ -44,46 +44,6 @@ if [ -e "$INSTALL_DIR" ] && [ ! -e "$INSTALL_DIR/.git" ] &&
   exit 1
 fi
 
-if [ -e "$INSTALL_DIR/.git" ] || command -v git >/dev/null 2>&1; then
-  require_cmd git
-  if [ ! -e "$INSTALL_DIR/.git" ]; then
-    mkdir -p "$INSTALL_DIR"
-    git init --quiet "$INSTALL_DIR"
-    git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
-  fi
-  git -C "$INSTALL_DIR" fetch --quiet --depth 1 --no-tags origin "$SOURCE_REF"
-  git -C "$INSTALL_DIR" checkout --quiet --detach FETCH_HEAD
-else
-  require_cmd curl
-  require_cmd tar
-  archive="$(mktemp)"
-  trap 'rm -f "$archive"' EXIT
-  curl -fsSL "https://github.com/${REPO_SLUG}/archive/${SOURCE_REF}.tar.gz" -o "$archive"
-  mkdir -p "$INSTALL_DIR"
-  tar -xzf "$archive" --strip-components=1 -C "$INSTALL_DIR"
-fi
-
-mkdir -p "$INSTALL_DIR/keys"
-
-settings="$INSTALL_DIR/.env"
-if { [ -e "$settings" ] || [ -L "$settings" ]; } && [ ! -f "$settings" ]; then
-  echo "error: ${settings} must be a regular settings file or a link to one" >&2
-  exit 1
-fi
-while [ -L "$settings" ]; do
-  target="$(readlink "$settings")"
-  case "$target" in
-    /*) settings="$target" ;;
-    *) settings="$(dirname "$settings")/$target" ;;
-  esac
-done
-source_settings="$settings"
-if [ ! -f "$settings" ]; then
-  source_settings=/dev/null
-  if [ -f "$INSTALL_DIR/.env.example" ]; then
-    source_settings="$INSTALL_DIR/.env.example"
-  fi
-fi
 image=""
 compose_command="docker compose up --build"
 if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
@@ -91,9 +51,28 @@ if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
   compose_command="docker compose up --no-build"
 fi
 
-updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
-trap 'rm -f "$updated_settings" ${replacement_settings:+"$replacement_settings"} ${archive:+"$archive"}' EXIT
-awk -v image="$image" '
+prepare_settings() {
+  settings="$INSTALL_DIR/.env"
+  if { [ -e "$settings" ] || [ -L "$settings" ]; } && [ ! -f "$settings" ]; then
+    echo "error: ${settings} must be a regular settings file or a link to one" >&2
+    exit 1
+  fi
+  while [ -L "$settings" ]; do
+    target="$(readlink "$settings")"
+    case "$target" in
+      /*) settings="$target" ;;
+      *) settings="$(dirname "$settings")/$target" ;;
+    esac
+  done
+  source_settings="$settings"
+  if [ ! -f "$settings" ]; then
+    source_settings=/dev/null
+    if [ -f "$INSTALL_DIR/.env.example" ]; then
+      source_settings="$INSTALL_DIR/.env.example"
+    fi
+  fi
+  updated_settings="$(mktemp "$INSTALL_DIR/.env.XXXXXX")"
+  awk -v image="$image" '
   /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_IMAGE[[:space:]]*=/ {
     if (image != "" && !found_image++) print "PUSHBOY_IMAGE=" image
     next
@@ -107,20 +86,53 @@ awk -v image="$image" '
     if (image != "" && !found_image) print "PUSHBOY_IMAGE=" image
     if (image != "" && !found_service) print "PUSHBOY_COMPOSE_SERVICE=release"
   }
-' "$source_settings" > "$updated_settings"
-if ! cmp -s "$updated_settings" "$settings"; then
-  settings_dir="$(dirname "$settings")"
-  if [ ! -w "$settings_dir" ] || { [ -f "$settings" ] && [ ! -w "$settings" ]; }; then
-    echo "error: cannot update ${settings}: settings file or directory is not writable" >&2
-    exit 1
+  ' "$source_settings" > "$updated_settings"
+  if ! cmp -s "$updated_settings" "$settings"; then
+    settings_dir="$(dirname "$settings")"
+    if [ ! -w "$settings_dir" ] || { [ -f "$settings" ] && [ ! -w "$settings" ]; }; then
+      echo "error: cannot update ${settings}: settings file or directory is not writable" >&2
+      exit 1
+    fi
+    replacement_settings="$(mktemp "$settings_dir/.env.XXXXXX")"
+    if [ -f "$settings" ]; then
+      cp -p "$settings" "$replacement_settings"
+    fi
+    cat "$updated_settings" > "$replacement_settings"
   fi
-  replacement_settings="$(mktemp "$settings_dir/.env.XXXXXX")"
-  if [ -f "$settings" ]; then
-    cp -p "$settings" "$replacement_settings"
+}
+
+trap 'rm -f ${updated_settings:+"$updated_settings"} ${replacement_settings:+"$replacement_settings"} ${archive:+"$archive"}' EXIT
+settings_prepared=false
+if [ -e "$INSTALL_DIR/.env" ] || [ -L "$INSTALL_DIR/.env" ]; then
+  prepare_settings
+  settings_prepared=true
+fi
+
+if [ -e "$INSTALL_DIR/.git" ] || command -v git >/dev/null 2>&1; then
+  require_cmd git
+  if [ ! -e "$INSTALL_DIR/.git" ]; then
+    mkdir -p "$INSTALL_DIR"
+    git init --quiet "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
   fi
-  cat "$updated_settings" > "$replacement_settings"
+  git -C "$INSTALL_DIR" fetch --quiet --depth 1 --no-tags origin "$SOURCE_REF"
+  git -C "$INSTALL_DIR" checkout --quiet --detach FETCH_HEAD
+else
+  require_cmd curl
+  require_cmd tar
+  archive="$(mktemp)"
+  curl -fsSL "https://github.com/${REPO_SLUG}/archive/${SOURCE_REF}.tar.gz" -o "$archive"
+  mkdir -p "$INSTALL_DIR"
+  tar -xzf "$archive" --strip-components=1 -C "$INSTALL_DIR"
+fi
+
+if [ "$settings_prepared" = false ]; then
+  prepare_settings
+fi
+if [ -n "${replacement_settings:-}" ]; then
   mv -f "$replacement_settings" "$settings"
 fi
+mkdir -p "$INSTALL_DIR/keys"
 
 cat <<EOF
 
