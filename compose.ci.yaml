@@ -1,0 +1,15 @@
+services:
+  postgres:
+    ports: !reset []
+
+  pushboy:
+    environment:
+      WORKER_COUNT: "2"
+      SENDER_COUNT: "2"
+      JOB_QUEUE_SIZE: "100"
+      BATCH_SIZE: "100"
+      APNS_KEY_PATH: ""
+      FCM_KEY_PATH: ""
+    ports: !override
+      - "127.0.0.1:18080:8080"
+    volumes: !reset []
