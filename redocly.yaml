@@ -1,0 +1,8 @@
+extends:
+  - minimal
+
+rules:
+  no-path-trailing-slash: off
+  no-server-example.com: off
+  operation-operationId: off
+  tag-description: off
