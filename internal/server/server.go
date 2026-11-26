@@ -60,6 +60,8 @@ func (s *Server) setupRouter() chi.Router {
 	r.Put("/v2/devices/{installationUUID}", s.handleEnrollInstallation)
 	r.Post("/v2/devices/{installationUUID}/identify", s.handleIdentifyInstallation)
 	r.Post("/v2/devices/{installationUUID}/logout", s.handleLogoutInstallation)
+	r.Get("/v2/devices/{installationUUID}/push-registration", s.handleGetPushRegistration)
+	r.Put("/v2/devices/{installationUUID}/push-registration", s.handleRegisterPush)
 	r.Post("/v2/topics", s.handleCreateTenantTopic)
 	r.Get("/v2/topics/{topicID}", s.handleGetTenantTopic)
 

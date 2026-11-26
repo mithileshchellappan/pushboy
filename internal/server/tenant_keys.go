@@ -22,6 +22,8 @@ type TenantStore interface {
 	EnrollInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationObservations) (storage.TenantInstallation, bool, error)
 	IdentifyInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationOwnershipChange, storage.InstallationIdentification) (storage.TenantInstallation, error)
 	LogoutInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationOwnershipChange) (storage.TenantInstallation, error)
+	GetPushRegistration(context.Context, uuid.UUID, uuid.UUID) (storage.TenantPushRegistration, error)
+	RegisterPush(context.Context, uuid.UUID, uuid.UUID, storage.TenantPushRegistrationChange) (storage.TenantPushRegistration, error)
 	CreateTenantTopic(context.Context, uuid.UUID, string, string) (storage.TenantTopic, error)
 	GetTenantTopic(context.Context, uuid.UUID, string) (storage.TenantTopic, error)
 }
@@ -115,6 +117,8 @@ func tenantError(w http.ResponseWriter, err error, keyManagement bool) {
 		http.Error(w, notFound, http.StatusNotFound)
 	case errors.Is(err, storage.ErrInstallationOwnershipConflict):
 		http.Error(w, "Installation ownership conflict", http.StatusConflict)
+	case errors.Is(err, storage.ErrPushRegistrationConflict):
+		http.Error(w, "Push registration conflict", http.StatusConflict)
 	case errors.Is(err, storage.Errors.AlreadyExists):
 		http.Error(w, "Resource already exists", http.StatusConflict)
 	default:

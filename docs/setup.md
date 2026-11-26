@@ -177,11 +177,21 @@ To recover an unresolved reservation, pause channel writes and drain active requ
 
 Route readiness and credential version are checked when Pushboy admits a provider request. A later disable or rotation applies to subsequent admissions. A late authorization rejection can affect readiness only for the version that was used.
 
+## Tenant normal push registration
+
+Enroll the installation through `PUT /v2/devices/{installationUUID}`. With a trusted backend key that has `devices:write`, call `PUT /v2/devices/{installationUUID}/push-registration` with a tenant `providerConfigId`, the raw `token`, a new UUID `operationId`, and `expectedRegistrationVersion: 0` for the first registration. Later requests include the latest `expectedRegistrationId` and `expectedRegistrationVersion`. Changing the endpoint returns a new registration ID. A confirmation of the same endpoint keeps its ID and advances the version.
+
+Retry a lost response using the same operation ID and body. If a newer operation has succeeded, retrying the older one returns `409`. With `read`, GET the same route to recover the current ID and version, including after invalidation. A current invalidated registration returns `valid: false`. An endpoint already active on another installation in the same provider route returns `409`. The installation keeps its current owner during registration.
+
+Keep raw registration request bodies out of logs and traces. Existing `/v1` clients continue to receive pushes through their existing tokens. The tenant registration path stores endpoints for the tenant rollout. Tenant push delivery and migration of existing registrations require their own cutover.
+
 ## Tenant migration rollback
+
+Migration 24 builds a replacement uniqueness index on legacy tokens while holding a table lock. On a restored database, measure the lock window with representative data before scheduling the migration. Drain and replace application processes and workers running a pre-migration-24 version before enabling tenant registration writes. Rollback requires that no tenant push registrations or their operation records exist.
 
 Pause tenant writes and migration runners before rolling back. Migration 23 requires an empty `tenant_live_activity_channels` table. Migration 22 requires empty `tenant_device_ownership_operations` and migration 21 requires empty `tenant_devices`. Migration 20 requires an empty `provider_configs` table. Use a pre-upgrade database backup or a compatible application and migration bundle when provider configurations already exist. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
 
-A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with the corresponding `force 23`, `force 22`, `force 21`, `force 20`, `force 19`, `force 18`, or `force 17` before restarting the application.
+A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with the corresponding `force 24`, `force 23`, `force 22`, `force 21`, `force 20`, `force 19`, `force 18`, or `force 17` before restarting the application.
 
 ## Provider Credentials
 

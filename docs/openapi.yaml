@@ -802,6 +802,96 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
 
+  /v2/devices/{installationUUID}/push-registration:
+    parameters:
+      - $ref: "#/components/parameters/InstallationUUID"
+    get:
+      operationId: getPushRegistration
+      tags: [Devices]
+      summary: Get the current normal push registration
+      description: |
+        Requires read on a trusted backend key. An invalidated registration
+        remains current and returns its ID and version with valid set to false.
+      security:
+        - TenantServerKey: []
+      responses:
+        "200":
+          $ref: "#/components/responses/PushRegistrationResult"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "410":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+    put:
+      operationId: registerPush
+      tags: [Devices]
+      summary: Register or rotate a normal push endpoint
+      description: |
+        Requires devices:write on a trusted backend key and an enrolled
+        installation. Use version zero and omit the expected registration ID
+        for the initial registration. Use the current ID and version for later
+        confirmations or rotations. An identical retry of the latest accepted
+        operation keeps the current version. Other accepted operations advance
+        the version. Rotation allocates a new registration ID.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operationId, providerConfigId, token, expectedRegistrationVersion]
+              properties:
+                operationId:
+                  type: string
+                  format: uuid
+                providerConfigId:
+                  type: string
+                  format: uuid
+                token:
+                  description: Raw endpoint up to 4096 UTF-8 bytes. APNs values are even-length hex; FCM values are opaque.
+                  type: string
+                  minLength: 1
+                  maxLength: 4096
+                  writeOnly: true
+                expectedRegistrationId:
+                  type: string
+                  format: uuid
+                expectedRegistrationVersion:
+                  type: integer
+                  format: int64
+                  minimum: 0
+      responses:
+        "200":
+          $ref: "#/components/responses/PushRegistrationResult"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          description: Stale registration state, conflicting operation ID, or the endpoint is bound to another installation on this provider route.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "410":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/ping:
     get:
       tags: [Health]
@@ -1571,6 +1661,12 @@ components:
         enum: [QUEUED, SCHEDULED, IN_PROGRESS, DISPATCHED, COMPLETED, FAILED]
 
   responses:
+    PushRegistrationResult:
+      description: Current registration on the installation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TenantPushRegistration"
     InstallationOwnershipResult:
       description: |
         Current association. The last operation can be retried with the same
@@ -1719,6 +1815,25 @@ components:
         kind:
           type: string
           enum: [anonymous, identified]
+    TenantPushRegistration:
+      type: object
+      required: [id, providerConfigId, provider, registrationVersion, valid]
+      properties:
+        id:
+          type: string
+          format: uuid
+        providerConfigId:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [apns, fcm]
+        registrationVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        valid:
+          type: boolean
     TenantInstallation:
       type: object
       additionalProperties: false
