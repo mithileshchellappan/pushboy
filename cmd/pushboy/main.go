@@ -40,11 +40,14 @@ func main() {
 			log.Fatalf("bootstrap: %v", err)
 		}
 		defer store.Close()
-		tenant, key, err := store.BootstrapTenant(context.Background(), os.Args[2])
+		signal.Ignore(syscall.SIGPIPE)
+		err = store.BootstrapTenant(context.Background(), os.Args[2], func(tenant storage.Tenant, key string) error {
+			_, err := fmt.Fprintf(os.Stdout, "tenant_id: %s\nserver_key: %s\n", tenant.ID, key)
+			return err
+		})
 		if err != nil {
 			log.Fatalf("bootstrap: %v", err)
 		}
-		fmt.Fprintf(os.Stdout, "tenant_id: %s\nserver_key: %s\n", tenant.ID, key)
 		return
 	}
 

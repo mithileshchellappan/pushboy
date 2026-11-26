@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"os"
 	"slices"
 	"strings"
@@ -29,7 +30,29 @@ func TestBootstrapTenantCreatesOneAppAndHashedKey(t *testing.T) {
 	})
 
 	name := "bootstrap-" + uuid.NewString()
-	tenant, key, err := store.BootstrapTenant(context.Background(), name)
+	var attemptedID uuid.UUID
+	err := store.BootstrapTenant(t.Context(), name, func(created Tenant, _ string) error {
+		attemptedID = created.ID
+		return io.ErrClosedPipe
+	})
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("failed handoff error = %v, want closed pipe", err)
+	}
+	var tenantExists, keyExists bool
+	err = store.db.QueryRowContext(t.Context(), `
+		SELECT EXISTS (SELECT 1 FROM tenants WHERE id = $1),
+		       EXISTS (SELECT 1 FROM tenant_api_keys WHERE tenant_id = $1)
+	`, attemptedID).Scan(&tenantExists, &keyExists)
+	if err != nil || tenantExists || keyExists {
+		t.Fatalf("after failed handoff: tenant = %t, key = %t, error = %v", tenantExists, keyExists, err)
+	}
+
+	var tenant Tenant
+	var key string
+	err = store.BootstrapTenant(t.Context(), name, func(created Tenant, secret string) error {
+		tenant, key = created, secret
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +138,11 @@ func TestBootstrapTenantCreatesOneAppAndHashedKey(t *testing.T) {
 		})
 	}
 
-	if _, _, err := store.BootstrapTenant(context.Background(), name); !errors.Is(err, Errors.AlreadyExists) {
+	err = store.BootstrapTenant(t.Context(), name, func(Tenant, string) error {
+		t.Fatal("duplicate bootstrap handed off a key")
+		return nil
+	})
+	if !errors.Is(err, Errors.AlreadyExists) {
 		t.Fatalf("duplicate name error = %v, want AlreadyExists", err)
 	}
 	var keys int
@@ -144,7 +171,12 @@ func tenantKeyManagementStore(t *testing.T) *PostgresStore {
 
 func bootstrapKeyManagementTenant(t *testing.T, store *PostgresStore) (ServerKeyAccess, string) {
 	t.Helper()
-	tenant, key, err := store.BootstrapTenant(context.Background(), "key-management-"+uuid.NewString())
+	var tenant Tenant
+	var key string
+	err := store.BootstrapTenant(t.Context(), "key-management-"+uuid.NewString(), func(created Tenant, secret string) error {
+		tenant, key = created, secret
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

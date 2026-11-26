@@ -38,42 +38,48 @@ var serverKeyScopes = []string{
 	"read", "send", "users:write", "devices:write", "topics:write", "keys:manage", "providers:manage",
 }
 
-// BootstrapTenant creates an app and its first server key together. The secret
-// exists only in the return value; its digest is the only credential stored.
-func (s *PostgresStore) BootstrapTenant(ctx context.Context, name string) (Tenant, string, error) {
+// BootstrapTenant creates an app and hands off its first server key before commit.
+// A handoff error rolls back both inserts. The key is provisional until success.
+func (s *PostgresStore) BootstrapTenant(ctx context.Context, name string, handoff func(Tenant, string) error) error {
+	if handoff == nil {
+		return errors.New("server key handoff is required")
+	}
 	name = strings.TrimSpace(name)
 	if name == "" || len(name) > 160 {
-		return Tenant{}, "", fmt.Errorf("tenant name must contain 1 to 160 bytes")
+		return fmt.Errorf("tenant name must contain 1 to 160 bytes")
 	}
 
 	tenantID, err := uuid.NewRandom()
 	if err != nil {
-		return Tenant{}, "", fmt.Errorf("generate tenant ID: %w", err)
+		return fmt.Errorf("generate tenant ID: %w", err)
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Tenant{}, "", fmt.Errorf("begin tenant bootstrap: %w", err)
+		return fmt.Errorf("begin tenant bootstrap: %w", err)
 	}
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO tenants(id, name) VALUES($1, $2)`, tenantID, name); err != nil {
 		var pqErr *pq.Error
 		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
-			return Tenant{}, "", Errors.AlreadyExists
+			return Errors.AlreadyExists
 		}
-		return Tenant{}, "", fmt.Errorf("create tenant: %w", err)
+		return fmt.Errorf("create tenant: %w", err)
 	}
 	_, key, err := createServerKey(ctx, tx, tenantID, serverKeyScopes, nil)
 	if err != nil {
-		return Tenant{}, "", err
+		return err
 	}
 
+	if err := handoff(Tenant{ID: tenantID, Name: name}, key); err != nil {
+		return fmt.Errorf("hand off first server key: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
-		return Tenant{}, "", fmt.Errorf("commit tenant bootstrap: %w", err)
+		return fmt.Errorf("commit tenant bootstrap: %w", err)
 	}
 
-	return Tenant{ID: tenantID, Name: name}, key, nil
+	return nil
 }
 
 // AuthenticateServerKey checks the current database state on every request so
