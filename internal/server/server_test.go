@@ -301,6 +301,7 @@ func TestHandleProvisionLAChannel(t *testing.T) {
 				&serverJobPipeline{t: t, failOnSubmit: true},
 				&serverLAJobPipeline{t: t, failOnSubmit: true},
 				nil,
+				nil,
 			).setupRouter()
 
 			recorder := httptest.NewRecorder()
@@ -395,6 +396,7 @@ func TestLiveActivityChannelLifecycle(t *testing.T) {
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, failOnSubmit: true},
 		nil,
+		nil,
 	).setupRouter()
 
 	requests := []struct {
@@ -440,6 +442,7 @@ func TestLiveActivityChannelPreservesOpaqueActivityID(t *testing.T) {
 		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, failOnSubmit: true},
+		nil,
 		nil,
 	).setupRouter()
 
@@ -525,6 +528,7 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		pushPipeline,
 		laPipeline,
 		nil,
+		nil,
 	).setupRouter()
 
 	recorder := httptest.NewRecorder()
@@ -582,6 +586,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, submitErr: queueErr},
 		nil,
+		nil,
 	)
 	dispatch := &storage.LiveActivityDispatch{ID: "dispatch-1", Action: model.LiveActivityActionUpdate}
 	job := &storage.LiveActivityJob{ID: "job-1"}
@@ -598,7 +603,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) http.Handler {
 	t.Helper()
 
-	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline, nil).setupRouter()
+	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline, nil, nil).setupRouter()
 }
 
 type serverJobPipeline struct {

@@ -8,7 +8,7 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. The /v2 key, user, and topic
+    notification jobs, and Live Activity dispatches. The /v2 key, user, topic, and provider
     routes authenticate tenant server keys. The legacy /v1 routes remain
     unauthenticated and globally scoped. Deploy behind a trusted backend or private network.
 servers:
@@ -16,6 +16,7 @@ servers:
     description: Local development
 tags:
   - name: ServerKeys
+  - name: ProviderConfigs
   - name: Health
   - name: Users
   - name: Tokens
@@ -111,6 +112,169 @@ paths:
           description: Key does not exist within the authenticated tenant.
         "500":
           $ref: "#/components/responses/TextError"
+
+  /v2/providers:
+    post:
+      tags: [ProviderConfigs]
+      summary: Create a provider route for the authenticated tenant
+      description: |
+        Requires providers:manage. The APNs bundle or FCM project and environment define the route.
+        A duplicate namespace returns 409. Use the route ID to rotate credentials.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [provider, environment, applicationId, credentials]
+              properties:
+                provider:
+                  type: string
+                  enum: [apns, fcm]
+                environment:
+                  type: string
+                  description: APNs supports sandbox and production. FCM supports production.
+                  enum: [sandbox, production]
+                applicationId:
+                  type: string
+                  description: APNs bundle ID or Firebase project ID.
+                enabled:
+                  type: [boolean, "null"]
+                  default: true
+                credentials:
+                  $ref: "#/components/schemas/ProviderCredentials"
+      responses:
+        "201":
+          description: Provider route created.
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantProvider"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "409":
+          description: A provider route already exists for this namespace in the tenant.
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          description: The active encryption key is unavailable.
+    get:
+      tags: [ProviderConfigs]
+      summary: List provider routes and their local readiness
+      description: Requires read. Routes are scoped to the bearer key's tenant.
+      security:
+        - TenantServerKey: []
+      responses:
+        "200":
+          description: Provider routes and redacted readiness. An unready route does not affect the status of this response.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TenantProvider"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/providers/{providerId}:
+    parameters:
+      - name: providerId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      tags: [ProviderConfigs]
+      summary: Read a tenant provider route and its local readiness
+      description: Requires read.
+      security:
+        - TenantServerKey: []
+      responses:
+        "200":
+          description: Provider route metadata and redacted readiness.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantProvider"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "500":
+          $ref: "#/components/responses/TextError"
+    put:
+      tags: [ProviderConfigs]
+      summary: Rotate credentials or disable a tenant provider route
+      description: |
+        Requires providers:manage. Include the current credential version.
+        A successful rotation increments that version and retains the route ID and namespace.
+        Omit enabled or use null during rotation to preserve the route's current enabled state.
+        Send enabled false with no credentials to disable the route at its current version.
+        Re-enabling a route requires a credential upload with enabled true.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credentialVersion]
+              anyOf:
+                - required: [credentials]
+                - required: [enabled]
+                  properties:
+                    enabled:
+                      const: false
+              properties:
+                credentialVersion:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                enabled:
+                  type: [boolean, "null"]
+                credentials:
+                  $ref: "#/components/schemas/ProviderCredentials"
+      responses:
+        "200":
+          description: Provider route updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantProvider"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          description: The supplied credential version no longer matches the route.
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          description: The active encryption key is unavailable.
 
   /v2/users:
     post:
@@ -1076,6 +1240,80 @@ components:
             example: Bad request
 
   schemas:
+    ProviderCredentials:
+      description: Use the credential format for the route's provider.
+      oneOf:
+        - title: APNs signing key
+          type: object
+          required: [keyId, teamId, privateKey]
+          properties:
+            keyId:
+              type: string
+              pattern: '^[A-Z0-9]{10}$'
+            teamId:
+              type: string
+              pattern: '^[A-Z0-9]{10}$'
+            privateKey:
+              type: string
+              description: PEM-encoded P-256 signing key.
+              writeOnly: true
+        - title: Firebase service account
+          type: object
+          required: [type, project_id, private_key_id, private_key, client_email, token_uri]
+          properties:
+            type:
+              const: service_account
+            project_id:
+              type: string
+              description: Must match applicationId.
+            private_key_id:
+              type: string
+            private_key:
+              type: string
+              description: PEM-encoded RSA signing key with at least 2048 bits.
+              writeOnly: true
+            client_email:
+              type: string
+              format: email
+            token_uri:
+              const: https://oauth2.googleapis.com/token
+            universe_domain:
+              type: string
+              enum: ["", googleapis.com]
+    TenantProvider:
+      type: object
+      additionalProperties: false
+      required: [id, provider, environment, applicationId, enabled, credentialVersion, createdAt, updatedAt, ready]
+      properties:
+        id:
+          type: string
+          format: uuid
+        provider:
+          type: string
+          enum: [apns, fcm]
+        environment:
+          type: string
+          enum: [sandbox, production]
+        applicationId:
+          type: string
+        enabled:
+          type: boolean
+        credentialVersion:
+          type: integer
+          format: int64
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        ready:
+          type: boolean
+          description: The enabled route passed local credential checks. Provider acceptance has not been checked.
+        readinessReason:
+          type: string
+          enum: [disabled, encryption_key_unavailable, credential_unreadable, credential_invalid]
     TenantUser:
       type: object
       additionalProperties: false

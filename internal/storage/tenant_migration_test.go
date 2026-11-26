@@ -110,6 +110,37 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	if err := m.Migrate(19); err != nil {
 		t.Fatalf("upgrade from migration 18 with existing tenant resources: %v", err)
 	}
+	if err := m.Migrate(20); err != nil {
+		t.Fatalf("upgrade from migration 19 with existing tenant resources: %v", err)
+	}
+	if _, err := store.GetTenantTopic(ctx, tenant.ID, "updates"); err != nil {
+		t.Fatalf("legacy tenant topic after migration 20: %v", err)
+	}
+	rollBack(20, false)
+	if err := m.Migrate(20); err != nil {
+		t.Fatalf("reapply migration 20: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO provider_configs (tenant_id, id, provider, environment, application_id,
+			enabled, credential_version, credential_key_id, credential_nonce, credential_ciphertext)
+		VALUES ($1, $2, 'apns', 'production', 'com.example.app', true, 1, 'test',
+			decode(repeat('00', 12), 'hex'), decode(repeat('00', 16), 'hex'))`, tenant.ID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(20, true)
+	if err := m.Force(20); err != nil {
+		t.Fatalf("restore recorded migration version 20: %v", err)
+	}
+	res, err := db.ExecContext(ctx, "DELETE FROM provider_configs WHERE tenant_id = $1", tenant.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := res.RowsAffected()
+	if removed != 1 || err != nil {
+		t.Fatalf("expected provider row to survive blocked rollback, deleted %d rows: %v", removed, err)
+	}
+	rollBack(20, false)
+
 	var metadataAbsent bool
 	err = db.QueryRowContext(ctx, `
 		SELECT creation_request_id IS NULL AND creation_request_digest IS NULL
