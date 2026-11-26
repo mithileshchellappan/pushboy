@@ -53,9 +53,25 @@ if [[ "$release" == '{}' ]]; then
     if [[ -n "$changes" ]]; then
         notes+=$'\n\n'"$changes"
     fi
-    gh release create "$VERSION" --verify-tag --draft --target "$revision" \
-        --prerelease="$prerelease" --title "$VERSION" --generate-notes --notes "$notes"
-    release="$(release_for_tag)"
+    created_url="$(gh release create "$VERSION" --verify-tag --draft --target "$revision" \
+        --prerelease="$prerelease" --title "$VERSION" --generate-notes --notes "$notes")"
+    printf '%s\n' "$created_url"
+    for delay in 0 1 2 4 8; do
+        if [[ "$delay" != 0 ]]; then
+            sleep "$delay"
+        fi
+        release="$(release_for_tag)"
+        [[ "$release" == '{}' ]] || break
+    done
+    if [[ "$release" == '{}' ]]; then
+        echo "Created draft $VERSION is not yet visible in the release list. Rerun this job." >&2
+        exit 1
+    fi
+    if ! jq -e --arg url "$created_url" '$url != "" and .draft == true and .html_url == $url' <<< "$release" > /dev/null; then
+        echo "Release $VERSION does not match the newly created draft" >&2
+        exit 1
+    fi
+    verify_tag
 fi
 
 if ! release_id="$(jq -er --arg marker "$marker" --argjson prerelease "$prerelease" '
