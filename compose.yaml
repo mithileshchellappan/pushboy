@@ -26,6 +26,8 @@ services:
     environment:
       SERVER_PORT: ":8080"
       DATABASE_URL: postgres://pushboy:pushboy@postgres:5432/pushboy?sslmode=disable
+      PROVIDER_ENCRYPTION_ACTIVE_KEY_ID: "${PROVIDER_ENCRYPTION_ACTIVE_KEY_ID:-}"
+      PROVIDER_ENCRYPTION_KEYS: "${PROVIDER_ENCRYPTION_KEYS:-}"
       WORKER_COUNT: "10"
       SENDER_COUNT: "200"
       JOB_QUEUE_SIZE: "1000"

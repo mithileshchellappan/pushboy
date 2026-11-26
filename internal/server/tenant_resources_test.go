@@ -29,7 +29,7 @@ func TestTenantResourcesRequireBearerAndScope(t *testing.T) {
 			store := keyStoreStub{authenticate: func(_ context.Context, _ string) (storage.ServerKeyAccess, error) {
 				return storage.ServerKeyAccess{TenantID: uuid.New(), Scopes: []string{route.wrongScope}}, nil
 			}}
-			router := New(nil, nil, nil, store).setupRouter()
+			router := New(nil, nil, nil, store, nil).setupRouter()
 			for _, tc := range []struct {
 				bearer string
 				want   int
@@ -93,7 +93,7 @@ func TestTenantUserAndTopicHTTPIsolation(t *testing.T) {
 	}
 	_, keyA := bootstrap()
 	tenantB, keyB := bootstrap()
-	router := New(nil, nil, nil, store).setupRouter()
+	router := New(nil, nil, nil, store, nil).setupRouter()
 	request := func(method, path, key, body string, want int, idempotencyKeys ...string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))

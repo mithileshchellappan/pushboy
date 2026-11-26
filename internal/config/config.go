@@ -34,6 +34,9 @@ type Config struct {
 
 	DatabaseURL string
 
+	ProviderEncryptionActiveKeyID string
+	ProviderEncryptionKeys        string
+
 	APNSKeyID           string
 	APNSTeamID          string
 	APNSBundleID        string
@@ -108,6 +111,9 @@ func Load() *Config {
 		LAFCMClientPool:      getPositiveIntEnv("LA_FCM_CLIENT_POOL", fcmClientPool),
 		LAFCMMaxConcurrent:   getNonNegativeIntEnv("LA_FCM_MAX_CONCURRENT", fcmMaxConcurrent),
 		BroadcastTopicName:   getEnv("BROADCAST_TOPIC_NAME", "broadcast"),
+
+		ProviderEncryptionActiveKeyID: getEnv("PROVIDER_ENCRYPTION_ACTIVE_KEY_ID", ""),
+		ProviderEncryptionKeys:        getEnv("PROVIDER_ENCRYPTION_KEYS", ""),
 	}
 }
 

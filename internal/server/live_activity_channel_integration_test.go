@@ -206,6 +206,7 @@ func TestConcurrentLazyLAStartsAcrossInstances(t *testing.T) {
 			pipeline.NewMemoryPipeline[model.JobItem](1),
 			laPipeline,
 			nil,
+			nil,
 		).setupRouter()
 	}
 

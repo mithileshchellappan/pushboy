@@ -161,11 +161,36 @@ Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/
 
 To retry user creation after a lost response, generate and save a UUID before sending it in the `Idempotency-Key` header. Send the same key and identity on the retry to receive the original `201` and UID.
 
+## Tenant provider routes
+
+Set `PROVIDER_ENCRYPTION_ACTIVE_KEY_ID` to a versioned ID such as `v1`. Inject `PROVIDER_ENCRYPTION_KEYS` from your deployment secret manager as a JSON object mapping key IDs to standard base64-encoded 32-byte random keys. Generate each key independently, for example with `openssl rand -base64 32`. Keep the JSON out of source control, logs, and database backups. Docker Compose passes both variables through to Pushboy when they are set.
+
+Each tenant can configure separate APNs sandbox and production routes and FCM production routes. APNs bundle comparisons ignore case and the route retains the registered bundle spelling. The bearer key determines the tenant. Use a key with `providers:manage` to create a route. Send the APNs key ID and team ID associated with the downloaded signing key.
+
+```bash
+jq -n --rawfile privateKey keys/AuthKey_YOUR_KEY_ID.p8 \
+  '{provider:"apns",environment:"sandbox",applicationId:"com.example.app",
+    credentials:{keyId:"YOUR_KEY_ID",teamId:"YOUR_TEAM_ID",privateKey:$privateKey}}' |
+  curl -fsS -X POST http://localhost:8080/v2/providers \
+    -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+    -H "Content-Type: application/json" --data-binary @-
+```
+
+For FCM, set `provider` to `fcm`, `environment` to `production`, and `applicationId` to the Firebase project that will receive the send request. A service account from another project needs permission to send messages in the target project. Supply the JSON object in `credentials`. Pushboy validates Google's OAuth token endpoint and the RSA signing key. Use HTTPS outside local development and exclude provider request bodies and authorization headers from logs and traces.
+
+With a key that has `read`, use `GET /v2/providers` or `GET /v2/providers/{providerId}` to check each route's `ready` flag. An unready route reports a reason such as `encryption_key_unavailable` or `credential_unreadable`. Readiness covers local decryption and signer or token source setup. Apple and Google authorization are verified through provider responses during delivery. These tenant routes currently support configuration and local readiness. Notification sends, Live Activity sends, and channel management continue through the legacy deployment configuration.
+
+Provider, environment, and application ID define the stable route namespace. A duplicate create returns `409`. To rotate a provider credential, send `PUT /v2/providers/{providerId}` with the current `credentialVersion` and the replacement `credentials`. The route keeps its ID and advances the credential version. A stale version returns `409`. Read the route after a lost response before issuing a new rotation. To disable a route, send its current `credentialVersion` and `enabled: false` in the PUT body. Re-enable it by uploading credentials with `enabled: true`.
+
+Back up every encryption key ID and value in a secret store independently of PostgreSQL. A database restore needs the keys referenced by the restored rows. Test recovery with a restored database and keyring on an isolated deployment, then verify readiness for each enabled route. Missing keys make their routes unready. Pushboy skips malformed encryption key entries and logs a diagnostic without including key material. If the active key is missing or malformed, credential writes receive `503` and stored routes can still be checked with their valid retained keys.
+
+To rotate the deployment encryption key, distribute the new and old keys to every instance first. Then set the new active key ID everywhere and re-upload each route's credential with its current version. Check readiness for each enabled route. In PostgreSQL, verify that every row in `provider_configs` uses the new `credential_key_id` before retiring the old key from the running keyring. Retain old keys for backups that reference them.
+
 ## Tenant migration rollback
 
-Pause tenant writes and migration runners before rolling back. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
+Pause tenant writes and migration runners before rolling back. Migration 20 requires an empty `provider_configs` table. Use a pre-upgrade database backup or a compatible application and migration bundle when provider configurations already exist. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
 
-A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with `force 19`, `force 18`, or `force 17` before restarting the application.
+A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with the corresponding `force 20`, `force 19`, `force 18`, or `force 17` before restarting the application.
 
 ## Provider Credentials
 

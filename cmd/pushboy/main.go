@@ -73,6 +73,11 @@ func main() {
 		log.Fatalf("Cannot create store: %v", err)
 	}
 
+	providers, err := storage.NewTenantProviderStore(store, cfg.ProviderEncryptionActiveKeyID, cfg.ProviderEncryptionKeys)
+	if err != nil {
+		log.Printf("WARNING: %v", err)
+	}
+
 	// Initialize dispatchers - only add successfully created clients
 	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
 	laDispatchers := make(map[model.Platform]dispatch.Dispatcher)
@@ -234,7 +239,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store, providers)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
