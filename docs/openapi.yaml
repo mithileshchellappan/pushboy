@@ -562,6 +562,124 @@ paths:
         "500":
           $ref: "#/components/responses/TextError"
 
+  /v2/devices/{installationUUID}/identify:
+    post:
+      operationId: identifyInstallation
+      tags: [Devices]
+      summary: Identify the owner of one installation
+      description: |
+        Requires both devices:write and users:write on a trusted backend key
+        and an enrolled installation.
+        Choose an existing identified account by UID or supply a verified identity.
+        A new identity promotes the current anonymous owner or creates a separate
+        account when the current owner is identified. An existing identity
+        switches only this installation to its account. Device observations
+        stay with the installation.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - $ref: "#/components/parameters/InstallationUUID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operationId, expectedOwnershipVersion]
+              oneOf:
+                - required: [uid]
+                - required: [identity]
+              properties:
+                operationId:
+                  type: string
+                  format: uuid
+                expectedOwnershipVersion:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                uid:
+                  type: string
+                  format: uuid
+                identity:
+                  type: object
+                  additionalProperties: false
+                  required: [namespace, externalId]
+                  properties:
+                    namespace:
+                      type: string
+                      minLength: 1
+                      maxLength: 128
+                    externalId:
+                      type: string
+                      minLength: 1
+                      maxLength: 512
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallationOwnershipResult"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          $ref: "#/components/responses/InstallationOwnershipConflict"
+        "410":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/devices/{installationUUID}/logout:
+    post:
+      operationId: logoutInstallation
+      tags: [Devices]
+      summary: Return one installation to anonymous ownership
+      description: |
+        Requires devices:write on a trusted backend key and an enrolled
+        installation. Logout switches only
+        this installation to a new anonymous user. If its owner is already
+        anonymous, its association and ownership version stay the same.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - $ref: "#/components/parameters/InstallationUUID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operationId, expectedOwnershipVersion]
+              properties:
+                operationId:
+                  type: string
+                  format: uuid
+                expectedOwnershipVersion:
+                  type: integer
+                  format: int64
+                  minimum: 1
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallationOwnershipResult"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TenantUnauthorized"
+        "403":
+          $ref: "#/components/responses/TenantForbidden"
+        "404":
+          $ref: "#/components/responses/TenantResourceNotFound"
+        "409":
+          $ref: "#/components/responses/InstallationOwnershipConflict"
+        "410":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/ping:
     get:
       tags: [Health]
@@ -1261,6 +1379,13 @@ components:
       scheme: bearer
       description: Tenant server key for trusted backends only.
   parameters:
+    InstallationUUID:
+      name: installationUUID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
     UserID:
       name: userID
       in: path
@@ -1324,6 +1449,24 @@ components:
         enum: [QUEUED, SCHEDULED, IN_PROGRESS, DISPATCHED, COMPLETED, FAILED]
 
   responses:
+    InstallationOwnershipResult:
+      description: |
+        Current association. The last operation can be retried with the same
+        UUID and request to return the same result.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TenantInstallation"
+    InstallationOwnershipConflict:
+      description: |
+        The ownership version is stale, the operation UUID was already used
+        with a different request or overtaken by another operation, or the
+        requested UID is anonymous. Refresh the current association before
+        sending another ownership operation.
+      content:
+        text/plain:
+          schema:
+            type: string
     TenantUnauthorized:
       description: Missing, malformed, invalid, expired, or revoked bearer key, or disabled tenant.
       headers:

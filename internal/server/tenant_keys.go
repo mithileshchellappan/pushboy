@@ -20,11 +20,13 @@ type TenantStore interface {
 	CreateTenantUser(context.Context, uuid.UUID, *storage.TenantUserIdentity, *uuid.UUID) (storage.TenantUser, error)
 	GetTenantUser(context.Context, uuid.UUID, uuid.UUID) (storage.TenantUser, error)
 	EnrollInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationObservations) (storage.TenantInstallation, bool, error)
+	IdentifyInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationOwnershipChange, storage.InstallationIdentification) (storage.TenantInstallation, error)
+	LogoutInstallation(context.Context, uuid.UUID, uuid.UUID, storage.InstallationOwnershipChange) (storage.TenantInstallation, error)
 	CreateTenantTopic(context.Context, uuid.UUID, string, string) (storage.TenantTopic, error)
 	GetTenantTopic(context.Context, uuid.UUID, string) (storage.TenantTopic, error)
 }
 
-func (s *Server) authenticateServerKey(w http.ResponseWriter, r *http.Request, scope string) (storage.ServerKeyAccess, error) {
+func (s *Server) authenticateServerKey(w http.ResponseWriter, r *http.Request, scopes ...string) (storage.ServerKeyAccess, error) {
 	w.Header().Set("Cache-Control", "no-store")
 	headers := r.Header.Values("Authorization")
 	var parts []string
@@ -41,8 +43,10 @@ func (s *Server) authenticateServerKey(w http.ResponseWriter, r *http.Request, s
 	if err != nil {
 		return storage.ServerKeyAccess{}, err
 	}
-	if !slices.Contains(actor.Scopes, scope) {
-		return storage.ServerKeyAccess{}, storage.ErrInsufficientKeyScope
+	for _, scope := range scopes {
+		if !slices.Contains(actor.Scopes, scope) {
+			return storage.ServerKeyAccess{}, storage.ErrInsufficientKeyScope
+		}
 	}
 	return actor, nil
 }
@@ -109,6 +113,8 @@ func tenantError(w http.ResponseWriter, err error, keyManagement bool) {
 		http.Error(w, "Installation retired", http.StatusGone)
 	case errors.Is(err, storage.Errors.NotFound):
 		http.Error(w, notFound, http.StatusNotFound)
+	case errors.Is(err, storage.ErrInstallationOwnershipConflict):
+		http.Error(w, "Installation ownership conflict", http.StatusConflict)
 	case errors.Is(err, storage.Errors.AlreadyExists):
 		http.Error(w, "Resource already exists", http.StatusConflict)
 	default:
