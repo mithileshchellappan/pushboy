@@ -8,13 +8,14 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. The current API does not
-    include built-in authentication; deploy it behind a trusted network,
-    gateway, or reverse proxy until first-party API auth is added.
+    notification jobs, and Live Activity dispatches. Only /v2/keys implements
+    tenant server-key authentication. Legacy /v1 routes remain unauthenticated
+    and globally scoped. Deploy behind a trusted backend or private network.
 servers:
   - url: http://localhost:8080
     description: Local development
 tags:
+  - name: ServerKeys
   - name: Health
   - name: Users
   - name: Tokens
@@ -24,6 +25,93 @@ tags:
   - name: LiveActivity
 security: []
 paths:
+  /v2/keys:
+    post:
+      tags: [ServerKeys]
+      summary: Issue a server key for the authenticated app tenant
+      description: |
+        Requires keys:manage. The bearer key determines the tenant and bounds
+        the new key's scopes and expiry. Existing keys stay active until expiry
+        or revocation.
+      security:
+        - TenantServerKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scopes]
+              properties:
+                scopes:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    type: string
+                    enum: [read, send, "users:write", "devices:write", "topics:write", "keys:manage", "providers:manage"]
+                expiresAt:
+                  type: [string, "null"]
+                  format: date-time
+                  description: Future expiry at or before the issuer's expiry. Omit or pass null for an unbounded key only if the issuer has no expiry.
+      responses:
+        "201":
+          description: Key issued.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [id, key]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  key:
+                    type: string
+                    description: Secret shown only in this response.
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          description: Missing, malformed, invalid, expired, or revoked bearer key, or disabled tenant.
+        "403":
+          description: Missing keys:manage or the requested scopes or expiry exceed the issuer's authority.
+        "500":
+          $ref: "#/components/responses/TextError"
+
+  /v2/keys/{keyId}:
+    delete:
+      tags: [ServerKeys]
+      summary: Revoke a server key within the authenticated tenant
+      description: |
+        Requires keys:manage. Revocation takes effect on subsequent authentication.
+      security:
+        - TenantServerKey: []
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Key revoked or already revoked.
+        "401":
+          description: Missing or invalid bearer key, or inactive key or tenant.
+        "403":
+          description: Missing keys:manage.
+        "404":
+          description: Key does not exist within the authenticated tenant.
+        "500":
+          $ref: "#/components/responses/TextError"
+
   /v1/ping:
     get:
       tags: [Health]
@@ -717,6 +805,11 @@ paths:
           $ref: "#/components/responses/TextError"
 
 components:
+  securitySchemes:
+    TenantServerKey:
+      type: http
+      scheme: bearer
+      description: Tenant server key for trusted backends only.
   parameters:
     UserID:
       name: userID

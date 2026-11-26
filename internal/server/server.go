@@ -21,14 +21,15 @@ type Server struct {
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
 	laJobPipeline pipeline.Pipeline[model.LAJobItem]
+	serverKeys    ServerKeyStore
 	httpServer    *http.Server
 	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], serverKeys ServerKeyStore) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, serverKeys: serverKeys}
 }
 
 func (s *Server) Start(addr string) error {
@@ -47,10 +48,14 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
+
 	r.Use(middleware.Recoverer)
 
+	r.Post("/v2/keys", s.handleIssueServerKey)
+	r.Delete("/v2/keys/{keyID}", s.handleRevokeServerKey)
+
 	r.Route("/v1", func(r chi.Router) {
+		r.Use(middleware.Logger)
 		r.Get("/ping", s.handlePing)
 		r.Get("/notifications/{jobID}", s.handleGetJobStatus)
 

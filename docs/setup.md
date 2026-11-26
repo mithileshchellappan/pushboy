@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. The current API does not include built-in auth, rate limiting, tenant isolation, or TLS termination.
+Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. Only `/v2/keys` authenticates tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
 
 ## Requirements
 
@@ -113,6 +113,35 @@ On Linux you can use `sha256sum -c` in place of `shasum -a 256 -c`. Set `DATABAS
 Keep the current release and take a Postgres backup before starting an upgrade. Start the new binary with the migrations from its archive, or start the new image with the existing Postgres volume. Check `/v1/ping` and the API calls your clients use before resuming traffic.
 
 Rolling back across a schema migration requires a database compatible with the older release. To restore the pre-upgrade database, stop Pushboy, restore the backup and then start the old release with its matching migrations. Restoring that backup discards any database changes made after it was taken.
+
+## Tenant bootstrap
+
+Set `DATABASE_URL` to the intended PostgreSQL database before creating the app and its first key.
+
+```bash
+go run ./cmd/pushboy bootstrap "Example App"
+```
+
+On success, save the server key from stdout in your backend's secret manager. If the command prints a complete key and reports a commit error, verify that the key authenticates before retrying. App names must be unique. Keep server keys on trusted backends and send them in the Authorization header over HTTPS outside local development. Redact credentials in proxy and tracing logs.
+
+To rotate a bootstrap key, load it into `PUSHBOY_SERVER_KEY` and issue a replacement with `keys:manage`.
+
+```bash
+OLD_KEY_ID=${PUSHBOY_SERVER_KEY%%.*}
+curl -X POST http://localhost:8080/v2/keys \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"scopes":["read","send","users:write","devices:write","topics:write","keys:manage","providers:manage"]}'
+```
+
+Save the new `key` from the response immediately. For a scoped issuer, request only scopes it has and supply an `expiresAt` within its lifetime if it expires. Once the backend has switched, load the replacement into `PUSHBOY_SERVER_KEY` and revoke the old key.
+
+```bash
+curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
+```
+
+Before rolling down migration 17, stop tenant writes and check that both tenant tables are empty. Once you bootstrap an app, keep migration 17 installed and roll back the application using a compatible executable with a migration bundle that includes version 17. If the guard rejects a down migration and leaves version 16 dirty, stop migration runners, verify the version 17 tables and data are intact, and run `force 17` with the migration tool before restarting Pushboy.
 
 ## Provider Credentials
 

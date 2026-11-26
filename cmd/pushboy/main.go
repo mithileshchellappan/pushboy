@@ -39,7 +39,28 @@ func main() {
 		return
 	}
 
+	bootstrap := len(os.Args) > 1
+	if bootstrap && (len(os.Args) != 3 || os.Args[1] != "bootstrap") {
+		fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")
+		os.Exit(2)
+	}
 	cfg := config.Load()
+	if bootstrap {
+		store, err := storage.NewPostgresStore(cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("bootstrap: %v", err)
+		}
+		defer store.Close()
+		signal.Ignore(syscall.SIGPIPE)
+		err = store.BootstrapTenant(context.Background(), os.Args[2], func(tenant storage.Tenant, key string) error {
+			_, err := fmt.Fprintf(os.Stdout, "tenant_id: %s\nserver_key: %s\n", tenant.ID, key)
+			return err
+		})
+		if err != nil {
+			log.Fatalf("bootstrap: %v", err)
+		}
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -213,7 +234,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
