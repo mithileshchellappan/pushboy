@@ -128,7 +128,7 @@ Bootstrap stores the tenant and its first server key. Save the printed key in yo
 
 Migration 24 replaces the legacy token uniqueness index while holding a table lock. Measure the lock window on a restored database with representative data before scheduling the migration. Drain and stop the old processes and workers before starting the new release. An older binary cannot start against schema 24 with its pre-migration bundle.
 
-Pause tenant writes and migration runners before applying a down migration. Use a migration bundle that includes the installed schema version. The following migrations require their listed tables or records to be empty before they can be rolled back.
+Before downgrading, drain HTTP traffic and queued work, then stop every Pushboy API process, worker, scheduler, and automatic migration runner. Use a migration bundle that includes the installed schema version. Start the release compatible with the target schema only after the down migration completes. The following migrations require their listed tables or records to be empty before they can be rolled back.
 
 | Migration | Tables or records that must be empty |
 | --- | --- |
