@@ -111,6 +111,7 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 	refusedRoute := newRoute("com.example.Refused")
 	retryRoute := newRoute("com.example.Retry")
 	knownRoute := newRoute("com.example.Known")
+	featureRoute := newRoute("com.example.Feature")
 
 	type providerCall struct {
 		method, path, kid, topic, channel string
@@ -161,6 +162,9 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		case r.URL.Path == "/1/apps/com.example.Known/channels":
 			w.Header().Set("apns-channel-id", "known-provider-channel")
 			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodDelete && r.URL.Path == "/1/apps/com.example.Feature/channels":
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"reason":"FeatureNotEnabled"}`))
 		case r.Method == http.MethodDelete && kid == "AAAA000001":
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"reason":"InvalidProviderToken","secret":"https://provider.invalid/3/device/rejected-token"}`))
@@ -357,6 +361,14 @@ func TestTenantLAChannelsRouteIsolation(t *testing.T) {
 		t.Fatalf("known provider channel ID was lost: %+v", persisted)
 	}
 	provision(tenantA, knownRequest, storage.TenantLAChannelAmbiguous, false)
+
+	featureRequest := request("feature-disabled", "race", featureRoute)
+	provision(tenantA, featureRequest, storage.TenantLAChannelActive, true)
+	expectProvider(providerCall{method: http.MethodPost, path: "/1/apps/com.example.Feature/channels", kid: "CCCC000003"})
+	checkError(channels.Delete(ctx, tenantA, featureRequest.ActivityID), nil)
+	expectProvider(providerCall{method: http.MethodDelete, path: "/1/apps/com.example.Feature/channels", kid: "CCCC000003", channel: "shared-provider-channel"})
+	_, err = channels.Get(ctx, tenantA, featureRequest.ActivityID)
+	checkError(err, storage.Errors.NotFound)
 
 	refA := model.ProviderRef{TenantID: tenantA, RouteID: routeA.ID}
 	refB := model.ProviderRef{TenantID: tenantB, RouteID: routeB.ID}
