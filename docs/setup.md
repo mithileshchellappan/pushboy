@@ -140,6 +140,12 @@ Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/
 
 To retry user creation after a lost response, generate and save a UUID before sending it in the `Idempotency-Key` header. Send the same key and identity on the retry to receive the original `201` and UID.
 
+## Tenant installation ownership
+
+Enroll an installation with `PUT /v2/devices/{installationUUID}`. To identify or log out that installation, send a new `operationId` and the current `expectedOwnershipVersion` to the corresponding `/identify` or `/logout` endpoint from your trusted backend. Every distinct successful logout advances the ownership version, including when the installation keeps its existing anonymous UID.
+
+Retry a lost response using the same operation ID and body. If a newer operation has succeeded or the expected version is stale, the server returns `409`. Use an empty enrollment PUT to read the current UID and version. Before issuing a new operation, check whether the current authenticated session still calls for it. A delayed identify request can otherwise undo a later logout if the backend retries it with a refreshed version.
+
 ## Tenant provider routes
 
 Set `PROVIDER_ENCRYPTION_ACTIVE_KEY_ID` to a versioned ID such as `v1`. Inject `PROVIDER_ENCRYPTION_KEYS` from your deployment secret manager as a JSON object mapping key IDs to standard base64-encoded 32-byte random keys. Generate each key independently, for example with `openssl rand -base64 32`. Keep the JSON out of source control, logs, and database backups. Docker Compose passes both variables through to Pushboy when they are set.

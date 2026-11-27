@@ -575,7 +575,8 @@ paths:
         A new identity promotes the current anonymous owner or creates a separate
         account when the current owner is identified. An existing identity
         switches only this installation to its account. Device observations
-        stay with the installation.
+        stay with the installation. The expected ownership version must match
+        the latest version, which advances on each distinct successful logout.
       security:
         - TenantServerKey: []
       parameters:
@@ -640,9 +641,10 @@ paths:
       summary: Return one installation to anonymous ownership
       description: |
         Requires devices:write on a trusted backend key and an enrolled
-        installation. Logout switches only
-        this installation to a new anonymous user. If its owner is already
-        anonymous, its association and ownership version stay the same.
+        installation. Logout switches only this installation to an anonymous
+        user. It keeps the current UID if the owner is already anonymous.
+        Each distinct successful logout advances the ownership version. An
+        exact retry of the latest operation returns the same UID and version.
       security:
         - TenantServerKey: []
       parameters:
@@ -1462,8 +1464,9 @@ components:
       description: |
         The ownership version is stale, the operation UUID was already used
         with a different request or overtaken by another operation, or the
-        requested UID is anonymous. Refresh the current association before
-        sending another ownership operation.
+        requested UID is anonymous. Use an empty enrollment PUT to refresh the
+        association. Send a new ownership operation only if the current
+        authenticated session still calls for it.
       content:
         text/plain:
           schema:
