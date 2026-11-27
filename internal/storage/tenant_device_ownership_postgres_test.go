@@ -51,11 +51,17 @@ func TestPostgresInstallationOwnershipSwitchReplayAndLogout(t *testing.T) {
 	if err != nil || a.UID != first.UID || a.OwnershipVersion != 2 {
 		t.Fatalf("anonymous promotion = %+v, %v", a, err)
 	}
+	// Simulate a lost response by resubmitting the exact identify operation.
 	if replay, err := store.IdentifyInstallation(ctx, tenant, first.ID, promote, accountA); err != nil || replay != a {
 		t.Fatalf("promotion replay = %+v, %v", replay, err)
 	}
 	if _, err := store.IdentifyInstallation(ctx, tenant, first.ID, promote, accountB); !errors.Is(err, ErrInstallationOwnershipConflict) {
 		t.Fatalf("reuse of latest UUID with different payload = %v", err)
+	}
+	changedVersion := promote
+	changedVersion.ExpectedOwnershipVersion = a.OwnershipVersion
+	if _, err := store.IdentifyInstallation(ctx, tenant, first.ID, changedVersion, accountA); !errors.Is(err, ErrInstallationOwnershipConflict) {
+		t.Fatalf("reuse of latest UUID with different version = %v", err)
 	}
 	aByUID := InstallationIdentification{UID: &a.UID}
 	otherA, err := store.IdentifyInstallation(ctx, tenant, second.ID, change(1), aByUID)
@@ -102,6 +108,8 @@ func TestPostgresInstallationOwnershipSwitchReplayAndLogout(t *testing.T) {
 	if replay, err := store.LogoutInstallation(ctx, tenant, first.ID, secondLogout); err != nil || replay != newGeneration {
 		t.Fatalf("already anonymous logout replay = %+v, %v", replay, err)
 	}
+	// An exact duplicate is stale once a later operation commits, even when
+	// the intervening logout kept the anonymous owner.
 	if _, err := store.LogoutInstallation(ctx, tenant, first.ID, logout); !errors.Is(err, ErrInstallationOwnershipConflict) {
 		t.Fatalf("overtaken logout replay = %v", err)
 	}

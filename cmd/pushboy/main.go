@@ -28,7 +28,17 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/workers"
 )
 
+var (
+	version  = "dev"
+	revision = "unknown"
+)
+
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Printf("pushboy %s (%s)\n", version, revision)
+		return
+	}
+
 	bootstrap := len(os.Args) > 1
 	if bootstrap && (len(os.Args) != 3 || os.Args[1] != "bootstrap") {
 		fmt.Fprintln(os.Stderr, "usage: pushboy bootstrap <app-name>")
@@ -61,11 +71,6 @@ func main() {
 	store, err := storage.NewPostgresStore(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("Cannot create store: %v", err)
-	}
-
-	providers, err := storage.NewTenantProviderStore(store, cfg.ProviderEncryptionActiveKeyID, cfg.ProviderEncryptionKeys)
-	if err != nil {
-		log.Printf("WARNING: %v", err)
 	}
 
 	// Initialize dispatchers - only add successfully created clients
@@ -229,8 +234,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	tenantChannels := service.NewTenantLAChannels(store, dispatch.NewTenantChannelRouter(providers, cfg))
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store, providers, tenantChannels)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {
