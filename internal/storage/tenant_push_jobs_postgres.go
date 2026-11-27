@@ -270,6 +270,8 @@ func (s *PostgresStore) ClaimTenantPushRecipient(ctx context.Context, tenantID u
 }
 
 func (s *PostgresStore) CheckTenantPushRecipient(ctx context.Context, tenantID uuid.UUID, jobID, receiptID string, claimID uuid.UUID) (TenantPushAttempt, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
 	return scanTenantPushAttempt(s.db.QueryRowContext(ctx, tenantPushAdmissionSelect, tenantID, jobID, receiptID, claimID), tenantID)
 }
 

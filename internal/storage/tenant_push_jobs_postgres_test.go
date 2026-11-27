@@ -385,12 +385,14 @@ func TestPostgresTenantPushAdmissionWaitsForConcurrentChanges(t *testing.T) {
 		UPDATE tenant_devices SET user_uid = $3, ownership_version = ownership_version + 1
 		WHERE tenant_id = $1 AND id = $2`
 	for _, tt := range []struct {
-		name    string
-		update  string
-		args    []string
-		discard bool
+		name     string
+		update   string
+		args     []string
+		discard  bool
+		keepOpen bool
 	}{
 		{name: "ownership changed", update: changeOwner, args: []string{"device", "owner"}},
+		{name: "stalled switch", update: changeOwner, args: []string{"device", "owner"}, keepOpen: true},
 		{name: "ownership rollback", update: changeOwner, args: []string{"device", "owner"}, discard: true},
 		{name: "registration changed", args: []string{"registration"}, update: `
 			UPDATE tokens SET registration_version = registration_version + 1 WHERE tenant_id = $1 AND registration_id = $2`},
@@ -466,6 +468,17 @@ func TestPostgresTenantPushAdmissionWaitsForConcurrentChanges(t *testing.T) {
 					t.Fatal(ctx.Err())
 				case <-wait.C:
 				}
+			}
+			if tt.keepOpen {
+				select {
+				case err := <-admission:
+					if ctx.Err() != nil || err == nil || errors.Is(err, ErrTenantPushRecipientStale) {
+						t.Fatalf("stalled admission did not fail within its own deadline: %v", err)
+					}
+				case <-ctx.Done():
+					t.Fatal("stalled admission exhausted the caller's deadline")
+				}
+				return
 			}
 			if tt.discard {
 				err = change.Rollback()
