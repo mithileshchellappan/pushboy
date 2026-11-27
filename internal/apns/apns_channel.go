@@ -8,8 +8,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
@@ -153,10 +155,16 @@ func (c *Client) doChannelManagementRequest(ctx context.Context, method string, 
 	client.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
+	// The transport can try a second connection after it has used the first.
+	// Only a refusal before any connection was handed out proves non-delivery.
+	var gotConnection atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { gotConnection.Store(true) },
+	}))
 	resp, err := client.Do(req)
 	c.release()
 	if err != nil {
-		if requestErr, ok := err.(*url.Error); ok {
+		if requestErr, ok := err.(*url.Error); ok && !gotConnection.Load() {
 			if dialErr, ok := requestErr.Err.(*net.OpError); ok && dialErr.Op == "dial" &&
 				strings.HasPrefix(dialErr.Net, "tcp") && errors.Is(dialErr, syscall.ECONNREFUSED) {
 				return nil, fmt.Errorf("%w: APNs TCP connection refused", ErrChannelRequestRejected)

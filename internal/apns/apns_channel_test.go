@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -270,5 +273,38 @@ func testChannelClient(server *httptest.Server) *Client {
 		cachedJWT:                 "jwt",
 		jwtExpiry:                 time.Now().Add(time.Hour),
 		maxRetries:                1,
+	}
+}
+
+type refusedChannelTransport struct {
+	previousConnection bool
+}
+
+func (t refusedChannelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.previousConnection {
+		httptrace.ContextClientTrace(req.Context()).GotConn(httptrace.GotConnInfo{Reused: true})
+	}
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+}
+
+func TestCreateChannelRefusalAfterTransportRetryIsAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		previousConnection bool
+		wantRejected       bool
+	}{
+		{"first dial refused", false, true},
+		{"dial refused after prior connection", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(nil, "", "", "com.example.app", false, "", 1, 1, 0)
+			client.cachedJWT = "synthetic"
+			client.jwtExpiry = time.Now().Add(time.Hour)
+			client.httpClients[0].Transport = refusedChannelTransport{previousConnection: tc.previousConnection}
+			_, err := client.CreateLiveActivityChannel(context.Background())
+			if err == nil || errors.Is(err, ErrChannelRequestRejected) != tc.wantRejected {
+				t.Fatalf("create error = %v, want definitive rejection %t", err, tc.wantRejected)
+			}
+		})
 	}
 }
