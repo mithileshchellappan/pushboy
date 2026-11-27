@@ -122,7 +122,7 @@ Set `DATABASE_URL` to the intended PostgreSQL database before creating the app a
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. The generated key does not authenticate requests to the current HTTP API. If your database contains encrypted tenant provider credentials, retain the corresponding encryption keys with your backups.
+Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. The generated key does not authenticate requests to the current HTTP API. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
 
 ## Tenant migration rollback
 
