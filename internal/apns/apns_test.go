@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 func TestSendWithRetryClassifiesNonRetryableResponses(t *testing.T) {
@@ -65,6 +67,39 @@ func TestSendWithRetryClassifiesNonRetryableResponses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestChannelCreationFailureClassification(t *testing.T) {
+	for _, tc := range []struct {
+		status                   int
+		body                     string
+		permanentAuth, safeRetry bool
+	}{
+		{http.StatusForbidden, `{"reason":"InvalidProviderToken"}`, true, true},
+		{http.StatusForbidden, `{"reason":"ExpiredProviderToken"}`, false, true},
+		{http.StatusForbidden, `{"reason":"ChannelNotRegistered"}`, false, false},
+		{http.StatusForbidden, `{"reason":"unrecognized"}`, false, false},
+		{http.StatusInternalServerError, `{"reason":"InvalidProviderToken"}`, false, false},
+		{http.StatusForbidden, `{"reason":"TopicMismatch"}`, true, true},
+		{http.StatusBadRequest, `{"reason":"TopicMismatch"}`, false, false},
+		{http.StatusBadRequest, `{"reason":"CannotCreateChannelConfig"}`, false, true},
+		{http.StatusBadRequest, `{"reason":"FeatureNotEnabled"}`, false, true},
+		{http.StatusBadRequest, `{"reason":"BadRequestParams"}`, false, true},
+		{http.StatusBadRequest, `{"reason":"MissingPushType"}`, false, true},
+		{http.StatusBadRequest, `{"reason":"UnknownChannelRejection"}`, false, false},
+		{http.StatusNotFound, `{"reason":"BadPath"}`, false, true},
+		{http.StatusMethodNotAllowed, `{"reason":"MethodNotAllowed"}`, false, true},
+		{http.StatusRequestEntityTooLarge, `{"reason":"PayloadTooLarge"}`, false, true},
+		{http.StatusTooManyRequests, `{"reason":"TooManyProviderTokenUpdates"}`, false, true},
+		{http.StatusServiceUnavailable, `{"reason":"CannotCreateChannelConfig"}`, false, false},
+		{http.StatusBadRequest, `{"reason":"BadTopic"}`, false, true},
+	} {
+		err := newResponseError(tc.status, []byte(tc.body))
+		if errors.Is(err, model.ErrProviderAuthorization) != tc.permanentAuth || errors.Is(err, ErrChannelRequestRejected) != tc.safeRetry {
+			t.Errorf("[%d %s] auth=%t, safe retry=%t", tc.status, tc.body,
+				errors.Is(err, model.ErrProviderAuthorization), errors.Is(err, ErrChannelRequestRejected))
+		}
 	}
 }
 

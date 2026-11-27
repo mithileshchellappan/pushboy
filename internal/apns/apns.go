@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -67,19 +68,75 @@ type ApsPayload struct {
 type ApnsRequest map[string]interface{}
 
 type responseError struct {
-	status string
+	status int
 	reason string
 }
 
 func (e *responseError) Error() string {
 	if e.reason == "" {
-		return fmt.Sprintf("APNs error: %s", e.status)
+		return fmt.Sprintf("APNs error: %d %s", e.status, http.StatusText(e.status))
 	}
-	return fmt.Sprintf("APNs error: %s (reason: %s)", e.status, e.reason)
+	return fmt.Sprintf("APNs error: %d %s (reason: %s)", e.status, http.StatusText(e.status), e.reason)
 }
 
 func (e *responseError) ProviderReason() string {
 	return e.reason
+}
+
+func (e *responseError) Is(target error) bool {
+	switch target {
+	case model.ErrProviderAuthorization:
+		switch e.reason {
+		case "BadCertificate", "BadCertificateEnvironment", "Forbidden", "InvalidProviderToken", "MissingProviderToken", "TopicMismatch":
+			return e.status == http.StatusForbidden
+		case "TopicDisallowed":
+			return e.status == http.StatusBadRequest || e.status == http.StatusForbidden
+		}
+	case ErrChannelRequestRejected:
+		if e.Is(model.ErrProviderAuthorization) {
+			return true
+		}
+		switch e.status {
+		case http.StatusForbidden:
+			return e.reason == "ExpiredProviderToken"
+		case http.StatusBadRequest:
+			switch e.reason {
+			case "BadChannelId", "BadExpirationDate", "BadMessageId", "BadMessageStoragePolicy", "BadPriority", "BadPushType",
+				"BadRequestParams", "BadRequestPayload", "BadTopic", "CannotCreateChannelConfig", "ChannelNotRegistered",
+				"DuplicateHeaders", "FeatureNotEnabled", "InvalidPushType", "MissingChannelId", "MissingPushType", "MissingTopic",
+				"PayloadEmpty":
+				return true
+			}
+		case http.StatusNotFound:
+			return e.reason == "BadPath"
+		case http.StatusMethodNotAllowed:
+			return e.reason == "MethodNotAllowed"
+		case http.StatusRequestEntityTooLarge:
+			return e.reason == "PayloadTooLarge"
+		case http.StatusTooManyRequests:
+			return e.reason == "TooManyRequests" || e.reason == "TooManyProviderTokenUpdates"
+		}
+	}
+	return false
+}
+
+func newResponseError(status int, body []byte) *responseError {
+	var response struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.Unmarshal(body, &response)
+	switch response.Reason {
+	case "BadCertificate", "BadCertificateEnvironment", "BadChannelId", "BadDeviceToken", "BadExpirationDate",
+		"BadMessageId", "BadMessageStoragePolicy", "BadPath", "BadPriority", "BadPushType", "BadRequestParams",
+		"BadRequestPayload", "BadTopic", "CannotCreateChannelConfig", "ChannelNotRegistered", "DeviceTokenNotForTopic",
+		"DuplicateHeaders", "ExpiredProviderToken", "ExpiredToken", "FeatureNotEnabled", "Forbidden", "IdleTimeout",
+		"InternalServerError", "InvalidProviderToken", "InvalidPushType", "MethodNotAllowed", "MissingChannelId",
+		"MissingDeviceToken", "MissingProviderToken", "MissingPushType", "MissingTopic", "PayloadEmpty", "PayloadTooLarge",
+		"ServiceUnavailable", "Shutdown", "TooManyProviderTokenUpdates", "TooManyRequests", "TopicDisallowed", "TopicMismatch",
+		"Unregistered":
+		return &responseError{status: status, reason: response.Reason}
+	}
+	return &responseError{status: status}
 }
 
 func NewClient(p8KeyBytes []byte, keyID string, teamID string, bundleID string, useSandbox bool, endpointOverride string, poolSize int, maxConcurrent int, maxRetries int) *Client {
@@ -303,7 +360,7 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(payloadBytes))
 		if err != nil {
-			return err
+			return errors.New("invalid APNs request")
 		}
 
 		req.Header.Set("Content-Type", "application/json")
@@ -332,7 +389,10 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 				}
 				continue
 			}
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return errors.New("APNs request failed")
 		}
 
 		body, _ := io.ReadAll(resp.Body)
@@ -340,14 +400,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 
 		if resp.StatusCode == http.StatusOK {
 			return nil
-		}
-
-		var apnsError struct {
-			Reason    string `json:"reason"`
-			Timestamp int64  `json:"timestamp,omitempty"`
-		}
-		if err := json.Unmarshal(body, &apnsError); err == nil && apnsError.Reason != "" {
-			log.Printf("APNs error for device: %s (reason: %s)", resp.Status, apnsError.Reason)
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
@@ -370,19 +422,14 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 				}
 				continue
 			}
-			return fmt.Errorf("rate limited after %d retries: %s", c.maxRetries, resp.Status)
+			return fmt.Errorf("APNs rate limited after %d retries", c.maxRetries)
 		}
 
-		var apnsReason struct {
-			Reason string `json:"reason"`
+		providerErr := newResponseError(resp.StatusCode, body)
+		if providerErr.reason != "" || errors.Is(providerErr, model.ErrProviderAuthorization) {
+			return providerErr
 		}
-		if err := json.Unmarshal(body, &apnsReason); err == nil && apnsReason.Reason != "" {
-			return &responseError{
-				status: resp.Status,
-				reason: apnsReason.Reason,
-			}
-		}
-		return fmt.Errorf("failed to send notification: %s", resp.Status)
+		return fmt.Errorf("failed to send notification: %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	}
 
 	return fmt.Errorf("max retries exceeded")

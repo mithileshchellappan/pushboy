@@ -3,9 +3,14 @@ package apns
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -149,25 +154,52 @@ func (t *broadcastHostTransport) RoundTrip(r *http.Request) (*http.Response, err
 	return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: http.NoBody, Header: make(http.Header), Request: r}, nil
 }
 
-func TestDeleteLiveActivityChannelTreatsMissingChannelAsDeleted(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			t.Fatalf("method = %s, want DELETE", r.Method)
-		}
-		if r.URL.Path != "/1/apps/com.example.app/channels" {
-			t.Fatalf("path = %q", r.URL.Path)
-		}
-		if got := r.Header.Get("apns-channel-id"); got != "channel-1" {
-			t.Fatalf("apns-channel-id = %q, want channel-1", got)
-		}
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"reason":"ChannelNotRegistered"}`))
-	}))
-	defer server.Close()
+func TestDeleteLiveActivityChannelAPNsResponses(t *testing.T) {
+	for _, tc := range []struct {
+		status       int
+		reason       string
+		wantSuccess  bool
+		wantRejected bool
+		wantAuth     bool
+	}{
+		{http.StatusBadRequest, "ChannelNotRegistered", true, false, false},
+		{http.StatusGone, "ChannelNotRegistered", false, false, false},
+		{http.StatusInternalServerError, "ChannelNotRegistered", false, false, false},
+		{http.StatusBadRequest, "FeatureNotEnabled", true, false, false},
+		{http.StatusInternalServerError, "FeatureNotEnabled", false, false, false},
+		{http.StatusForbidden, "InvalidProviderToken", false, true, true},
+	} {
+		t.Run(http.StatusText(tc.status)+" "+tc.reason, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("method = %s, want DELETE", r.Method)
+				}
+				if r.URL.Path != "/1/apps/com.example.app/channels" {
+					t.Errorf("path = %q", r.URL.Path)
+				}
+				if got := r.Header.Get("apns-channel-id"); got != "channel-1" {
+					t.Errorf("apns-channel-id = %q, want channel-1", got)
+				}
+				w.WriteHeader(tc.status)
+				_ = json.NewEncoder(w).Encode(map[string]string{"reason": tc.reason, "debug": "raw-provider-response"})
+			}))
+			defer server.Close()
 
-	client := testChannelClient(server)
-	if err := client.DeleteLiveActivityChannel(context.Background(), "channel-1"); err != nil {
-		t.Fatalf("DeleteLiveActivityChannel error = %v", err)
+			client := testChannelClient(server)
+			err := client.DeleteLiveActivityChannel(t.Context(), "channel-1")
+			if (err == nil) != tc.wantSuccess {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want success %t", err, tc.wantSuccess)
+			}
+			if errors.Is(err, ErrChannelRequestRejected) != tc.wantRejected {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want definite rejection %t", err, tc.wantRejected)
+			}
+			if errors.Is(err, model.ErrProviderAuthorization) != tc.wantAuth {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want authorization failure %t", err, tc.wantAuth)
+			}
+			if err != nil && strings.Contains(err.Error(), "raw-provider-response") {
+				t.Fatalf("DeleteLiveActivityChannel error includes raw provider response: %v", err)
+			}
+		})
 	}
 }
 
@@ -249,5 +281,38 @@ func testChannelClient(server *httptest.Server) *Client {
 		cachedJWT:                 "jwt",
 		jwtExpiry:                 time.Now().Add(time.Hour),
 		maxRetries:                1,
+	}
+}
+
+type refusedChannelTransport struct {
+	previousConnection bool
+}
+
+func (t refusedChannelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.previousConnection {
+		httptrace.ContextClientTrace(req.Context()).GotConn(httptrace.GotConnInfo{Reused: true})
+	}
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+}
+
+func TestCreateChannelRefusalAfterTransportRetryIsAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		previousConnection bool
+		wantRejected       bool
+	}{
+		{"first dial refused", false, true},
+		{"dial refused after prior connection", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := NewClient(nil, "", "", "com.example.app", false, "", 1, 1, 0)
+			client.cachedJWT = "synthetic"
+			client.jwtExpiry = time.Now().Add(time.Hour)
+			client.httpClients[0].Transport = refusedChannelTransport{previousConnection: tc.previousConnection}
+			_, err := client.CreateLiveActivityChannel(context.Background())
+			if err == nil || errors.Is(err, ErrChannelRequestRejected) != tc.wantRejected {
+				t.Fatalf("create error = %v, want definitive rejection %t", err, tc.wantRejected)
+			}
+		})
 	}
 }

@@ -27,7 +27,7 @@ func testAPNsCredentials(t *testing.T, curve elliptic.Curve) json.RawMessage {
 	if err != nil {
 		t.Fatal(err)
 	}
-	creds, err := json.Marshal(apnsCredentials{
+	creds, err := json.Marshal(APNsCredentials{
 		KeyID: "A1B2C3D4E5", TeamID: "Z1Y2X3W4V5",
 		PrivateKey: string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})),
 	})
