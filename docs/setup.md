@@ -126,9 +126,24 @@ Bootstrap stores the tenant and its first server key. Save the printed key in yo
 
 ## Tenant migration rollback
 
-Pause tenant writes and migration runners before rolling back. Migration 20 requires an empty `provider_configs` table. Use a pre-upgrade database backup or a compatible application and migration bundle when provider configurations already exist. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
+Migration 24 replaces the legacy token uniqueness index while holding a table lock. Measure the lock window on a restored database with representative data before scheduling the migration. Drain and stop the old processes and workers before starting the new release. An older binary cannot start against schema 24 with its pre-migration bundle.
 
-A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with the corresponding `force 20`, `force 19`, `force 18`, or `force 17` before restarting the application.
+Before downgrading, drain HTTP traffic and queued work, then stop every Pushboy API process, worker, scheduler, and automatic migration runner. Use a migration bundle that includes the installed schema version. Start the release compatible with the target schema only after the down migration completes. The following migrations require their listed tables or records to be empty before they can be rolled back.
+
+| Migration | Tables or records that must be empty |
+| --- | --- |
+| 24 | Tenant rows in `tokens` and all rows in `tenant_push_registration_operations` |
+| 23 | `tenant_live_activity_channels` |
+| 22 | `tenant_device_ownership_operations` |
+| 21 | `tenant_devices` |
+| 20 | `provider_configs` |
+| 19 | Saved user creation replay records |
+| 18 | `tenant_users`, `tenant_user_identities`, and `tenant_topics` |
+| 17 | `tenants` and `tenant_api_keys` |
+
+If the database holds state required by a migration, keep that migration installed and use a compatible binary and migration bundle, or follow the backup recovery procedure above. Verify the target schema version is clean before starting an older image.
+
+A blocked down migration records the previous version as dirty. Verify the newer schema and its data are intact, then use the migration tool's `force` command with the newer version number before restarting the application.
 
 ## Provider Credentials
 
