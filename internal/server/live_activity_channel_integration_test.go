@@ -205,8 +205,6 @@ func TestConcurrentLazyLAStartsAcrossInstances(t *testing.T) {
 			service.NewPushBoyService(store, "", provider),
 			pipeline.NewMemoryPipeline[model.JobItem](1),
 			laPipeline,
-			nil,
-			nil,
 		).setupRouter()
 	}
 
