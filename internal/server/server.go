@@ -21,16 +21,14 @@ type Server struct {
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
 	laJobPipeline pipeline.Pipeline[model.LAJobItem]
-	tenants       TenantStore
-	providers     *storage.TenantProviderStore
 	httpServer    *http.Server
 	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenants TenantStore, providers *storage.TenantProviderStore) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, tenants: tenants, providers: providers}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -49,21 +47,7 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-
 	r.Use(middleware.Recoverer)
-
-	r.Post("/v2/keys", s.handleIssueServerKey)
-	r.Delete("/v2/keys/{keyID}", s.handleRevokeServerKey)
-	r.Post("/v2/users", s.handleCreateTenantUser)
-	r.Get("/v2/users/{uid}", s.handleGetTenantUser)
-	r.Put("/v2/devices/{installationUUID}", s.handleEnrollInstallation)
-	r.Post("/v2/topics", s.handleCreateTenantTopic)
-	r.Get("/v2/topics/{topicID}", s.handleGetTenantTopic)
-
-	r.Post("/v2/providers", s.handleCreateTenantProvider)
-	r.Get("/v2/providers", s.handleListTenantProviders)
-	r.Get("/v2/providers/{providerID}", s.handleGetTenantProvider)
-	r.Put("/v2/providers/{providerID}", s.handleUpdateTenantProvider)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.Logger)

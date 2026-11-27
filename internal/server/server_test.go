@@ -7,14 +7,34 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/service"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
+
+func TestRouterOnlyServesV1(t *testing.T) {
+	router := New(nil, nil, nil).setupRouter()
+	if err := chi.Walk(router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+		if !strings.HasPrefix(route, "/v1/") {
+			t.Errorf("unexpected route: %s %s", method, route)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/ping", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "pong" {
+		t.Fatalf("GET /v1/ping = %d %q, want 200 pong", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestHandleRegisterTokenValidation(t *testing.T) {
 	tests := []struct {
@@ -300,8 +320,6 @@ func TestHandleProvisionLAChannel(t *testing.T) {
 				service.NewPushBoyService(store, "", provider),
 				&serverJobPipeline{t: t, failOnSubmit: true},
 				&serverLAJobPipeline{t: t, failOnSubmit: true},
-				nil,
-				nil,
 			).setupRouter()
 
 			recorder := httptest.NewRecorder()
@@ -395,8 +413,6 @@ func TestLiveActivityChannelLifecycle(t *testing.T) {
 		service.NewPushBoyService(store, "", provider),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, failOnSubmit: true},
-		nil,
-		nil,
 	).setupRouter()
 
 	requests := []struct {
@@ -442,8 +458,6 @@ func TestLiveActivityChannelPreservesOpaqueActivityID(t *testing.T) {
 		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, failOnSubmit: true},
-		nil,
-		nil,
 	).setupRouter()
 
 	for _, test := range []struct {
@@ -527,8 +541,6 @@ func TestHandleCreateLAJobUpdateRoutesToLALane(t *testing.T) {
 		service.NewPushBoyService(store, "", &serverLAChannelProvider{}),
 		pushPipeline,
 		laPipeline,
-		nil,
-		nil,
 	).setupRouter()
 
 	recorder := httptest.NewRecorder()
@@ -585,8 +597,6 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 		service.NewPushBoyService(store, "", nil),
 		&serverJobPipeline{t: t, failOnSubmit: true},
 		&serverLAJobPipeline{t: t, submitErr: queueErr},
-		nil,
-		nil,
 	)
 	dispatch := &storage.LiveActivityDispatch{ID: "dispatch-1", Action: model.LiveActivityActionUpdate}
 	job := &storage.LiveActivityJob{ID: "job-1"}
@@ -603,7 +613,7 @@ func TestEnqueueImmediateLADispatchFailsPendingRowWhenPipelineRejects(t *testing
 func testRouter(t *testing.T, store storage.Store, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) http.Handler {
 	t.Helper()
 
-	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline, nil, nil).setupRouter()
+	return New(service.NewPushBoyService(store, "", nil), jobPipeline, laJobPipeline).setupRouter()
 }
 
 type serverJobPipeline struct {
