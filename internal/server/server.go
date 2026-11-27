@@ -18,20 +18,17 @@ import (
 )
 
 type Server struct {
-	service        *service.PushboyService
-	jobPipeline    pipeline.Pipeline[model.JobItem]
-	laJobPipeline  pipeline.Pipeline[model.LAJobItem]
-	tenants        TenantStore
-	providers      *storage.TenantProviderStore
-	tenantChannels *service.TenantLAChannels
-	httpServer     *http.Server
-	router         chi.Router
+	service       *service.PushboyService
+	jobPipeline   pipeline.Pipeline[model.JobItem]
+	laJobPipeline pipeline.Pipeline[model.LAJobItem]
+	httpServer    *http.Server
+	router        chi.Router
 }
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenants TenantStore, providers *storage.TenantProviderStore, tenantChannels *service.TenantLAChannels) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline, tenants: tenants, providers: providers, tenantChannels: tenantChannels}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
+	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -50,29 +47,7 @@ func (s *Server) setupRouter() chi.Router {
 
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-
 	r.Use(middleware.Recoverer)
-
-	r.Post("/v2/keys", s.handleIssueServerKey)
-	r.Delete("/v2/keys/{keyID}", s.handleRevokeServerKey)
-	r.Post("/v2/users", s.handleCreateTenantUser)
-	r.Get("/v2/users/{uid}", s.handleGetTenantUser)
-	r.Put("/v2/devices/{installationUUID}", s.handleEnrollInstallation)
-	r.Post("/v2/devices/{installationUUID}/identify", s.handleIdentifyInstallation)
-	r.Post("/v2/devices/{installationUUID}/logout", s.handleLogoutInstallation)
-	r.Get("/v2/devices/{installationUUID}/push-registration", s.handleGetPushRegistration)
-	r.Put("/v2/devices/{installationUUID}/push-registration", s.handleRegisterPush)
-	r.Post("/v2/topics", s.handleCreateTenantTopic)
-	r.Get("/v2/topics/{topicID}", s.handleGetTenantTopic)
-
-	r.Post("/v2/providers", s.handleCreateTenantProvider)
-	r.Get("/v2/providers", s.handleListTenantProviders)
-	r.Get("/v2/providers/{providerID}", s.handleGetTenantProvider)
-	r.Put("/v2/providers/{providerID}", s.handleUpdateTenantProvider)
-
-	r.Put("/v2/live-activity/channels/{activityID}", s.handleProvisionTenantLAChannel)
-	r.Get("/v2/live-activity/channels/{activityID}", s.handleGetTenantLAChannel)
-	r.Delete("/v2/live-activity/channels/{activityID}", s.handleDeleteTenantLAChannel)
 
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(middleware.Logger)

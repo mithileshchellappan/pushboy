@@ -12,6 +12,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// InstallationOwnershipChange uses a caller-generated operation ID to make a
+// retry after a lost response safe. The same ID, expected version, and target
+// replay only while that operation remains the installation's latest accepted
+// operation. Reusing an older ID or changing the request returns a conflict.
 type InstallationOwnershipChange struct {
 	OperationID              uuid.UUID
 	ExpectedOwnershipVersion int64

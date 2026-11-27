@@ -2,11 +2,11 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. The `/v2` key, user, and topic routes authenticate tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
+The `/v1` API is globally scoped and accepts unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.24+ for source builds
 - Postgres 16 or compatible Postgres server
 - Docker and Docker Compose, if you want the containerized path
 - APNS `.p8` key for iOS sends
@@ -22,11 +22,11 @@ Use the setup script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
-cd ~/pushboy
-docker compose up --build
 ```
 
-Or clone the repository manually:
+Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. Installations that link to the same settings file share its release selection. The release notes also list the image digest for deployments that pin by digest.
+
+Set `PUSHBOY_VERSION=main` in the installer to clear the release image selection and build from source. You can also clone the repository manually:
 
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
@@ -62,6 +62,7 @@ curl http://localhost:8080/v1/topics/
 ```
 
 The Compose file creates a local Postgres database and mounts `./keys` into the Pushboy container as read-only credentials.
+On Linux, grant the container user (UID and GID `10001`) permission to read the mounted credential files and access their directory.
 
 ## Option 2: Local Go Process
 
@@ -93,6 +94,26 @@ go run ./cmd/pushboy
 
 Pushboy runs Postgres migrations from `db/migrations/postgres` during startup. If startup succeeds, the database schema is ready.
 
+## Install a release binary
+
+Download the archive for your OS and CPU, along with `SHA256SUMS`. Release archives use `darwin` for macOS and `arm64` for Apple silicon. Verify the archive before extracting it:
+
+```bash
+archive=pushboy_v0.1.0_darwin_arm64.tar.gz
+awk -v archive="$archive" '$2 == archive' SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p pushboy &&
+  tar -xzf "$archive" -C pushboy &&
+  (cd pushboy && ./pushboy --version)
+```
+
+On Linux you can use `sha256sum -c` in place of `shasum -a 256 -c`. Set `DATABASE_URL` in the environment or in `.env`. Start `./pushboy` from the extracted directory so it can find the bundled migrations.
+
+## Upgrade and rollback
+
+Keep the current release and take a Postgres backup before starting an upgrade. Start the new binary with the migrations from its archive, or start the new image with the existing Postgres volume. Check `/v1/ping` and the API calls your clients use before resuming traffic.
+
+Rolling back across a schema migration requires a database compatible with the older release. To restore the pre-upgrade database, stop Pushboy, restore the backup and then start the old release with its matching migrations. Restoring that backup discards any database changes made after it was taken.
+
 ## Tenant bootstrap
 
 Set `DATABASE_URL` to the intended PostgreSQL database before creating the app and its first key.
@@ -101,109 +122,28 @@ Set `DATABASE_URL` to the intended PostgreSQL database before creating the app a
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-On success, save the server key from stdout in your backend's secret manager. If the command prints a complete key and reports a commit error, verify that the key authenticates before retrying. App names must be unique. Keep server keys on trusted backends and send them in the Authorization header over HTTPS outside local development. Redact credentials in proxy and tracing logs.
-
-To rotate a bootstrap key, load it into `PUSHBOY_SERVER_KEY` and issue a replacement with `keys:manage`.
-
-```bash
-OLD_KEY_ID=${PUSHBOY_SERVER_KEY%%.*}
-curl -X POST http://localhost:8080/v2/keys \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"scopes":["read","send","users:write","devices:write","topics:write","keys:manage","providers:manage"]}'
-```
-
-Save the new `key` from the response immediately. For a scoped issuer, request only scopes it has and supply an `expiresAt` within its lifetime if it expires. Once the backend has switched, load the replacement into `PUSHBOY_SERVER_KEY` and revoke the old key.
-
-```bash
-curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
-```
-
-## Tenant users and topics
-
-Use a tenant server key with `users:write` and `topics:write` for the corresponding create requests.
-
-```bash
-curl -X POST http://localhost:8080/v2/users \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"identity":{"namespace":"accounts","externalId":"account-42"}}'
-
-curl -X POST http://localhost:8080/v2/topics \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"id":"releases","name":"Release notes"}'
-```
-
-Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/users/{uid}` with the returned UUID or `GET /v2/topics/{topicId}` with the percent-encoded topic ID. Migration 18 adds separate tables for these routes and leaves legacy data in place.
-
-To retry user creation after a lost response, generate and save a UUID before sending it in the `Idempotency-Key` header. Send the same key and identity on the retry to receive the original `201` and UID.
-
-## Tenant installation ownership
-
-Enroll an installation with `PUT /v2/devices/{installationUUID}`. To identify or log out that installation, send a new `operationId` and the current `expectedOwnershipVersion` to the corresponding `/identify` or `/logout` endpoint from your trusted backend. Every distinct successful logout advances the ownership version, including when the installation keeps its existing anonymous UID.
-
-Retry a lost response using the same operation ID and body. If a newer operation has succeeded or the expected version is stale, the server returns `409`. Use an empty enrollment PUT to read the current UID and version. Before issuing a new operation, check whether the current authenticated session still calls for it. A delayed identify request can otherwise undo a later logout if the backend retries it with a refreshed version.
-
-## Tenant provider routes
-
-Set `PROVIDER_ENCRYPTION_ACTIVE_KEY_ID` to a versioned ID such as `v1`. Inject `PROVIDER_ENCRYPTION_KEYS` from your deployment secret manager as a JSON object mapping key IDs to standard base64-encoded 32-byte random keys. Generate each key independently, for example with `openssl rand -base64 32`. Keep the JSON out of source control, logs, and database backups. Docker Compose passes both variables through to Pushboy when they are set.
-
-Each tenant can configure separate APNs sandbox and production routes and FCM production routes. APNs bundle comparisons ignore case and the route retains the registered bundle spelling. The bearer key determines the tenant. Use a key with `providers:manage` to create a route. Send the APNs key ID and team ID associated with the downloaded signing key.
-
-```bash
-jq -n --rawfile privateKey keys/AuthKey_YOUR_KEY_ID.p8 \
-  '{provider:"apns",environment:"sandbox",applicationId:"com.example.app",
-    credentials:{keyId:"YOUR_KEY_ID",teamId:"YOUR_TEAM_ID",privateKey:$privateKey}}' |
-  curl -fsS -X POST http://localhost:8080/v2/providers \
-    -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-    -H "Content-Type: application/json" --data-binary @-
-```
-
-For FCM, set `provider` to `fcm`, `environment` to `production`, and `applicationId` to the Firebase project that will receive the send request. A service account from another project needs permission to send messages in the target project. Supply the JSON object in `credentials`. Pushboy validates Google's OAuth token endpoint and the RSA signing key. Use HTTPS outside local development and exclude provider request bodies and authorization headers from logs and traces.
-
-With a key that has `read`, use `GET /v2/providers` or `GET /v2/providers/{providerId}` to check each route's `ready` flag. An unready route reports a reason such as `encryption_key_unavailable` or `credential_unreadable`. Readiness covers local decryption and signer or token source setup. Apple and Google authorization are verified through provider responses during delivery. Tenant APNs channel operations can record an authorization failure against the current credential version. This makes the affected route unready until its credentials are replaced. Production notification jobs and Live Activity jobs currently use the legacy deployment configuration.
-
-Provider, environment, and application ID define the stable route namespace. A duplicate create returns `409`. To rotate a provider credential, send `PUT /v2/providers/{providerId}` with the current `credentialVersion` and the replacement `credentials`. The route keeps its ID and advances the credential version. A stale version returns `409`. Read the route after a lost response before issuing a new rotation. To disable a route, send its current `credentialVersion` and `enabled: false` in the PUT body. Re-enable it by uploading credentials with `enabled: true`.
-
-Back up every encryption key ID and value in a secret store independently of PostgreSQL. A database restore needs the keys referenced by the restored rows. Test recovery with a restored database and keyring on an isolated deployment, then verify readiness for each enabled route. Missing keys make their routes unready. Pushboy skips malformed encryption key entries and logs a diagnostic without including key material. If the active key is missing or malformed, credential writes receive `503` and stored routes can still be checked with their valid retained keys.
-
-To rotate the deployment encryption key, distribute the new and old keys to every instance first. Then set the new active key ID everywhere and re-upload each route's credential with its current version. Check readiness for each enabled route. In PostgreSQL, verify that every row in `provider_configs` uses the new `credential_key_id` before retiring the old key from the running keyring. Retain old keys for backups that reference them.
-
-## Tenant APNs broadcast channels
-
-For a manual start of a public, non-personal topic activity, call `PUT /v2/live-activity/channels/{activityId}` with a tenant server key that has `send`. Include `public: true`, an existing tenant `topicId`, and the tenant's APNs `providerConfigId`. Repeating a matching request for an active channel returns the stored mapping, including when the APNs route is disabled. Changing its topic or route returns `409`. Each tenant chooses its own activity IDs.
-
-Use `GET` on the same path with `read` to get the channel metadata. With `send`, `DELETE` deletes the channel using its stored APNs route. Shared channels carry the same updates to all subscribed devices. Use them only for public content, and have clients detach locally when they should stop receiving it.
-
-Pushboy reserves the tenant and activity before calling APNs. If another request is already provisioning that activity, a matching PUT returns `409` with `state: "provisioning"`. A lost provider response or a failed local save can return `state: "ambiguous"`. Use GET to inspect the reservation and its `provisioningId`. A confirmed APNs rejection or direct TCP connection refusal releases the reservation so you can retry after enabling broadcast capabilities or freeing channel capacity. Pushboy cannot determine whether APNs created a channel after losing its response, so matching retries leave the reservation in place.
-
-Pushboy records `state: "deleting"` before requesting deletion from APNs. GET and matching PUT report that state without a channel ID. Retry DELETE if its response or the local save fails. Pushboy removes the mapping after APNs confirms deletion or reports that the channel is absent. A definite rejection of the first attempt can restore an active mapping if a retry has yet to begin. A rejection of a retry leaves the mapping in the deleting state because the earlier request may have succeeded.
-
-To recover an unresolved reservation, pause channel writes and drain active requests before making database changes. Check the APNs app, environment, and provider records for the attempted creation. The GET response may contain the channel ID if APNs returned it. If Pushboy received an ID but could not save it, look up the same provisioning ID in the server's operator logs. Once you have confirmed the exact channel exists for that attempt, record its `channel_id` and set `state` to `active`. If you have confirmed the attempt created no channel or its channel was deleted, remove the reservation to allow a new attempt. Guard either database change by matching `tenant_id`, `activity_id`, `provider_config_id`, `provisioning_id`, and current state (`provisioning` or `ambiguous`). Verify that exactly one row changed and read it back by tenant and activity. An unresolved outcome stays blocked.
-
-Route readiness and credential version are checked when Pushboy admits a provider request. A later disable or rotation applies to subsequent admissions. A late authorization rejection can affect readiness only for the version that was used.
-
-## Tenant normal push registration
-
-Enroll the installation through `PUT /v2/devices/{installationUUID}`. With a trusted backend key that has `devices:write`, call `PUT /v2/devices/{installationUUID}/push-registration` with a tenant `providerConfigId`, the raw `token`, a new UUID `operationId`, and `expectedRegistrationVersion: 0` for the first registration. Later requests include the latest `expectedRegistrationId` and `expectedRegistrationVersion`. Changing the endpoint returns a new registration ID. A confirmation of the same endpoint keeps its ID and advances the version.
-
-Retry a lost response using the same operation ID and body. If a newer operation has succeeded, retrying the older one returns `409`. With `read`, GET the same route to recover the current ID and version, including after invalidation. A current invalidated registration returns `valid: false`. An endpoint already active on another installation in the same provider route returns `409`. The installation keeps its current owner during registration.
-
-Keep raw registration request bodies out of logs and traces. Existing `/v1` clients continue to receive pushes through their existing tokens. The tenant registration path stores endpoints for the tenant rollout. Tenant push delivery and migration of existing registrations require their own cutover.
+Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. The generated key does not authenticate requests to the current HTTP API. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
 
 ## Tenant migration rollback
 
-Migration 24 builds a replacement uniqueness index on legacy tokens while holding a table lock. On a restored database, measure the lock window with representative data before scheduling the migration. Take a pre-upgrade database backup and retain the application image and migration bundle that match it.
+Migration 24 replaces the legacy token uniqueness index while holding a table lock. Measure the lock window on a restored database with representative data before scheduling the migration. Drain and stop the old processes and workers before starting the new release. An older binary cannot start against schema 24 with its pre-migration bundle.
 
-For a stopped upgrade, drain and stop every application process and worker running a pre-migration-24 version before starting the new version. For a rolling upgrade, block `PUT /v2/devices/{installationUUID}/push-registration` at every ingress before starting the first upgraded process. Older processes may finish draining while the route is blocked, but a pre-migration-24 image cannot start against schema 24, even before the first tenant registration write. Prevent the deployment controller from depending on old replicas restarting. Remove the proxy block only after migration 24 completes and all older processes and workers have drained and stopped.
+Pause tenant writes and migration runners before applying a down migration. Use a migration bundle that includes the installed schema version. The following migrations require their listed tables or records to be empty before they can be rolled back.
 
-An image-only rollback to a pre-migration-24 release fails at startup. To roll back to schema 23, keep the registration route blocked, pause writes and migration runners, and drain all application processes and workers. With the migration bundle that includes migration 24, apply its down migration only when there are no tenant rows in `tokens` and no rows in `tenant_push_registration_operations`. Verify schema version 23 is clean before starting an image that supports it. If either table holds tenant registration state, keep schema 24 and recover with a compatible image and migration bundle. A pre-upgrade database restore also allows an older release to start, but requires a recovery plan for all writes after the backup point, including legacy writes.
+| Migration | Tables or records that must be empty |
+| --- | --- |
+| 24 | Tenant rows in `tokens` and all rows in `tenant_push_registration_operations` |
+| 23 | `tenant_live_activity_channels` |
+| 22 | `tenant_device_ownership_operations` |
+| 21 | `tenant_devices` |
+| 20 | `provider_configs` |
+| 19 | Saved user creation replay records |
+| 18 | `tenant_users`, `tenant_user_identities`, and `tenant_topics` |
+| 17 | `tenants` and `tenant_api_keys` |
 
-Pause tenant writes and migration runners before rolling back. Migration 23 requires an empty `tenant_live_activity_channels` table. Migration 22 requires empty `tenant_device_ownership_operations` and migration 21 requires empty `tenant_devices`. Migration 20 requires an empty `provider_configs` table. Use a pre-upgrade database backup or a compatible application and migration bundle when provider configurations already exist. Migration 19 requires that no saved user creation replay records exist. Migration 18 requires empty `tenant_users`, `tenant_user_identities`, and `tenant_topics` tables. Migration 17 requires empty `tenants` and `tenant_api_keys` tables. Keep populated migrations installed and verify that any rollback binary and its migration bundle support the installed schema.
+If the database holds state required by a migration, keep that migration installed and use a compatible binary and migration bundle, or follow the backup recovery procedure above. Verify the target schema version is clean before starting an older image.
 
-A blocked down records the previous version as dirty. Verify the newer schema and its data are intact, then restore the recorded version with the corresponding `force 24`, `force 23`, `force 22`, `force 21`, `force 20`, `force 19`, `force 18`, or `force 17` before restarting the application.
+A blocked down migration records the previous version as dirty. Verify the newer schema and its data are intact, then use the migration tool's `force` command with the newer version number before restarting the application.
 
 ## Provider Credentials
 

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -159,12 +160,14 @@ func TestDeleteLiveActivityChannelAPNsResponses(t *testing.T) {
 		reason       string
 		wantSuccess  bool
 		wantRejected bool
+		wantAuth     bool
 	}{
-		{http.StatusBadRequest, "ChannelNotRegistered", true, false},
-		{http.StatusGone, "ChannelNotRegistered", false, false},
-		{http.StatusInternalServerError, "ChannelNotRegistered", false, false},
-		{http.StatusBadRequest, "FeatureNotEnabled", false, true},
-		{http.StatusInternalServerError, "FeatureNotEnabled", false, false},
+		{http.StatusBadRequest, "ChannelNotRegistered", true, false, false},
+		{http.StatusGone, "ChannelNotRegistered", false, false, false},
+		{http.StatusInternalServerError, "ChannelNotRegistered", false, false, false},
+		{http.StatusBadRequest, "FeatureNotEnabled", true, false, false},
+		{http.StatusInternalServerError, "FeatureNotEnabled", false, false, false},
+		{http.StatusForbidden, "InvalidProviderToken", false, true, true},
 	} {
 		t.Run(http.StatusText(tc.status)+" "+tc.reason, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +181,7 @@ func TestDeleteLiveActivityChannelAPNsResponses(t *testing.T) {
 					t.Errorf("apns-channel-id = %q, want channel-1", got)
 				}
 				w.WriteHeader(tc.status)
-				_ = json.NewEncoder(w).Encode(map[string]string{"reason": tc.reason})
+				_ = json.NewEncoder(w).Encode(map[string]string{"reason": tc.reason, "debug": "raw-provider-response"})
 			}))
 			defer server.Close()
 
@@ -190,7 +193,12 @@ func TestDeleteLiveActivityChannelAPNsResponses(t *testing.T) {
 			if errors.Is(err, ErrChannelRequestRejected) != tc.wantRejected {
 				t.Fatalf("DeleteLiveActivityChannel error = %v, want definite rejection %t", err, tc.wantRejected)
 			}
-
+			if errors.Is(err, model.ErrProviderAuthorization) != tc.wantAuth {
+				t.Fatalf("DeleteLiveActivityChannel error = %v, want authorization failure %t", err, tc.wantAuth)
+			}
+			if err != nil && strings.Contains(err.Error(), "raw-provider-response") {
+				t.Fatalf("DeleteLiveActivityChannel error includes raw provider response: %v", err)
+			}
 		})
 	}
 }

@@ -1,0 +1,6 @@
+services:
+  source:
+    build:
+      context: .
+  release:
+    pull_policy: always
