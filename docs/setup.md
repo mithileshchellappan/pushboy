@@ -2,11 +2,11 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Pushboy is designed to run behind your own backend, private network, API gateway, or reverse proxy. Do not expose a fresh Pushboy install directly to the public internet. The `/v2` key, user, and topic routes authenticate tenant server keys. Legacy `/v1` routes remain unauthenticated and globally scoped. Rate limiting and TLS termination remain deployment responsibilities.
+The `/v1` API is globally scoped and accepts unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.24+ for source builds
 - Postgres 16 or compatible Postgres server
 - Docker and Docker Compose, if you want the containerized path
 - APNS `.p8` key for iOS sends
@@ -22,11 +22,11 @@ Use the setup script:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mithileshchellappan/pushboy/main/scripts/setup.sh | sh
-cd ~/pushboy
-docker compose up --build
 ```
 
-Or clone the repository manually:
+Run the command printed by the installer. Set `PUSHBOY_VERSION` to a release tag to select its checked-out configuration and matching image. The installer saves that selection in `.env` for future `docker compose up` commands. Installations that link to the same settings file share its release selection. The release notes also list the image digest for deployments that pin by digest.
+
+Set `PUSHBOY_VERSION=main` in the installer to clear the release image selection and build from source. You can also clone the repository manually:
 
 ```bash
 git clone https://github.com/mithileshchellappan/pushboy.git
@@ -62,6 +62,7 @@ curl http://localhost:8080/v1/topics/
 ```
 
 The Compose file creates a local Postgres database and mounts `./keys` into the Pushboy container as read-only credentials.
+On Linux, grant the container user (UID and GID `10001`) permission to read the mounted credential files and access their directory.
 
 ## Option 2: Local Go Process
 
@@ -93,6 +94,26 @@ go run ./cmd/pushboy
 
 Pushboy runs Postgres migrations from `db/migrations/postgres` during startup. If startup succeeds, the database schema is ready.
 
+## Install a release binary
+
+Download the archive for your OS and CPU, along with `SHA256SUMS`. Release archives use `darwin` for macOS and `arm64` for Apple silicon. Verify the archive before extracting it:
+
+```bash
+archive=pushboy_v0.1.0_darwin_arm64.tar.gz
+awk -v archive="$archive" '$2 == archive' SHA256SUMS | shasum -a 256 -c &&
+  mkdir -p pushboy &&
+  tar -xzf "$archive" -C pushboy &&
+  (cd pushboy && ./pushboy --version)
+```
+
+On Linux you can use `sha256sum -c` in place of `shasum -a 256 -c`. Set `DATABASE_URL` in the environment or in `.env`. Start `./pushboy` from the extracted directory so it can find the bundled migrations.
+
+## Upgrade and rollback
+
+Keep the current release and take a Postgres backup before starting an upgrade. Start the new binary with the migrations from its archive, or start the new image with the existing Postgres volume. Check `/v1/ping` and the API calls your clients use before resuming traffic.
+
+Rolling back across a schema migration requires a database compatible with the older release. To restore the pre-upgrade database, stop Pushboy, restore the backup and then start the old release with its matching migrations. Restoring that backup discards any database changes made after it was taken.
+
 ## Tenant bootstrap
 
 Set `DATABASE_URL` to the intended PostgreSQL database before creating the app and its first key.
@@ -101,75 +122,7 @@ Set `DATABASE_URL` to the intended PostgreSQL database before creating the app a
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-On success, save the server key from stdout in your backend's secret manager. If the command prints a complete key and reports a commit error, verify that the key authenticates before retrying. App names must be unique. Keep server keys on trusted backends and send them in the Authorization header over HTTPS outside local development. Redact credentials in proxy and tracing logs.
-
-To rotate a bootstrap key, load it into `PUSHBOY_SERVER_KEY` and issue a replacement with `keys:manage`.
-
-```bash
-OLD_KEY_ID=${PUSHBOY_SERVER_KEY%%.*}
-curl -X POST http://localhost:8080/v2/keys \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"scopes":["read","send","users:write","devices:write","topics:write","keys:manage","providers:manage"]}'
-```
-
-Save the new `key` from the response immediately. For a scoped issuer, request only scopes it has and supply an `expiresAt` within its lifetime if it expires. Once the backend has switched, load the replacement into `PUSHBOY_SERVER_KEY` and revoke the old key.
-
-```bash
-curl -X DELETE "http://localhost:8080/v2/keys/$OLD_KEY_ID" \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
-```
-
-## Tenant users and topics
-
-Use a tenant server key with `users:write` and `topics:write` for the corresponding create requests.
-
-```bash
-curl -X POST http://localhost:8080/v2/users \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"identity":{"namespace":"accounts","externalId":"account-42"}}'
-
-curl -X POST http://localhost:8080/v2/topics \
-  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"id":"releases","name":"Release notes"}'
-```
-
-Send `{}` to create an anonymous user. With a key that has `read`, use `GET /v2/users/{uid}` with the returned UUID or `GET /v2/topics/{topicId}` with the percent-encoded topic ID. Migration 18 adds separate tables for these routes and leaves legacy data in place.
-
-To retry user creation after a lost response, generate and save a UUID before sending it in the `Idempotency-Key` header. Send the same key and identity on the retry to receive the original `201` and UID.
-
-## Tenant installation ownership
-
-Enroll an installation with `PUT /v2/devices/{installationUUID}`. To identify or log out that installation, send a new `operationId` and the current `expectedOwnershipVersion` to the corresponding `/identify` or `/logout` endpoint from your trusted backend. Every distinct successful logout advances the ownership version, including when the installation keeps its existing anonymous UID.
-
-Retry a lost response using the same operation ID and body. If a newer operation has succeeded or the expected version is stale, the server returns `409`. Use an empty enrollment PUT to read the current UID and version. Before issuing a new operation, check whether the current authenticated session still calls for it. A delayed identify request can otherwise undo a later logout if the backend retries it with a refreshed version.
-
-## Tenant provider routes
-
-Set `PROVIDER_ENCRYPTION_ACTIVE_KEY_ID` to a versioned ID such as `v1`. Inject `PROVIDER_ENCRYPTION_KEYS` from your deployment secret manager as a JSON object mapping key IDs to standard base64-encoded 32-byte random keys. Generate each key independently, for example with `openssl rand -base64 32`. Keep the JSON out of source control, logs, and database backups. Docker Compose passes both variables through to Pushboy when they are set.
-
-Each tenant can configure separate APNs sandbox and production routes and FCM production routes. APNs bundle comparisons ignore case and the route retains the registered bundle spelling. The bearer key determines the tenant. Use a key with `providers:manage` to create a route. Send the APNs key ID and team ID associated with the downloaded signing key.
-
-```bash
-jq -n --rawfile privateKey keys/AuthKey_YOUR_KEY_ID.p8 \
-  '{provider:"apns",environment:"sandbox",applicationId:"com.example.app",
-    credentials:{keyId:"YOUR_KEY_ID",teamId:"YOUR_TEAM_ID",privateKey:$privateKey}}' |
-  curl -fsS -X POST http://localhost:8080/v2/providers \
-    -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
-    -H "Content-Type: application/json" --data-binary @-
-```
-
-For FCM, set `provider` to `fcm`, `environment` to `production`, and `applicationId` to the Firebase project that will receive the send request. A service account from another project needs permission to send messages in the target project. Supply the JSON object in `credentials`. Pushboy validates Google's OAuth token endpoint and the RSA signing key. Use HTTPS outside local development and exclude provider request bodies and authorization headers from logs and traces.
-
-With a key that has `read`, use `GET /v2/providers` or `GET /v2/providers/{providerId}` to check each route's `ready` flag. An unready route reports a reason such as `encryption_key_unavailable` or `credential_unreadable`. Readiness covers local decryption and signer or token source setup. Apple and Google authorization are verified through provider responses during delivery. These tenant routes currently support configuration and local readiness. Notification sends, Live Activity sends, and channel management continue through the legacy deployment configuration.
-
-Provider, environment, and application ID define the stable route namespace. A duplicate create returns `409`. To rotate a provider credential, send `PUT /v2/providers/{providerId}` with the current `credentialVersion` and the replacement `credentials`. The route keeps its ID and advances the credential version. A stale version returns `409`. Read the route after a lost response before issuing a new rotation. To disable a route, send its current `credentialVersion` and `enabled: false` in the PUT body. Re-enable it by uploading credentials with `enabled: true`.
-
-Back up every encryption key ID and value in a secret store independently of PostgreSQL. A database restore needs the keys referenced by the restored rows. Test recovery with a restored database and keyring on an isolated deployment, then verify readiness for each enabled route. Missing keys make their routes unready. Pushboy skips malformed encryption key entries and logs a diagnostic without including key material. If the active key is missing or malformed, credential writes receive `503` and stored routes can still be checked with their valid retained keys.
-
-To rotate the deployment encryption key, distribute the new and old keys to every instance first. Then set the new active key ID everywhere and re-upload each route's credential with its current version. Check readiness for each enabled route. In PostgreSQL, verify that every row in `provider_configs` uses the new `credential_key_id` before retiring the old key from the running keyring. Retain old keys for backups that reference them.
+Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. The generated key does not authenticate requests to the current HTTP API. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
 
 ## Tenant migration rollback
 

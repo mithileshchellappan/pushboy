@@ -6,6 +6,7 @@ on:
     branches:
       - main
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -106,6 +107,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Test installer settings
+        run: sh scripts/test-setup.sh
+
+      - name: Test release draft visibility
+        run: bash scripts/test-release-draft.sh
 
       - name: Build and start Compose stack
         run: docker compose up -d --build

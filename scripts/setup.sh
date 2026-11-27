@@ -14,51 +14,125 @@ require_cmd() {
 }
 
 latest_release() {
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest" \
-      | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' \
-      | head -n 1
-  fi
+  release="$(curl -fsSL "https://api.github.com/repos/${REPO_SLUG}/releases/latest")" || return
+  printf '%s\n' "$release" | sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
 }
 
 if [ -z "$VERSION" ]; then
-  VERSION="$(latest_release || true)"
+  require_cmd curl
+  if ! VERSION="$(latest_release)" || [ -z "$VERSION" ]; then
+    echo "error: could not resolve the latest release. Set PUSHBOY_VERSION to a release tag or main." >&2
+    exit 1
+  fi
 fi
 
-if [ -z "$VERSION" ]; then
-  VERSION="main"
+if [ "$VERSION" = "main" ]; then
+  SOURCE_REF=refs/heads/main
+elif printf '%s\n' "$VERSION" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.(0|[1-9][0-9]*))?$'; then
+  SOURCE_REF="refs/tags/$VERSION"
+else
+  echo "error: expected a release tag or main, got $VERSION" >&2
+  exit 1
 fi
 
 echo "Installing Pushboy ${VERSION} into ${INSTALL_DIR}"
 
-if [ -d "$INSTALL_DIR/.git" ]; then
-  require_cmd git
-  git -C "$INSTALL_DIR" fetch --quiet --tags --depth 1 origin "$VERSION"
-  git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout --quiet "$VERSION"
-elif [ -e "$INSTALL_DIR" ] && [ "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
-  echo "error: ${INSTALL_DIR} already exists and is not empty" >&2
-  echo "Set PUSHBOY_HOME to a different directory or clear the existing path." >&2
+if [ -e "$INSTALL_DIR" ] && [ ! -e "$INSTALL_DIR/.git" ] &&
+   { [ ! -d "$INSTALL_DIR" ] || [ "$(ls -A "$INSTALL_DIR")" ]; }; then
+  echo "error: ${INSTALL_DIR} already exists and is not an empty directory" >&2
+  echo "Set PUSHBOY_HOME to a different directory." >&2
   exit 1
-elif command -v git >/dev/null 2>&1; then
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$VERSION" "$REPO_URL" "$INSTALL_DIR"
+fi
+
+image=""
+compose_command="docker compose up --build"
+if [ "$VERSION" != main ] && [ "$VERSION" != v0.0.0 ]; then
+  image="ghcr.io/$(printf '%s' "$REPO_SLUG" | tr '[:upper:]' '[:lower:]'):$VERSION"
+  compose_command="docker compose up --no-build"
+fi
+
+prepare_settings() {
+  settings="$INSTALL_DIR/.env"
+  if { [ -e "$settings" ] || [ -L "$settings" ]; } && [ ! -f "$settings" ]; then
+    echo "error: ${settings} must be a regular settings file or a link to one" >&2
+    exit 1
+  fi
+  while [ -L "$settings" ]; do
+    target="$(readlink "$settings")"
+    case "$target" in
+      /*) settings="$target" ;;
+      *) settings="$(dirname "$settings")/$target" ;;
+    esac
+  done
+  source_settings="$settings"
+  if [ ! -f "$settings" ]; then
+    source_settings=/dev/null
+    if [ -f "$INSTALL_DIR/.env.example" ]; then
+      source_settings="$INSTALL_DIR/.env.example"
+    fi
+  fi
+  updated_settings="$(mktemp)"
+  awk -v image="$image" '
+  /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_IMAGE[[:space:]]*=/ {
+    if (image != "" && !found_image++) print "PUSHBOY_IMAGE=" image
+    next
+  }
+  /^[[:space:]]*(export[[:space:]]+)?PUSHBOY_COMPOSE_SERVICE[[:space:]]*=/ {
+    if (image != "" && !found_service++) print "PUSHBOY_COMPOSE_SERVICE=release"
+    next
+  }
+  { print }
+  END {
+    if (image != "" && !found_image) print "PUSHBOY_IMAGE=" image
+    if (image != "" && !found_service) print "PUSHBOY_COMPOSE_SERVICE=release"
+  }
+  ' "$source_settings" > "$updated_settings"
+  if ! cmp -s "$updated_settings" "$settings"; then
+    settings_dir="$(dirname "$settings")"
+    if [ ! -w "$settings_dir" ] || { [ -f "$settings" ] && [ ! -w "$settings" ]; }; then
+      echo "error: cannot update ${settings}: settings file or directory is not writable" >&2
+      exit 1
+    fi
+    replacement_settings="$(mktemp "$settings_dir/.env.XXXXXX")"
+    if [ -f "$settings" ]; then
+      cp -p "$settings" "$replacement_settings"
+    fi
+    cat "$updated_settings" > "$replacement_settings"
+  fi
+}
+
+trap 'rm -f ${updated_settings:+"$updated_settings"} ${replacement_settings:+"$replacement_settings"} ${archive:+"$archive"}' EXIT
+settings_prepared=false
+if [ -e "$INSTALL_DIR/.env" ] || [ -L "$INSTALL_DIR/.env" ]; then
+  prepare_settings
+  settings_prepared=true
+fi
+
+if [ -e "$INSTALL_DIR/.git" ] || command -v git >/dev/null 2>&1; then
+  require_cmd git
+  if [ ! -e "$INSTALL_DIR/.git" ]; then
+    mkdir -p "$INSTALL_DIR"
+    git init --quiet "$INSTALL_DIR"
+    git -C "$INSTALL_DIR" remote add origin "$REPO_URL"
+  fi
+  git -C "$INSTALL_DIR" fetch --quiet --depth 1 --no-tags origin "$SOURCE_REF"
+  git -C "$INSTALL_DIR" checkout --quiet --detach FETCH_HEAD
 else
   require_cmd curl
   require_cmd tar
+  archive="$(mktemp)"
+  curl -fsSL "https://github.com/${REPO_SLUG}/archive/${SOURCE_REF}.tar.gz" -o "$archive"
   mkdir -p "$INSTALL_DIR"
-  if [ "$VERSION" = "main" ]; then
-    archive_url="https://github.com/${REPO_SLUG}/archive/refs/heads/main.tar.gz"
-  else
-    archive_url="https://github.com/${REPO_SLUG}/archive/refs/tags/${VERSION}.tar.gz"
-  fi
-  curl -fsSL "$archive_url" | tar -xz --strip-components=1 -C "$INSTALL_DIR"
+  tar -xzf "$archive" --strip-components=1 -C "$INSTALL_DIR"
 fi
 
+if [ "$settings_prepared" = false ]; then
+  prepare_settings
+fi
+if [ -n "${replacement_settings:-}" ]; then
+  mv -f "$replacement_settings" "$settings"
+fi
 mkdir -p "$INSTALL_DIR/keys"
-
-if [ ! -f "$INSTALL_DIR/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
-  cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
-fi
 
 cat <<EOF
 
@@ -68,7 +142,7 @@ Pushboy is ready at:
 Next steps:
   cd "${INSTALL_DIR}"
   edit .env
-  docker compose up --build
+  ${compose_command}
 
 Health check:
   curl http://localhost:8080/v1/ping
