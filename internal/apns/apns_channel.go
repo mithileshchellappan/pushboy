@@ -49,10 +49,9 @@ func (c *Client) DeleteLiveActivityChannel(ctx context.Context, channelID string
 	var apnsErr *responseError
 	if errors.As(err, &apnsErr) && apnsErr.status == http.StatusBadRequest {
 		switch apnsErr.reason {
-		case "ChannelNotRegistered":
+		case "ChannelNotRegistered", "FeatureNotEnabled":
+			// Disabling broadcast capability invalidates all channels for the topic.
 			return nil
-		case "FeatureNotEnabled":
-			return fmt.Errorf("APNs broadcast capability is disabled: %w", apnsErr)
 		}
 	}
 	return err
