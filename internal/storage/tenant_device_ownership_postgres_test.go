@@ -92,8 +92,24 @@ func TestPostgresInstallationOwnershipSwitchReplayAndLogout(t *testing.T) {
 	if replay, err := store.LogoutInstallation(ctx, tenant, first.ID, logout); err != nil || replay != anonymous {
 		t.Fatalf("logout replay = %+v, %v", replay, err)
 	}
-	if same, err := store.LogoutInstallation(ctx, tenant, first.ID, change(5)); err != nil || same != anonymous {
-		t.Fatalf("already anonymous logout = %+v, %v", same, err)
+	// The identify request was prepared before a second logout arrived.
+	delayedIdentify := change(anonymous.OwnershipVersion)
+	secondLogout := change(anonymous.OwnershipVersion)
+	newGeneration, err := store.LogoutInstallation(ctx, tenant, first.ID, secondLogout)
+	if err != nil || newGeneration.UID != anonymous.UID || newGeneration.OwnershipVersion != 6 {
+		t.Fatalf("already anonymous logout = %+v, %v", newGeneration, err)
+	}
+	if replay, err := store.LogoutInstallation(ctx, tenant, first.ID, secondLogout); err != nil || replay != newGeneration {
+		t.Fatalf("already anonymous logout replay = %+v, %v", replay, err)
+	}
+	if _, err := store.LogoutInstallation(ctx, tenant, first.ID, logout); !errors.Is(err, ErrInstallationOwnershipConflict) {
+		t.Fatalf("overtaken logout replay = %v", err)
+	}
+	if _, err := store.IdentifyInstallation(ctx, tenant, first.ID, delayedIdentify, accountA); !errors.Is(err, ErrInstallationOwnershipConflict) {
+		t.Fatalf("delayed identify after anonymous logout = %v", err)
+	}
+	if refreshed, created, err := store.EnrollInstallation(ctx, tenant, first.ID, InstallationObservations{}); err != nil || created || refreshed != newGeneration {
+		t.Fatalf("installation refresh after anonymous logout = %+v, %t, %v", refreshed, created, err)
 	}
 	if _, err := store.IdentifyInstallation(ctx, tenant, first.ID, promote, accountA); !errors.Is(err, ErrInstallationOwnershipConflict) {
 		t.Fatalf("replay identify after logout = %v", err)
@@ -127,7 +143,7 @@ func TestPostgresInstallationOwnershipSwitchReplayAndLogout(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `UPDATE tenant_devices SET retired_at = clock_timestamp() WHERE tenant_id = $1 AND id = $2`, tenant, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.LogoutInstallation(ctx, tenant, first.ID, change(5)); !errors.Is(err, ErrTenantInstallationRetired) {
+	if _, err := store.LogoutInstallation(ctx, tenant, first.ID, change(6)); !errors.Is(err, ErrTenantInstallationRetired) {
 		t.Fatalf("retired installation logout = %v", err)
 	}
 	if _, err := store.db.ExecContext(ctx, `UPDATE tenant_devices SET origin = 'legacy' WHERE tenant_id = $1 AND id = $2`, tenant, second.ID); err != nil {

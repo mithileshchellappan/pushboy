@@ -146,8 +146,8 @@ func (s *PostgresStore) applyInstallationOwnership(ctx context.Context, tenantID
 	if err != nil {
 		return TenantInstallation{}, err
 	}
-	if nextUID != owner || promoted {
-		device.UID = nextUID
+	device.UID = nextUID
+	if target == nil || nextUID != owner || promoted {
 		device.OwnershipVersion++
 	}
 	if _, err := tx.ExecContext(ctx, `
