@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
 var (
-	ErrProviderRouteUnavailable      = errors.New("tenant provider route unavailable")
+	ErrProviderRouteUnavailable      = model.ErrProviderRouteUnavailable
 	ErrProviderEncryptionUnavailable = errors.New("provider encryption key unavailable")
 	ErrProviderVersionConflict       = errors.New("provider credential version changed")
 )

@@ -193,7 +193,8 @@ curl -X POST http://localhost:8080/v1/users/tokens \
 <summary>Send a notification to one user</summary>
 
 ```bash
-curl -X POST http://localhost:8080/v1/users/user-123/send \
+curl -X POST "http://localhost:8080/v1/users/$PUSHBOY_USER_UID/send" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "title": "Order update",

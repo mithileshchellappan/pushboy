@@ -6,17 +6,19 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 func TestProcessScheduledJobsEnqueuesReturnedJobs(t *testing.T) {
+	tid := uuid.New()
 	payload := &model.NotificationPayload{Title: "hello"}
 	store := &fakeSchedulerStore{
 		jobs: []storage.PublishJob{
 			{ID: "job-1", TopicID: "topic-1", Payload: payload},
-			{ID: "job-2", UserID: "user-1", Payload: payload},
+			{ID: "job-2", TenantID: tid, UserID: "user-1", Payload: payload},
 		},
 	}
 	jobPipeline := &fakeJobPipeline{}
@@ -26,7 +28,7 @@ func TestProcessScheduledJobsEnqueuesReturnedJobs(t *testing.T) {
 
 	want := []model.JobItem{
 		{ID: "job-1", JobType: model.JobTypePush, TopicID: "topic-1", Payload: payload},
-		{ID: "job-2", JobType: model.JobTypePush, UserID: "user-1", Payload: payload},
+		{ID: "job-2", TenantID: tid, JobType: model.JobTypePush, UserID: "user-1", Payload: payload},
 	}
 	if !reflect.DeepEqual(jobPipeline.submitted, want) {
 		t.Fatalf("submitted jobs = %#v, want %#v", jobPipeline.submitted, want)
@@ -52,16 +54,17 @@ func TestProcessScheduledJobsFetchErrorDoesNotEnqueue(t *testing.T) {
 }
 
 func TestProcessScheduledJobsMarksFailedWhenSubmitFails(t *testing.T) {
+	tid := uuid.New()
 	store := &fakeSchedulerStore{
-		jobs: []storage.PublishJob{{ID: "job-1"}},
+		jobs: []storage.PublishJob{{ID: "job-1"}, {ID: "scoped", TenantID: tid}},
 	}
 	jobPipeline := &fakeJobPipeline{submitErr: errors.New("queue closed")}
 	s := New(store, jobPipeline, 10)
 
 	s.processScheduledJobs(context.Background())
 
-	if len(store.statusUpdates) != 1 {
-		t.Fatalf("status update count = %d, want 1", len(store.statusUpdates))
+	if len(store.statusUpdates) != 2 || store.statusUpdates[1].tenant != tid || store.statusUpdates[1].jobID != "scoped" {
+		t.Fatalf("unexpected failed jobs %#v", store.statusUpdates)
 	}
 	if store.statusUpdates[0].jobID != "job-1" || store.statusUpdates[0].status != model.NotificationJobStatusFailed {
 		t.Fatalf("status update = %#v, want job-1 FAILED", store.statusUpdates[0])
@@ -128,6 +131,7 @@ type fakeSchedulerStore struct {
 }
 
 type statusUpdate struct {
+	tenant uuid.UUID
 	jobID  string
 	status model.NotificationJobStatus
 }
@@ -138,6 +142,11 @@ func (f *fakeSchedulerStore) GetScheduledJobs(ctx context.Context) ([]storage.Pu
 
 func (f *fakeSchedulerStore) UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error {
 	f.statusUpdates = append(f.statusUpdates, statusUpdate{jobID: jobID, status: status})
+	return f.updateStatusErr
+}
+
+func (f *fakeSchedulerStore) FailTenantJobDispatch(_ context.Context, tenant uuid.UUID, id string) error {
+	f.statusUpdates = append(f.statusUpdates, statusUpdate{tenant: tenant, jobID: id, status: model.NotificationJobStatusFailed})
 	return f.updateStatusErr
 }
 

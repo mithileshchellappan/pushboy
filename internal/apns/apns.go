@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +18,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/providerhttp"
 )
 
 const (
@@ -68,8 +69,9 @@ type ApsPayload struct {
 type ApnsRequest map[string]interface{}
 
 type responseError struct {
-	status int
-	reason string
+	timestamp int64
+	status    int
+	reason    string
 }
 
 func (e *responseError) Error() string {
@@ -85,6 +87,9 @@ func (e *responseError) ProviderReason() string {
 
 func (e *responseError) Is(target error) bool {
 	switch target {
+	case model.ErrProviderInvalidToken:
+		return (e.status == http.StatusBadRequest && e.reason == "BadDeviceToken") ||
+			(e.status == http.StatusGone && (e.reason == "Unregistered" || e.reason == "ExpiredToken"))
 	case model.ErrProviderAuthorization:
 		switch e.reason {
 		case "BadCertificate", "BadCertificateEnvironment", "Forbidden", "InvalidProviderToken", "MissingProviderToken", "TopicMismatch":
@@ -122,9 +127,12 @@ func (e *responseError) Is(target error) bool {
 
 func newResponseError(status int, body []byte) *responseError {
 	var response struct {
-		Reason string `json:"reason"`
+		Reason    string `json:"reason"`
+		Timestamp int64  `json:"timestamp"`
 	}
-	_ = json.Unmarshal(body, &response)
+	if json.Unmarshal(body, &response) != nil {
+		return &responseError{status: status}
+	}
 	switch response.Reason {
 	case "BadCertificate", "BadCertificateEnvironment", "BadChannelId", "BadDeviceToken", "BadExpirationDate",
 		"BadMessageId", "BadMessageStoragePolicy", "BadPath", "BadPriority", "BadPushType", "BadRequestParams",
@@ -134,7 +142,7 @@ func newResponseError(status int, body []byte) *responseError {
 		"MissingDeviceToken", "MissingProviderToken", "MissingPushType", "MissingTopic", "PayloadEmpty", "PayloadTooLarge",
 		"ServiceUnavailable", "Shutdown", "TooManyProviderTokenUpdates", "TooManyRequests", "TopicDisallowed", "TopicMismatch",
 		"Unregistered":
-		return &responseError{status: status, reason: response.Reason}
+		return &responseError{status: status, reason: response.Reason, timestamp: response.Timestamp}
 	}
 	return &responseError{status: status}
 }
@@ -261,9 +269,20 @@ func (c *Client) generateJWT() (string, error) {
 }
 
 func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
-	jwtToken, err := c.getJWT()
-	if err != nil {
-		return fmt.Errorf("failed to get JWT: %w", err)
+	return c.SendWithAdmission(ctx, token, payload, nil)
+}
+
+func (c *Client) SendWithAdmission(ctx context.Context, token string, payload *model.NotificationPayload, admit model.ProviderAdmission) error {
+	if payload == nil || token == "" {
+		return model.ErrProviderFailed
+	}
+	var jwtToken string
+	if admit == nil {
+		var err error
+		jwtToken, err = c.getJWT()
+		if err != nil {
+			return model.ErrProviderFailed
+		}
 	}
 
 	aps := ApsPayload{}
@@ -313,10 +332,10 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 
 	payloadBytes, err := json.Marshal(apnsRequest)
 	if err != nil {
-		return err
+		return model.ErrProviderFailed
 	}
 
-	url := fmt.Sprintf("%s/3/device/%s", c.endpoint, token)
+	endpoint := fmt.Sprintf("%s/3/device/%s", c.endpoint, url.PathEscape(token))
 
 	headers := map[string]string{
 		"apns-topic": c.bundleID,
@@ -351,10 +370,25 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 		headers["apns-expiration"] = strconv.FormatInt(expiration, 10)
 	}
 
-	return c.sendWithRetry(ctx, url, payloadBytes, jwtToken, headers)
+	err = c.sendWithRetryAdmission(ctx, endpoint, payloadBytes, jwtToken, headers, admit)
+	if admit != nil {
+		var refusal *responseError
+		if errors.As(err, &refusal) && refusal.status == http.StatusGone && errors.Is(err, model.ErrProviderInvalidToken) {
+			if refusal.timestamp <= 0 || refusal.timestamp > time.Now().UnixMilli() {
+				return model.ErrProviderFailed
+			}
+			return &model.TokenInvalidSince{Time: time.UnixMilli(refusal.timestamp).UTC()}
+		}
+		return model.SafeProviderError(err)
+	}
+	return err
 }
 
 func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []byte, jwtToken string, headers map[string]string) error {
+	return c.sendWithRetryAdmission(ctx, url, payloadBytes, jwtToken, headers, nil)
+}
+
+func (c *Client) sendWithRetryAdmission(ctx context.Context, url string, payloadBytes []byte, jwtToken string, headers map[string]string, admit model.ProviderAdmission) error {
 	backoff := initialBackoff
 
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
@@ -364,7 +398,6 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 		}
 
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", jwtToken))
 		for key, value := range headers {
 			if value != "" {
 				req.Header.Set(key, value)
@@ -374,10 +407,10 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 		if err := c.acquire(ctx); err != nil {
 			return err
 		}
-		resp, err := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))].Do(req)
+		resp, retry, err := c.attempt(req, jwtToken, admit)
 		c.release()
 		if err != nil {
-			if attempt < c.maxRetries && isRetryableError(err) {
+			if attempt < c.maxRetries && retry && ctx.Err() == nil {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -389,14 +422,13 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 				}
 				continue
 			}
-			if ctx.Err() != nil {
+			if ctx.Err() != nil && err == model.ErrProviderFailed {
 				return ctx.Err()
 			}
-			return errors.New("APNs request failed")
+			return err
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		body := providerhttp.ReadResponseBody(resp.Body)
 
 		if resp.StatusCode == http.StatusOK {
 			return nil
@@ -435,6 +467,25 @@ func (c *Client) sendWithRetry(ctx context.Context, url string, payloadBytes []b
 	return fmt.Errorf("max retries exceeded")
 }
 
+func (c *Client) attempt(req *http.Request, jwtToken string, admit model.ProviderAdmission) (*http.Response, bool, error) {
+	client := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))]
+	if admit == nil {
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, isRetryableError(err), model.ErrProviderFailed
+		}
+		return resp, false, nil
+	}
+
+	jwtToken, err := c.getJWT()
+	if err != nil {
+		return nil, false, model.ErrProviderUnavailable
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	return providerhttp.Attempt(client, req, admit)
+}
+
 // acquire blocks until an in-flight slot frees up. A nil semaphore (tests
 // constructing Client directly) means unlimited concurrency.
 func (c *Client) acquire(ctx context.Context) error {
@@ -456,9 +507,6 @@ func (c *Client) release() {
 }
 
 func isRetryableError(err error) bool {
-	if err == nil {
-		return false
-	}
 	errStr := err.Error()
 	return strings.Contains(errStr, "GOAWAY") ||
 		strings.Contains(errStr, "connection reset") ||

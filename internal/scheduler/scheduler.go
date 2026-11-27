@@ -6,12 +6,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
 type schedulerStore interface {
+	FailTenantJobDispatch(context.Context, uuid.UUID, string) error
 	GetScheduledJobs(ctx context.Context) ([]storage.PublishJob, error)
 	UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error
 	InvalidateExpiredLAUpdateTokens(ctx context.Context, limit int) (int, error)
@@ -72,18 +74,25 @@ func (s *Scheduler) processScheduledJobs(ctx context.Context) {
 	for _, job := range jobs {
 
 		jobItem := model.JobItem{
-			ID:      job.ID,
-			JobType: model.JobTypePush, //TODO: Support LA type scheduled jobs
-			Payload: job.Payload,
-			TopicID: job.TopicID,
-			UserID:  job.UserID,
+			ID:       job.ID,
+			TenantID: job.TenantID,
+			JobType:  model.JobTypePush,
+			Payload:  job.Payload,
+			TopicID:  job.TopicID,
+			UserID:   job.UserID,
 		}
 
 		if err := s.jobPipeline.Submit(ctx, jobItem); err != nil {
 			statusCtx, statusCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer statusCancel()
 
-			if updateErr := s.store.UpdateJobStatus(statusCtx, jobItem.ID, model.NotificationJobStatusFailed); updateErr != nil {
+			var updateErr error
+			if job.TenantID != uuid.Nil {
+				updateErr = s.store.FailTenantJobDispatch(statusCtx, job.TenantID, job.ID)
+			} else {
+				updateErr = s.store.UpdateJobStatus(statusCtx, jobItem.ID, model.NotificationJobStatusFailed)
+			}
+			if updateErr != nil {
 				log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobItem.ID, updateErr)
 			}
 		}

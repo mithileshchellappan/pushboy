@@ -2,12 +2,15 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
@@ -155,6 +158,115 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		VALUES ($1, 'upgrade-activity', 'updates', $2, 'upgrade-channel', $3, 'active')`, tenant.ID, providerID, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.Migrate(24); err != nil {
+		t.Fatalf("apply scoped push registration migration: %v", err)
+	}
+	legacyTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	registrations := []struct {
+		deviceID uuid.UUID
+		versions []int
+		exact    bool
+	}{
+		{deviceID, []int{1}, true},
+		{uuid.New(), []int{2, 3}, true},
+		{uuid.New(), []int{1, 3}, false},
+	}
+	for i, fixture := range registrations {
+		if fixture.deviceID != deviceID {
+			if _, err := db.ExecContext(ctx, `INSERT INTO tenant_devices(tenant_id, id, user_uid, origin) VALUES ($1,$2,$3,'registered')`, tenant.ID, fixture.deviceID, priorUID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for j, version := range fixture.versions {
+			token := fmt.Sprintf("%02x%02x", i, j)
+			fingerprint := sha256.Sum256([]byte(token))
+			var supersededAt *time.Time
+			if j+1 < len(fixture.versions) {
+				supersededAt = &legacyTime
+			}
+			if _, err := db.ExecContext(ctx, `
+                WITH op AS (
+                    INSERT INTO tenant_push_registration_operations(tenant_id, device_id, operation_id, request_digest)
+                    VALUES ($1, $2, gen_random_uuid(), $3)
+                    RETURNING tenant_id, device_id, operation_id
+                )
+                INSERT INTO tokens(id, tenant_id, device_id, provider_config_id, registration_id, platform, token,
+                    token_fingerprint, registration_version, registration_operation_id, created_at, superseded_at)
+                SELECT gen_random_uuid()::text, tenant_id, device_id, $4, gen_random_uuid(), 'apns', $5,
+                    $3, $6, operation_id, $7, $8 FROM op`,
+				tenant.ID, fixture.deviceID, fingerprint[:], providerID, token, version, legacyTime, supersededAt); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO topics (id, name) VALUES ('pre-25-topic', 'Pre-25 topic')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO publish_jobs (id, topic_id, payload, status, total_count, success_count, failure_count, created_at, completed_at)
+		VALUES ('pre-25-job', 'pre-25-topic', '{"title":"pre-25"}', 'COMPLETED', 2, 1, 1, $1, $1)`, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO delivery_receipts (id, job_id, token_id, status, status_reason, dispatched_at)
+		VALUES ('pre-25-receipt', 'pre-25-job', 'pre-25-token', 'FAILED', 'legacy reason', $1)`, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+	checkPre25Rows := func() {
+		t.Helper()
+		var payloadTitle, jobStatus, receiptStatus, reason string
+		var totalCount, successCount, failureCount int
+		var createdAt, completedAt, dispatchedAt time.Time
+		err := db.QueryRowContext(ctx, `
+			SELECT j.payload->>'title', j.status, j.total_count, j.success_count, j.failure_count, j.created_at, j.completed_at,
+			       r.status, r.status_reason, r.dispatched_at
+			FROM publish_jobs j JOIN delivery_receipts r ON r.job_id = j.id
+			WHERE j.id = 'pre-25-job' AND j.topic_id = 'pre-25-topic' AND r.id = 'pre-25-receipt' AND r.token_id = 'pre-25-token'`).
+			Scan(&payloadTitle, &jobStatus, &totalCount, &successCount, &failureCount, &createdAt, &completedAt, &receiptStatus, &reason, &dispatchedAt)
+		if err != nil || payloadTitle != "pre-25" || jobStatus != "COMPLETED" || totalCount != 2 || successCount != 1 || failureCount != 1 ||
+			!createdAt.Equal(legacyTime) || !completedAt.Equal(legacyTime) || receiptStatus != "FAILED" || reason != "legacy reason" ||
+			!dispatchedAt.Equal(legacyTime) {
+			t.Fatalf("pre-25 rows did not survive migration: %v", err)
+		}
+	}
+	if err := m.Migrate(25); err != nil {
+		t.Fatalf("apply scoped push job migration: %v", err)
+	}
+	for _, fixture := range registrations {
+		var confirmedAt time.Time
+		err := db.QueryRowContext(ctx, `SELECT registration_confirmed_at FROM tokens
+            WHERE tenant_id = $1 AND device_id = $2 AND superseded_at IS NULL`, tenant.ID, fixture.deviceID).Scan(&confirmedAt)
+		if err != nil || (fixture.exact && !confirmedAt.Equal(legacyTime)) || (!fixture.exact && !confirmedAt.After(legacyTime)) {
+			t.Fatalf("versions %v confirmation time = %v, err=%v", fixture.versions, confirmedAt, err)
+		}
+	}
+
+	checkPre25Rows()
+	job, err := store.CreateTenantUserJob(ctx, tenant.ID, priorUID, nil, nil)
+	if err != nil {
+		t.Fatalf("create job on migrated database: %v", err)
+	}
+	rollBack(25, true)
+	if _, err := store.GetTenantUserJob(ctx, tenant.ID, job.ID); err != nil {
+		t.Fatalf("job after blocked rollback: %v", err)
+	}
+	if err := m.Force(25); err != nil {
+		t.Fatalf("restore recorded migration version 25: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM publish_jobs WHERE id = $1", job.ID); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(25, false)
+	checkPre25Rows()
+	if _, err := db.ExecContext(ctx, `
+        WITH removed AS (DELETE FROM tokens WHERE tenant_id = $1 RETURNING registration_operation_id)
+        DELETE FROM tenant_push_registration_operations WHERE operation_id IN (SELECT registration_operation_id FROM removed)`, tenant.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rollBack(24, false)
 	rollBack(23, true)
 	if channel, err := store.GetTenantLAChannel(ctx, tenant.ID, "upgrade-activity"); err != nil || channel.ProviderConfigID != providerID {
 		t.Fatalf("channel after blocked rollback = %+v, %v", channel, err)
@@ -166,10 +278,10 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	rollBack(23, false)
-	if res, err := db.ExecContext(ctx, "DELETE FROM tenant_devices WHERE tenant_id = $1 AND id = $2", tenant.ID, deviceID); err != nil {
+	if res, err := db.ExecContext(ctx, "DELETE FROM tenant_devices WHERE tenant_id = $1", tenant.ID); err != nil {
 		t.Fatal(err)
-	} else if count, err := res.RowsAffected(); count != 1 || err != nil {
-		t.Fatalf("expected installation to survive migration and rollback, deleted %d rows: %v", count, err)
+	} else if count, err := res.RowsAffected(); count != int64(len(registrations)) || err != nil {
+		t.Fatalf("expected installations to survive migration and rollback, deleted %d rows: %v", count, err)
 	}
 	rollBack(22, false)
 	rollBack(21, false)

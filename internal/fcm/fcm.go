@@ -4,22 +4,26 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/mithileshchellappan/pushboy/internal/model"
+	"github.com/mithileshchellappan/pushboy/internal/providerhttp"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
 
 const (
-	fcmScope    = "https://www.googleapis.com/auth/firebase.messaging"
-	fcmEndpoint = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
+	fcmScope            = "https://www.googleapis.com/auth/firebase.messaging"
+	fcmEndpoint         = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
+	googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+	oauthTimeout        = 10 * time.Second
 )
 
 // Client sends through a pool of HTTP clients, each with its own transport
@@ -32,6 +36,9 @@ type Client struct {
 	sem         chan struct{}
 	projectID   string
 	maxRetries  int
+	oauthGate   chan struct{}
+	oauthToken  atomic.Pointer[oauth2.Token]
+	loadToken   func(context.Context) (*oauth2.Token, error)
 }
 
 type FcmRequest struct {
@@ -64,19 +71,51 @@ type AndroidNotification struct {
 	ClickAction string `json:"click_action,omitempty"`
 }
 
-func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, maxConcurrent int, maxRetries int) (*Client, error) {
-	creds, err := google.CredentialsFromJSON(ctx, serviceAccountJson, fcmScope)
+func NewClient(ctx context.Context, serviceAccountJSON []byte, poolSize int, maxConcurrent int, maxRetries int) (*Client, error) {
+	var account struct {
+		ProjectID string `json:"project_id"`
+	}
+	if json.Unmarshal(serviceAccountJSON, &account) != nil || account.ProjectID == "" {
+		return nil, errors.New("missing FCM service account project ID")
+	}
+	creds, err := google.CredentialsFromJSON(ctx, serviceAccountJSON, fcmScope)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid FCM service account credentials")
 	}
-	var rawJSON map[string]any
-	if err := json.Unmarshal(serviceAccountJson, &rawJSON); err != nil {
-		return nil, err
+	return newClient(account.ProjectID, poolSize, maxConcurrent, maxRetries, oauth2.ReuseTokenSource(nil, creds.TokenSource)), nil
+}
+
+func NewClientForProject(ctx context.Context, serviceAccountJSON []byte, projectID string, poolSize int, maxConcurrent int, maxRetries int) (*Client, error) {
+	return newClientForProject(ctx, serviceAccountJSON, projectID, poolSize, maxConcurrent, maxRetries, http.DefaultTransport)
+}
+
+func newClientForProject(ctx context.Context, serviceAccountJSON []byte, projectID string, poolSize, maxConcurrent, maxRetries int, tokenTransport http.RoundTripper) (*Client, error) {
+	if projectID == "" {
+		return nil, errors.New("missing FCM target project ID")
 	}
-	projectID, ok := rawJSON["project_id"].(string)
-	if !ok {
-		return nil, fmt.Errorf("project_id not found in service account JSON")
+	if _, err := google.CredentialsFromJSON(ctx, serviceAccountJSON, fcmScope); err != nil {
+		return nil, errors.New("invalid FCM service account credentials")
 	}
+	credentials := bytes.Clone(serviceAccountJSON)
+	client := newClient(projectID, poolSize, maxConcurrent, maxRetries, nil)
+	client.oauthGate = make(chan struct{}, 1)
+	client.loadToken = func(ctx context.Context) (*oauth2.Token, error) {
+		authClient := &http.Client{
+			Transport:     oauthTransport{ctx: ctx, base: tokenTransport},
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
+		ctx = context.WithValue(ctx, oauth2.HTTPClient, authClient)
+		creds, err := google.CredentialsFromJSON(ctx, credentials, fcmScope)
+		if err != nil {
+			return nil, err
+		}
+		return creds.TokenSource.Token()
+	}
+
+	return client, nil
+}
+
+func newClient(projectID string, poolSize, maxConcurrent, maxRetries int, legacyTokenSource oauth2.TokenSource) *Client {
 	if poolSize < 1 {
 		poolSize = 1
 	}
@@ -87,22 +126,21 @@ func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, max
 		maxRetries = 0
 	}
 
-	tokenSource := oauth2.ReuseTokenSource(nil, creds.TokenSource)
 	httpClients := make([]*http.Client, poolSize)
 	for i := range httpClients {
 		httpClients[i] = &http.Client{
 			Timeout: 10 * time.Second,
-			Transport: &oauth2.Transport{
-				Source: tokenSource,
-				Base: &http.Transport{
-					Proxy:               http.ProxyFromEnvironment,
-					ForceAttemptHTTP2:   true,
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 100,
-					IdleConnTimeout:     90 * time.Second,
-					TLSHandshakeTimeout: 10 * time.Second,
-				},
+			Transport: &http.Transport{
+				Proxy:               http.ProxyFromEnvironment,
+				ForceAttemptHTTP2:   true,
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+				TLSHandshakeTimeout: 10 * time.Second,
 			},
+		}
+		if legacyTokenSource != nil {
+			httpClients[i].Transport = &oauth2.Transport{Source: legacyTokenSource, Base: httpClients[i].Transport}
 		}
 	}
 
@@ -111,10 +149,20 @@ func NewClient(ctx context.Context, serviceAccountJson []byte, poolSize int, max
 		sem:         make(chan struct{}, maxConcurrent),
 		projectID:   projectID,
 		maxRetries:  maxRetries,
-	}, nil
+	}
 }
 
 func (c *Client) Send(ctx context.Context, token string, payload *model.NotificationPayload) error {
+	return c.SendWithAdmission(ctx, token, payload, nil)
+}
+
+func (c *Client) SendWithAdmission(ctx context.Context, token string, payload *model.NotificationPayload, admit model.ProviderAdmission) error {
+	if payload == nil || token == "" {
+		return model.ErrProviderFailed
+	}
+	if admit != nil && c.loadToken == nil {
+		return model.ErrProviderAdmissionCheck
+	}
 	message := FcmMessage{
 		Token: token,
 	}
@@ -194,23 +242,30 @@ func (c *Client) Send(ctx context.Context, token string, payload *model.Notifica
 		message.Android = android
 	}
 
-	return c.sendMessage(ctx, message)
+	err := c.sendMessageWithAdmission(ctx, message, admit)
+	if admit != nil {
+		return model.SafeProviderError(err)
+	}
+	return err
 }
 
 func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
+	return c.sendMessageWithAdmission(ctx, message, nil)
+}
+
+func (c *Client) sendMessageWithAdmission(ctx context.Context, message FcmMessage, admit model.ProviderAdmission) error {
 	payloadBytes, err := json.Marshal(FcmRequest{Message: message})
 	if err != nil {
-		log.Printf("Error marshalling message: %v", err)
-		return err
+		return model.ErrProviderFailed
 	}
 
 	backoff := 500 * time.Millisecond
+	retriedBearer := false
 
-	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf(fcmEndpoint, c.projectID), bytes.NewReader(payloadBytes))
+	for retries := 0; ; {
+		req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf(fcmEndpoint, url.PathEscape(c.projectID)), bytes.NewReader(payloadBytes))
 		if err != nil {
-			log.Printf("Error creating request: %v", err)
-			return err
+			return model.ErrProviderFailed
 		}
 		req.Header.Set("Content-Type", "application/json")
 
@@ -219,33 +274,41 @@ func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		httpClient := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))]
-		resp, err := httpClient.Do(req)
+		var bearer *oauth2.Token
+		if c.loadToken != nil {
+			bearer, err = c.accessToken(ctx)
+			if err != nil {
+				<-c.sem
+				return err
+			}
+			bearer.SetAuthHeader(req)
+		}
+		resp, retry, err := c.attempt(req, admit)
 		<-c.sem
 
 		if err != nil {
-			// dropped connections (GOAWAY, reset, timeout) are retryable;
-			// the next attempt round-robins onto a different transport
-			if attempt < c.maxRetries && isRetryableTransportError(err) {
+			if retries < c.maxRetries && retry && ctx.Err() == nil {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-time.After(backoff):
 				}
 				backoff *= 2
+				retries++
 				continue
 			}
-			log.Printf("Error sending request: %v", err)
+			if ctx.Err() != nil && err == model.ErrProviderFailed {
+				return ctx.Err()
+			}
 			return err
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		body := providerhttp.ReadResponseBody(resp.Body)
 
 		if resp.StatusCode == http.StatusOK {
 			return nil
 		}
-		if attempt < c.maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
+		if retries < c.maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusInternalServerError) {
 			select {
@@ -254,16 +317,37 @@ func (c *Client) sendMessage(ctx context.Context, message FcmMessage) error {
 			case <-time.After(backoff):
 			}
 			backoff *= 2
+			retries++
 			continue
 		}
-		return parseFCMError(body, resp.Status)
+		err = parseFCMError(body, resp.StatusCode)
+		if err != errBearerRejected {
+			return err
+		}
+		if bearer == nil {
+			return model.ErrProviderUnavailable
+		}
+		c.evictBearer(bearer.AccessToken)
+		if retriedBearer {
+			return model.ErrProviderUnavailable
+		}
+		retriedBearer = true
 	}
 }
 
-func isRetryableTransportError(err error) bool {
-	if err == nil {
-		return false
+func (c *Client) attempt(req *http.Request, admit model.ProviderAdmission) (*http.Response, bool, error) {
+	client := c.httpClients[c.next.Add(1)%uint32(len(c.httpClients))]
+	if admit == nil && c.loadToken == nil {
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, isRetryableTransportError(err), model.ErrProviderFailed
+		}
+		return resp, false, nil
 	}
+	return providerhttp.Attempt(client, req, admit)
+}
+
+func isRetryableTransportError(err error) bool {
 	errStr := err.Error()
 	return strings.Contains(errStr, "GOAWAY") ||
 		strings.Contains(errStr, "connection reset") ||
@@ -273,11 +357,89 @@ func isRetryableTransportError(err error) bool {
 		strings.Contains(errStr, "timeout")
 }
 
-func parseFCMError(body []byte, fallbackStatus string) error {
-	var fcmError struct {
+type oauthTransport struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t oauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(req.WithContext(t.ctx))
+}
+
+func (c *Client) accessToken(ctx context.Context) (*oauth2.Token, error) {
+	ctx, cancel := context.WithTimeout(ctx, oauthTimeout)
+	defer cancel()
+	select {
+	case c.oauthGate <- struct{}{}:
+		defer func() { <-c.oauthGate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if cached := c.oauthToken.Load(); cached.Valid() {
+		return cached, nil
+	}
+	token, err := c.loadToken(ctx)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, oauthExchangeError(err)
+	}
+	if !token.Valid() {
+		return nil, model.ErrProviderUnavailable
+	}
+	c.oauthToken.Store(token)
+	return token, nil
+}
+
+func oauthExchangeError(err error) error {
+	var exchange *oauth2.RetrieveError
+	if !errors.As(err, &exchange) || exchange.Response == nil || exchange.Response.StatusCode != http.StatusBadRequest {
+		return model.ErrProviderUnavailable
+	}
+	req := exchange.Response.Request
+	if req == nil || req.URL == nil || req.URL.String() != googleTokenEndpoint {
+		return model.ErrProviderUnavailable
+	}
+
+	var problem struct {
+		Code        string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	if json.Unmarshal(exchange.Body, &problem) != nil {
+		return model.ErrProviderUnavailable
+	}
+	switch {
+	case problem.Code == "invalid_grant" && problem.Description == "Invalid JWT Signature.",
+		problem.Code == "disabled_client" && problem.Description == "The OAuth client was disabled.",
+		problem.Code == "deleted_client":
+		return model.ErrProviderAuthorization
+	}
+	return model.ErrProviderUnavailable
+}
+
+func (c *Client) evictBearer(rejected string) {
+	for cached := c.oauthToken.Load(); cached != nil && cached.AccessToken == rejected; cached = c.oauthToken.Load() {
+		if c.oauthToken.CompareAndSwap(cached, nil) {
+			return
+		}
+	}
+}
+
+var errBearerRejected = errors.New("FCM bearer rejected")
+
+type unregisteredTokenError struct{}
+
+func (unregisteredTokenError) Error() string          { return "registration-token-not-registered" }
+func (unregisteredTokenError) ProviderReason() string { return "registration-token-not-registered" }
+func (unregisteredTokenError) Is(target error) bool   { return target == model.ErrProviderInvalidToken }
+
+func parseFCMError(body []byte, status int) error {
+	var response struct {
 		Error struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
 			Status  string `json:"status"`
 			Details []struct {
 				Type      string `json:"@type"`
@@ -285,15 +447,27 @@ func parseFCMError(body []byte, fallbackStatus string) error {
 			} `json:"details"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(body, &fcmError); err == nil {
-		for _, detail := range fcmError.Error.Details {
-			if strings.EqualFold(detail.ErrorCode, "UNREGISTERED") {
-				return fmt.Errorf("FCM error: registration-token-not-registered")
-			}
+	if json.Unmarshal(body, &response) != nil {
+		return model.ErrProviderFailed
+	}
+	for _, detail := range response.Error.Details {
+		if detail.Type != "type.googleapis.com/google.firebase.fcm.v1.FcmError" {
+			continue
 		}
-		if fcmError.Error.Message != "" {
-			return fmt.Errorf("FCM error: %s (status: %s, code: %d)", fcmError.Error.Message, fcmError.Error.Status, fcmError.Error.Code)
+		switch detail.ErrorCode {
+		case "UNREGISTERED":
+			if status == http.StatusNotFound {
+				return unregisteredTokenError{}
+			}
+		case "SENDER_ID_MISMATCH", "THIRD_PARTY_AUTH_ERROR":
+			return model.ErrProviderFailed
 		}
 	}
-	return fmt.Errorf("failed to send notification: %s", fallbackStatus)
+	if status == http.StatusUnauthorized && response.Error.Status == "UNAUTHENTICATED" {
+		return errBearerRejected
+	}
+	if status == http.StatusForbidden && response.Error.Status == "PERMISSION_DENIED" {
+		return model.ErrProviderAuthorization
+	}
+	return model.ErrProviderFailed
 }

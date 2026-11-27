@@ -26,30 +26,30 @@ func TestParseScheduledAt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseScheduledAt(tt.raw)
+			got, err := ParseScheduledAt(tt.raw)
 			if tt.errContains != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.errContains) {
-					t.Fatalf("parseScheduledAt(%q) error = %v, want containing %q", tt.raw, err, tt.errContains)
+					t.Fatalf("ParseScheduledAt(%q) error = %v, want containing %q", tt.raw, err, tt.errContains)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("parseScheduledAt(%q) error = %v", tt.raw, err)
+				t.Fatalf("ParseScheduledAt(%q) error = %v", tt.raw, err)
 			}
 			if tt.wantNil {
 				if got != nil {
-					t.Fatalf("parseScheduledAt(%q) = %v, want nil", tt.raw, got)
+					t.Fatalf("ParseScheduledAt(%q) = %v, want nil", tt.raw, got)
 				}
 				return
 			}
 			if got == nil {
-				t.Fatalf("parseScheduledAt(%q) = nil, want %v", tt.raw, tt.wantUTC)
+				t.Fatalf("ParseScheduledAt(%q) = nil, want %v", tt.raw, tt.wantUTC)
 			}
 			if !got.Equal(*tt.wantUTC) {
-				t.Fatalf("parseScheduledAt(%q) = %v, want %v", tt.raw, got, tt.wantUTC)
+				t.Fatalf("ParseScheduledAt(%q) = %v, want %v", tt.raw, got, tt.wantUTC)
 			}
 			if got.Location() != time.UTC {
-				t.Fatalf("parseScheduledAt(%q) location = %v, want UTC", tt.raw, got.Location())
+				t.Fatalf("ParseScheduledAt(%q) location = %v, want UTC", tt.raw, got.Location())
 			}
 		})
 	}

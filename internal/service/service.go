@@ -32,8 +32,7 @@ func NewPushBoyService(
 	}
 }
 
-// parseScheduledAt validates that the scheduledAt string is in RFC3339 format and is in the future.
-func parseScheduledAt(scheduledAt string) (*time.Time, error) {
+func ParseScheduledAt(scheduledAt string) (*time.Time, error) {
 	if scheduledAt == "" {
 		return nil, nil
 	}
@@ -248,37 +247,12 @@ func (s *PushboyService) GetUserSubscriptions(ctx context.Context, userID string
 	return s.store.GetUserSubscriptions(ctx, userID)
 }
 
-// Send to user operations
-
-func (s *PushboyService) SendToUser(ctx context.Context, userID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
-	scheduledTime, err := parseScheduledAt(scheduledAt)
-	if err != nil {
-		return nil, err
-	}
-
-	job := &storage.PublishJob{
-		ID:           uuid.New().String(),
-		UserID:       userID,
-		Payload:      payload,
-		Status:       notificationJobStatusForSchedule(scheduledTime),
-		TotalCount:   0,
-		SuccessCount: 0,
-		FailureCount: 0,
-		CreatedAt:    time.Now().UTC(),
-		ScheduledAt:  scheduledTime,
-	}
-
-	return s.store.CreateUserPublishJob(ctx, job)
-}
-
-// Publish job operations
-
 func (s *PushboyService) CreatePublishJob(ctx context.Context, topicID string, payload *model.NotificationPayload, scheduledAt string) (*storage.PublishJob, error) {
 	if _, err := s.requireTopic(ctx, topicID); err != nil {
 		return nil, err
 	}
 
-	scheduledTime, err := parseScheduledAt(scheduledAt)
+	scheduledTime, err := ParseScheduledAt(scheduledAt)
 	if err != nil {
 		return nil, err
 	}

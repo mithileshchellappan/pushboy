@@ -122,6 +122,8 @@ type publishJobResponse struct {
 	TotalCount   int
 	SuccessCount int
 	FailureCount int
+	SkippedCount int `json:",omitempty"`
+	UnknownCount int `json:",omitempty"`
 	CreatedAt    string
 	CompletedAt  string
 	ScheduledAt  string
@@ -137,6 +139,8 @@ func toPublishJobResponse(job storage.PublishJob) publishJobResponse {
 		TotalCount:   job.TotalCount,
 		SuccessCount: job.SuccessCount,
 		FailureCount: job.FailureCount,
+		SkippedCount: job.SkippedCount,
+		UnknownCount: job.UnknownCount,
 		CreatedAt:    formatAPITime(job.CreatedAt),
 		CompletedAt:  formatAPIOptionalTime(job.CompletedAt),
 		ScheduledAt:  formatAPIOptionalTime(job.ScheduledAt),

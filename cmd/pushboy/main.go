@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	_ "github.com/joho/godotenv/autoload"
 
 	"github.com/mithileshchellappan/pushboy/internal/apns"
@@ -72,6 +73,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Cannot create store: %v", err)
 	}
+
+	tenantProviders, err := storage.NewTenantProviderStore(store, cfg.ProviderEncryptionActiveKeyID, cfg.ProviderEncryptionKeys)
+	if err != nil {
+		log.Printf("Tenant provider keys unavailable: %v", err)
+	}
+	tenantRoutes := dispatch.NewTenantChannelRouter(tenantProviders, cfg)
 
 	// Initialize dispatchers - only add successfully created clients
 	dispatchers := make(map[model.Platform]dispatch.Dispatcher)
@@ -174,6 +181,15 @@ func main() {
 		masterWg.Add(1)
 		master := workers.NewMaster[model.JobItem, model.SendTask](jobPipeline, taskPipeline, func(ctx context.Context,
 			job model.JobItem, emit func(context.Context, model.SendTask) error) error {
+			if job.TenantID != uuid.Nil {
+				err := workers.FanoutTenantPush(ctx, store, cfg.BatchSize, job, emit)
+				if err != nil {
+					failCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+					defer cancel()
+					return errors.Join(err, store.FailTenantJobDispatch(failCtx, job.TenantID, job.ID))
+				}
+				return nil
+			}
 			return workers.FanoutPushToken(ctx, store, cfg.BatchSize, job, emit)
 		})
 		go func(m workers.MasterWorker[model.JobItem, model.SendTask]) {
@@ -197,6 +213,9 @@ func main() {
 	for range cfg.SenderCount {
 		senderWg.Add(1)
 		sender := workers.NewSender[model.SendTask, model.SendOutcome](taskPipeline, dlqPipeline, func(ctx context.Context, task model.SendTask) error {
+			if task.Job.TenantID != uuid.Nil {
+				return workers.DispatchTenantPush(ctx, store, tenantRoutes, task, dlqPipeline)
+			}
 			return workers.DispatchPushTask(ctx, task, dispatchers, dlqPipeline)
 		})
 		go func(m workers.SenderWorker[model.SendTask, model.SendOutcome]) {
@@ -234,7 +253,7 @@ func main() {
 		o.Start(workerCtx)
 	}(laOutcomeWorker)
 
-	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline)
+	httpServer := server.New(pushboyService, jobPipeline, laJobPipeline, store)
 
 	go func() {
 		if err := httpServer.Start(cfg.ServerPort); err != nil && err != http.ErrServerClosed {

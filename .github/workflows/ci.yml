@@ -65,8 +65,10 @@ jobs:
             go test -json -count=1 "$@" ./... | tee "$results" | jq -j '.Output // empty'
             if ! jq -es 'any(.[]; .Action == "pass" and
                 .Package == "github.com/mithileshchellappan/pushboy/internal/storage" and
-                .Test == "TestPostgresLegacyPublishJob")' "$results" > /dev/null; then
-              echo "::error::TestPostgresLegacyPublishJob did not pass"
+                .Test == "TestPostgresLegacyPublishJob") and any(.[]; .Action == "pass" and
+                .Package == "github.com/mithileshchellappan/pushboy/internal/server" and
+                .Test == "TestTenantUserSendIsolation")' "$results" > /dev/null; then
+              echo "::error::Required PostgreSQL integration test did not pass"
               return 1
             fi
           }

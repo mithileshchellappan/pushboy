@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 	"github.com/mithileshchellappan/pushboy/internal/pipeline"
 	"github.com/mithileshchellappan/pushboy/internal/service"
@@ -18,6 +19,7 @@ import (
 )
 
 type Server struct {
+	userJobs      userJobStore
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
 	laJobPipeline pipeline.Pipeline[model.LAJobItem]
@@ -27,8 +29,8 @@ type Server struct {
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem]) *Server {
-	return &Server{service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], userJobs userJobStore) *Server {
+	return &Server{userJobs: userJobs, service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -53,6 +55,7 @@ func (s *Server) setupRouter() chi.Router {
 		r.Use(middleware.Logger)
 		r.Get("/ping", s.handlePing)
 		r.Get("/notifications/{jobID}", s.handleGetJobStatus)
+		r.Get("/notifications/{jobID}/receipts", s.handleUserJobReceipts)
 
 		// User routes
 		r.Route("/users", func(r chi.Router) {
@@ -115,7 +118,13 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), immediateEnqueueTimeout)
 		defer statusCancel()
 
-		if updateErr := s.service.UpdateJobStatus(statusCtx, jobID, model.NotificationJobStatusFailed); updateErr != nil {
+		var updateErr error
+		if jobItem.TenantID != uuid.Nil {
+			updateErr = s.userJobs.FailTenantJobDispatch(statusCtx, jobItem.TenantID, jobID)
+		} else {
+			updateErr = s.service.UpdateJobStatus(statusCtx, jobID, model.NotificationJobStatusFailed)
+		}
+		if updateErr != nil {
 			log.Printf("Failed to mark job %s as FAILED after enqueue error: %v", jobID, updateErr)
 		}
 		return err
@@ -420,48 +429,39 @@ type SendNotificationRequest struct {
 }
 
 func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
-	if userID == "" {
-		http.Error(w, "userID is required", http.StatusBadRequest)
+	tenantID, ok := s.authorizeUserJob(w, r, "send")
+	if !ok {
+		return
+	}
+	rawUID := chi.URLParam(r, "userID")
+	userID, err := uuid.Parse(rawUID)
+	if err != nil || len(rawUID) != 36 || userID == uuid.Nil {
+		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
 
 	var req SendNotificationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
 		log.Printf("Error decoding JSON payload for user %s: %v", userID, err)
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	// Validate required fields
 	if req.Title == "" && req.Body == "" && !req.Silent {
 		http.Error(w, "title or body is required (unless silent notification)", http.StatusBadRequest)
 		return
 	}
 
-	payload := &model.NotificationPayload{
-		Title:      req.Title,
-		Body:       req.Body,
-		ImageURL:   req.ImageURL,
-		Sound:      req.Sound,
-		Badge:      req.Badge,
-		Data:       req.Data,
-		Silent:     req.Silent,
-		CollapseID: req.CollapseID,
-		Priority:   req.Priority,
-		TTL:        req.TTL,
-		ThreadID:   req.ThreadID,
-		Category:   req.Category,
+	payload := &req.NotificationPayload
+	scheduledAt, err := service.ParseScheduledAt(req.ScheduledAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
-
-	job, err := s.service.SendToUser(r.Context(), userID, payload, req.ScheduledAt)
+	job, err := s.userJobs.CreateTenantUserJob(r.Context(), tenantID, userID, payload, scheduledAt)
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-		if strings.Contains(err.Error(), "scheduledAt") {
-			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		http.Error(w, "Error sending notification", http.StatusInternalServerError)
@@ -474,7 +474,8 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		JobType:  model.JobTypePush,
 		MaxRetry: 3,
 		Payload:  payload,
-		UserID:   userID,
+		TenantID: tenantID,
+		UserID:   userID.String(),
 	}
 
 	if job.ScheduledAt == nil {
@@ -738,7 +739,18 @@ func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job, err := s.service.GetJobStatus(r.Context(), jobID)
+	w.Header().Set("Cache-Control", "no-store")
+	var job *storage.PublishJob
+	var err error
+	if len(r.Header.Values("Authorization")) > 0 {
+		tid, ok := s.authorizeUserJob(w, r, "read")
+		if !ok {
+			return
+		}
+		job, err = s.userJobs.GetTenantUserJob(r.Context(), tid, jobID)
+	} else {
+		job, err = s.service.GetJobStatus(r.Context(), jobID)
+	}
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			http.Error(w, "Job not found", http.StatusNotFound)
