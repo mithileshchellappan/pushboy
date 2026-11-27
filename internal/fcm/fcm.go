@@ -20,9 +20,10 @@ import (
 )
 
 const (
-	fcmScope     = "https://www.googleapis.com/auth/firebase.messaging"
-	fcmEndpoint  = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
-	oauthTimeout = 10 * time.Second
+	fcmScope            = "https://www.googleapis.com/auth/firebase.messaging"
+	fcmEndpoint         = "https://fcm.googleapis.com/v1/projects/%s/messages:send"
+	googleTokenEndpoint = "https://oauth2.googleapis.com/token"
+	oauthTimeout        = 10 * time.Second
 )
 
 // Client sends through a pool of HTTP clients, each with its own transport
@@ -85,6 +86,10 @@ func NewClient(ctx context.Context, serviceAccountJSON []byte, poolSize int, max
 }
 
 func NewClientForProject(ctx context.Context, serviceAccountJSON []byte, projectID string, poolSize int, maxConcurrent int, maxRetries int) (*Client, error) {
+	return newClientForProject(ctx, serviceAccountJSON, projectID, poolSize, maxConcurrent, maxRetries, http.DefaultTransport)
+}
+
+func newClientForProject(ctx context.Context, serviceAccountJSON []byte, projectID string, poolSize, maxConcurrent, maxRetries int, tokenTransport http.RoundTripper) (*Client, error) {
 	if projectID == "" {
 		return nil, errors.New("missing FCM target project ID")
 	}
@@ -96,7 +101,7 @@ func NewClientForProject(ctx context.Context, serviceAccountJSON []byte, project
 	client.oauthGate = make(chan struct{}, 1)
 	client.loadToken = func(ctx context.Context) (*oauth2.Token, error) {
 		authClient := &http.Client{
-			Transport:     oauthTransport{ctx: ctx},
+			Transport:     oauthTransport{ctx: ctx, base: tokenTransport},
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		}
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, authClient)
@@ -352,10 +357,13 @@ func isRetryableTransportError(err error) bool {
 		strings.Contains(errStr, "timeout")
 }
 
-type oauthTransport struct{ ctx context.Context }
+type oauthTransport struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
 
 func (t oauthTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return http.DefaultTransport.RoundTrip(req.WithContext(t.ctx))
+	return t.base.RoundTrip(req.WithContext(t.ctx))
 }
 
 func (c *Client) accessToken(ctx context.Context) (*oauth2.Token, error) {
@@ -378,13 +386,33 @@ func (c *Client) accessToken(ctx context.Context) (*oauth2.Token, error) {
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, model.ErrProviderUnavailable
+		return nil, oauthExchangeError(err)
 	}
 	if !token.Valid() {
 		return nil, model.ErrProviderUnavailable
 	}
 	c.oauthToken.Store(token)
 	return token, nil
+}
+
+func oauthExchangeError(err error) error {
+	var exchange *oauth2.RetrieveError
+	if !errors.As(err, &exchange) || exchange.Response == nil || exchange.Response.StatusCode != http.StatusBadRequest {
+		return model.ErrProviderUnavailable
+	}
+	req := exchange.Response.Request
+	if req == nil || req.URL == nil || req.URL.String() != googleTokenEndpoint {
+		return model.ErrProviderUnavailable
+	}
+
+	var problem struct {
+		Code        string `json:"error"`
+		Description string `json:"error_description"`
+	}
+	if json.Unmarshal(exchange.Body, &problem) == nil && problem.Code == "invalid_grant" && problem.Description == "Invalid JWT Signature." {
+		return model.ErrProviderAuthorization
+	}
+	return model.ErrProviderUnavailable
 }
 
 func (c *Client) evictBearer(rejected string) {

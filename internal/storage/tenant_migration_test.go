@@ -160,6 +160,21 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		t.Fatalf("apply scoped push registration migration: %v", err)
 	}
 	legacyTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	operationID := uuid.New()
+	if _, err := db.ExecContext(ctx, `
+        WITH op AS (
+            INSERT INTO tenant_push_registration_operations(tenant_id, device_id, operation_id, request_digest)
+            VALUES ($1, $2, $3, decode(repeat('00', 32), 'hex'))
+            RETURNING tenant_id, device_id, operation_id
+        )
+        INSERT INTO tokens(id, tenant_id, device_id, provider_config_id, registration_id, platform, token,
+            token_fingerprint, registration_version, registration_operation_id, created_at)
+        SELECT 'v24-registration', tenant_id, device_id, $4, gen_random_uuid(), 'apns', 'a1',
+            decode(repeat('01', 32), 'hex'), 1, operation_id, $5 FROM op`,
+		tenant.ID, deviceID, operationID, providerID, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+
 	if _, err := db.ExecContext(ctx, `
 		INSERT INTO topics (id, name) VALUES ('pre-25-topic', 'Pre-25 topic')`); err != nil {
 		t.Fatal(err)
@@ -194,6 +209,11 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	if err := m.Migrate(25); err != nil {
 		t.Fatalf("apply scoped push job migration: %v", err)
 	}
+	var confirmedAt time.Time
+	if err := db.QueryRowContext(ctx, `SELECT registration_confirmed_at FROM tokens WHERE id = 'v24-registration'`).Scan(&confirmedAt); err != nil || !confirmedAt.Equal(legacyTime) {
+		t.Fatalf("version-1 confirmation time = %v, want %v, err=%v", confirmedAt, legacyTime, err)
+	}
+
 	checkPre25Rows()
 	job, err := store.CreateTenantUserJob(ctx, tenant.ID, priorUID, nil, nil)
 	if err != nil {
@@ -211,6 +231,12 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	}
 	rollBack(25, false)
 	checkPre25Rows()
+	if _, err := db.ExecContext(ctx, `
+        WITH removed AS (DELETE FROM tokens WHERE id = 'v24-registration' RETURNING registration_operation_id)
+        DELETE FROM tenant_push_registration_operations WHERE operation_id IN (SELECT registration_operation_id FROM removed)`); err != nil {
+		t.Fatal(err)
+	}
+
 	rollBack(24, false)
 	rollBack(23, true)
 	if channel, err := store.GetTenantLAChannel(ctx, tenant.ID, "upgrade-activity"); err != nil || channel.ProviderConfigID != providerID {

@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -254,6 +255,90 @@ func TestFCMLostReplyDoesNotRetryOrLoseUncertainty(t *testing.T) {
 	}
 }
 
+func TestFCMOAuthSigningKeyRejection(t *testing.T) {
+	const invalidSignature = `{"error":"invalid_grant","error_description":"Invalid JWT Signature.","extra":"secret-body-sentinel"}`
+	for _, tc := range []struct {
+		name      string
+		status    int
+		body      string
+		untrusted bool
+		want      error
+	}{
+		{"invalid signature", http.StatusBadRequest, invalidSignature, false, model.ErrProviderAuthorization},
+		{"clock skew", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid JWT: Token must be a short-lived token (60 minutes) and in a reasonable timeframe."}`, false, model.ErrProviderUnavailable},
+		{"generic invalid grant", http.StatusBadRequest, `{"error":"invalid_grant"}`, false, model.ErrProviderUnavailable},
+		{"other grant error", http.StatusBadRequest, `{"error":"invalid_client","error_description":"Invalid JWT Signature."}`, false, model.ErrProviderUnavailable},
+		{"other error description", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid JWT Signature. Extra text."}`, false, model.ErrProviderUnavailable},
+		{"wrong status", http.StatusUnauthorized, invalidSignature, false, model.ErrProviderUnavailable},
+		{"untrusted endpoint", http.StatusBadRequest, invalidSignature, true, model.ErrProviderUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseForm(); err != nil || r.FormValue("grant_type") != "urn:ietf:params:oauth:grant-type:jwt-bearer" || r.FormValue("assertion") == "" {
+					t.Error("expected a service-account assertion exchange")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer auth.Close()
+
+			endpoint := googleTokenEndpoint
+			if tc.untrusted {
+				endpoint = auth.URL
+			}
+			localURL, err := url.Parse(auth.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				localReq := req.Clone(req.Context())
+				localReq.URL = localURL
+				resp, err := http.DefaultTransport.RoundTrip(localReq)
+				if err == nil {
+					resp.Request = req
+				}
+				return resp, err
+			})
+			raw := oauthTestServiceAccount(t, endpoint)
+			client, err := newClientForProject(t.Context(), raw, "routed-project", 1, 1, 0, transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.httpClients[0].Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				t.Fatal("FCM send ran after OAuth exchange failed")
+				return nil, nil
+			})
+			err = client.SendWithAdmission(t.Context(), "device-token", &model.NotificationPayload{}, func(context.Context) error {
+				t.Fatal("admission ran after OAuth exchange failed")
+				return nil
+			})
+			if err != tc.want {
+				t.Fatalf("OAuth exchange returned %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+func oauthTestServiceAccount(t *testing.T, endpoint string) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(map[string]string{
+		"type":         "service_account",
+		"project_id":   "synthetic-project",
+		"client_email": "test@synthetic-project.iam.gserviceaccount.com",
+		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
+		"token_uri":    endpoint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
 func TestFCMOAuthRefreshAndWaitingSendersCanBeCanceled(t *testing.T) {
 	var exchanges atomic.Int32
 	refreshing := make(chan struct{})
@@ -276,20 +361,7 @@ func TestFCMOAuthRefreshAndWaitingSendersCanBeCanceled(t *testing.T) {
 	defer auth.Close()
 	defer close(release)
 
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(map[string]string{
-		"type":         "service_account",
-		"project_id":   "synthetic-project",
-		"client_email": "test@synthetic-project.iam.gserviceaccount.com",
-		"private_key":  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})),
-		"token_uri":    auth.URL,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	raw := oauthTestServiceAccount(t, auth.URL)
 	client, err := NewClientForProject(t.Context(), raw, "routed-project", 1, 2, 0)
 	if err != nil {
 		t.Fatal(err)

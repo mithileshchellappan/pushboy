@@ -1,5 +1,6 @@
 ALTER TABLE tokens ADD COLUMN registration_confirmed_at TIMESTAMPTZ;
-UPDATE tokens SET registration_confirmed_at = statement_timestamp()
+UPDATE tokens SET registration_confirmed_at = CASE
+    WHEN registration_version = 1 THEN created_at ELSE statement_timestamp() END
 WHERE tenant_id IS NOT NULL AND superseded_at IS NULL;
 
 ALTER TABLE publish_jobs
