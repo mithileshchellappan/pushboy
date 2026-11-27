@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
@@ -155,6 +156,62 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		VALUES ($1, 'upgrade-activity', 'updates', $2, 'upgrade-channel', $3, 'active')`, tenant.ID, providerID, uuid.New()); err != nil {
 		t.Fatal(err)
 	}
+	if err := m.Migrate(24); err != nil {
+		t.Fatalf("apply scoped push registration migration: %v", err)
+	}
+	legacyTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO topics (id, name) VALUES ('pre-25-topic', 'Pre-25 topic')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO publish_jobs (id, topic_id, payload, status, total_count, success_count, failure_count, created_at, completed_at)
+		VALUES ('pre-25-job', 'pre-25-topic', '{"title":"pre-25"}', 'COMPLETED', 2, 1, 1, $1, $1)`, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO delivery_receipts (id, job_id, token_id, status, status_reason, dispatched_at)
+		VALUES ('pre-25-receipt', 'pre-25-job', 'pre-25-token', 'FAILED', 'legacy reason', $1)`, legacyTime); err != nil {
+		t.Fatal(err)
+	}
+	checkPre25Rows := func() {
+		t.Helper()
+		var payloadTitle, jobStatus, receiptStatus, reason string
+		var totalCount, successCount, failureCount int
+		var createdAt, completedAt, dispatchedAt time.Time
+		err := db.QueryRowContext(ctx, `
+			SELECT j.payload->>'title', j.status, j.total_count, j.success_count, j.failure_count, j.created_at, j.completed_at,
+			       r.status, r.status_reason, r.dispatched_at
+			FROM publish_jobs j JOIN delivery_receipts r ON r.job_id = j.id
+			WHERE j.id = 'pre-25-job' AND j.topic_id = 'pre-25-topic' AND r.id = 'pre-25-receipt' AND r.token_id = 'pre-25-token'`).
+			Scan(&payloadTitle, &jobStatus, &totalCount, &successCount, &failureCount, &createdAt, &completedAt, &receiptStatus, &reason, &dispatchedAt)
+		if err != nil || payloadTitle != "pre-25" || jobStatus != "COMPLETED" || totalCount != 2 || successCount != 1 || failureCount != 1 ||
+			!createdAt.Equal(legacyTime) || !completedAt.Equal(legacyTime) || receiptStatus != "FAILED" || reason != "legacy reason" ||
+			!dispatchedAt.Equal(legacyTime) {
+			t.Fatalf("pre-25 rows did not survive migration: %v", err)
+		}
+	}
+	if err := m.Migrate(25); err != nil {
+		t.Fatalf("apply scoped push job migration: %v", err)
+	}
+	checkPre25Rows()
+	job, err := store.CreateTenantUserJob(ctx, tenant.ID, priorUID, nil, nil)
+	if err != nil {
+		t.Fatalf("create job on migrated database: %v", err)
+	}
+	rollBack(25, true)
+	if _, err := store.GetTenantUserJob(ctx, tenant.ID, job.ID); err != nil {
+		t.Fatalf("job after blocked rollback: %v", err)
+	}
+	if err := m.Force(25); err != nil {
+		t.Fatalf("restore recorded migration version 25: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DELETE FROM publish_jobs WHERE id = $1", job.ID); err != nil {
+		t.Fatal(err)
+	}
+	rollBack(25, false)
+	checkPre25Rows()
+	rollBack(24, false)
 	rollBack(23, true)
 	if channel, err := store.GetTenantLAChannel(ctx, tenant.ID, "upgrade-activity"); err != nil || channel.ProviderConfigID != providerID {
 		t.Fatalf("channel after blocked rollback = %+v, %v", channel, err)

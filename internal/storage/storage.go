@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
 
@@ -65,6 +66,7 @@ type TopicSubscriber struct {
 
 // PublishJob represents a job to publish notifications to a topic or user
 type PublishJob struct {
+	TenantID     uuid.UUID
 	ID           string
 	TopicID      string
 	UserID       string
@@ -73,6 +75,8 @@ type PublishJob struct {
 	TotalCount   int
 	SuccessCount int
 	FailureCount int
+	SkippedCount int
+	UnknownCount int
 	CreatedAt    time.Time
 	CompletedAt  *time.Time
 	ScheduledAt  *time.Time

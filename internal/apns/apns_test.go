@@ -3,11 +3,16 @@ package apns
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -226,5 +231,136 @@ func TestNewClientPoolAndConcurrencyDefaults(t *testing.T) {
 	}
 	if got := cap(client.sem); got != 50 {
 		t.Fatalf("max concurrent = %d, want 50", got)
+	}
+}
+
+type apnsTestRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f apnsTestRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestAPNsAdmissionGuardsEachNormalPushAttempt(t *testing.T) {
+	client := NewClient(nil, "kid", "team", "com.example.app", false, "https://apns.example", 1, 1, 1)
+
+	attempts, checks := 0, 0
+	client.httpClients[0].Transport = apnsTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts != checks || req.URL.Path != "/3/device/device-token-sentinel" || req.GetBody != nil {
+			t.Errorf("attempt %d used an unguarded request (checks %d)", attempts, checks)
+		}
+		if req.Header.Get("Apns-Topic") != "com.example.app" || req.Header.Get("Authorization") != "Bearer synthetic" {
+			t.Error("APNs request did not use the route topic and credentials")
+		}
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header:     http.Header{"Retry-After": []string{"0"}},
+			Body:       io.NopCloser(strings.NewReader(`{"reason":"provider-secret-sentinel"}`)),
+		}, nil
+	})
+	admit := func(context.Context) error {
+		if len(client.sem) != 1 || client.cachedJWT == "" {
+			t.Error("admission ran before capacity and credentials")
+		}
+		checks++
+		if checks == 2 {
+			return fmt.Errorf("database-secret-sentinel: %w", model.ErrProviderAdmission)
+		}
+		return nil
+	}
+	client.cachedJWT = "synthetic"
+	client.jwtExpiry = time.Now().Add(time.Hour)
+	err := client.SendWithAdmission(t.Context(), "device-token-sentinel", &model.NotificationPayload{}, admit)
+	if err != model.ErrProviderAdmission || attempts != 1 || checks != 2 || len(client.sem) != 0 {
+		t.Fatalf("send returned %v, attempts=%d checks=%d capacity=%d", err, attempts, checks, len(client.sem))
+	}
+}
+
+func TestAPNsCanceledAdmissionIsProviderUnavailable(t *testing.T) {
+	client := NewClient(nil, "kid", "team", "com.example.app", false, "https://apns.example", 1, 1, 1)
+	client.cachedJWT = "synthetic"
+	client.jwtExpiry = time.Now().Add(time.Hour)
+	client.httpClients[0].Transport = apnsTestRoundTripper(func(*http.Request) (*http.Response, error) {
+		t.Fatal("transport ran after admission was canceled")
+		return nil, nil
+	})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	err := client.SendWithAdmission(ctx, "token", &model.NotificationPayload{}, func(context.Context) error {
+		cancel()
+		return nil
+	})
+	if err != model.ErrProviderUnavailable {
+		t.Fatalf("send returned %v, want provider unavailable", err)
+	}
+}
+
+func TestAPNsInvalidationRequiresRecognizedStatusAndReason(t *testing.T) {
+	for _, test := range []struct {
+		status  int
+		body    string
+		invalid bool
+	}{
+		{400, `{"reason":"BadDeviceToken"}`, true},
+		{410, `{"reason":"Unregistered"}`, true},
+		{400, `{"reason":"DeviceTokenNotForTopic"}`, false},
+		{400, `{"reason":"provider-secret-sentinel BadDeviceToken"}`, false},
+		{400, `{"reason":"Unregistered"}`, false},
+		{410, `{"reason":"BadDeviceToken"}`, false},
+		{400, `{"reason":"ChannelNotRegistered"}`, false},
+	} {
+		err := newResponseError(test.status, []byte(test.body))
+		if errors.Is(model.SafeProviderError(err), model.ErrProviderInvalidToken) != test.invalid {
+			t.Errorf("%d %s returned %v, want invalid=%t", test.status, test.body, err, test.invalid)
+		}
+		if strings.Contains(err.Error(), "provider-secret-sentinel") {
+			t.Errorf("APNs leaked its response body in %v", err)
+		}
+	}
+}
+
+func TestAPNsLostReplyOrDialRefusalPreserveDefinitiveOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		connecting    bool
+		gotConnection bool
+		transportErr  error
+		want          error
+		wantChecks    int
+	}{
+		{"lost reply", true, true, io.ErrUnexpectedEOF, model.ErrProviderOutcomeUnknown, 1},
+		{"dial refusal after transport reused connection", true, true, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, model.ErrProviderOutcomeUnknown, 1},
+		{"timeout after connecting", true, true, context.DeadlineExceeded, model.ErrProviderOutcomeUnknown, 1},
+		{"timeout before connecting", false, false, context.DeadlineExceeded, model.ErrProviderUnavailable, 1},
+		{"TLS failure before connecting", true, false, io.ErrUnexpectedEOF, model.ErrProviderUnavailable, 1},
+		{"first dial refused", true, false, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}, model.ErrProviderAdmission, 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			attempts, checks := 0, 0
+			client := &Client{maxRetries: 1, httpClients: []*http.Client{{
+				Transport: apnsTestRoundTripper(func(req *http.Request) (*http.Response, error) {
+					attempts++
+					trace := httptrace.ContextClientTrace(req.Context())
+					if test.connecting {
+						trace.GetConn("apns.example:443")
+					}
+					if test.gotConnection {
+						trace.GotConn(httptrace.GotConnInfo{})
+					}
+					return nil, test.transportErr
+				}),
+			}}}
+			client.cachedJWT = "synthetic"
+			client.jwtExpiry = time.Now().Add(time.Hour)
+			err := client.sendWithRetryAdmission(t.Context(), "https://apns.example", []byte("{}"), "synthetic", nil, func(context.Context) error {
+				checks++
+				if checks > 1 {
+					return model.ErrProviderAdmission
+				}
+				return nil
+			})
+			if err != test.want || attempts != 1 || checks != test.wantChecks {
+				t.Fatalf("send returned %v, attempts=%d checks=%d; want %v and %d checks", err, attempts, checks, test.want, test.wantChecks)
+			}
+		})
 	}
 }

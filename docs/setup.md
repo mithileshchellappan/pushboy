@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-The `/v1` API is globally scoped and accepts unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
+Direct user sends require an app-specific server key. Other routes, including topic and Live Activity sends, still accept unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
 
 ## Requirements
 
@@ -122,9 +122,13 @@ Set `DATABASE_URL` to the intended PostgreSQL database before creating the app a
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. The generated key does not authenticate requests to the current HTTP API. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
+Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. Use the key as a bearer credential for direct user sends. The target is a tenant user's Pushboy UID. Tenant user, installation, push registration and encrypted provider provisioning currently use the backend storage layer. Global token registrations remain on the existing delivery path.
+
+Use a key with `send` for `POST /v1/users/{uid}/send` and a key with `read` for `GET /v1/notifications/{jobID}` or `GET /v1/notifications/{jobID}/receipts`. Pushboy snapshots recipients for scheduled and immediate sends when it accepts the job. It skips installations whose ownership, registration or route changed before submission. A lost provider reply produces an unknown outcome and the worker avoids replaying that attempt. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
 
 ## Tenant migration rollback
+
+Drain and stop pre-25 API processes, schedulers and workers before accepting tenant user sends. Earlier releases can read or claim jobs belonging to a tenant.
 
 Migration 24 replaces the legacy token uniqueness index while holding a table lock. Measure the lock window on a restored database with representative data before scheduling the migration. Drain and stop the old processes and workers before starting the new release. An older binary cannot start against schema 24 with its pre-migration bundle.
 
@@ -132,6 +136,7 @@ Before downgrading, drain HTTP traffic and queued work, then stop every Pushboy 
 
 | Migration | Tables or records that must be empty |
 | --- | --- |
+| 25 | Tenant-scoped rows in `publish_jobs` and `delivery_receipts` |
 | 24 | Tenant rows in `tokens` and all rows in `tenant_push_registration_operations` |
 | 23 | `tenant_live_activity_channels` |
 | 22 | `tenant_device_ownership_operations` |
@@ -143,7 +148,7 @@ Before downgrading, drain HTTP traffic and queued work, then stop every Pushboy 
 
 If the database holds state required by a migration, keep that migration installed and use a compatible binary and migration bundle, or follow the backup recovery procedure above. Verify the target schema version is clean before starting an older image.
 
-A blocked down migration records the previous version as dirty. Verify the newer schema and its data are intact, then use the migration tool's `force` command with the newer version number before restarting the application.
+A blocked down migration records the previous version as dirty. Verify the newer schema and its data are intact, then use the migration tool's `force` command with the newer version number before restarting the application. For a blocked migration 25 down, that command is `force 25`.
 
 ## Provider Credentials
 

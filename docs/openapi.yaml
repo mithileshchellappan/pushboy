@@ -8,9 +8,9 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. The current API does not
-    include built-in authentication; deploy it behind a trusted network,
-    gateway, or reverse proxy until first-party API auth is added.
+    notification jobs, and Live Activity dispatches. Tenant user sends and receipt
+    reads require a backend bearer key. Keep the deployment behind a trusted
+    network or authenticated gateway for the other routes.
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -249,10 +249,16 @@ paths:
 
   /v1/users/{userID}/send:
     parameters:
-      - $ref: "#/components/parameters/UserID"
+      - name: userID
+        in: path
+        required: true
+        schema: {type: string, format: uuid}
     post:
       tags: [Notifications]
-      summary: Send or schedule a notification to one user
+      summary: Send or schedule a notification to one tenant user
+      description: Requires a backend key with send scope. The userID is the canonical Pushboy UID. The job records the current installations when accepted and checks ownership before each provider attempt.
+      security:
+        - TenantKey: []
       requestBody:
         required: true
         content:
@@ -267,6 +273,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/QueuedJobResponse"
         "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
           $ref: "#/components/responses/TextError"
         "404":
           $ref: "#/components/responses/TextError"
@@ -449,6 +459,10 @@ paths:
     get:
       tags: [Notifications]
       summary: Get notification job
+      description: A key with read scope returns jobs owned by that tenant. Requests without a key can read only unscoped jobs.
+      security:
+        - TenantKey: []
+        - {}
       responses:
         "200":
           description: Notification job.
@@ -456,9 +470,68 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PublishJob"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
+          $ref: "#/components/responses/TextError"
         "404":
           $ref: "#/components/responses/TextError"
         "500":
+          $ref: "#/components/responses/TextError"
+        "503":
+          $ref: "#/components/responses/TextError"
+
+  /v1/notifications/{jobID}/receipts:
+    parameters:
+      - $ref: "#/components/parameters/JobID"
+    get:
+      tags: [Notifications]
+      summary: Read receipt states for a tenant user send
+      description: Requires read scope. Receipts include pending recipients. Poll the job until it completes to read final outcomes.
+      security:
+        - TenantKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+        - name: cursor
+          in: query
+          description: Use next_cursor from the previous page.
+          schema: {type: string, format: uuid}
+      responses:
+        "200":
+          description: Receipts in ascending receipt ID order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor, has_more]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [ID, DeviceID, RegistrationID, Status, StatusReason, DispatchedAt]
+                      properties:
+                        ID: {type: string, format: uuid}
+                        DeviceID: {type: string, format: uuid}
+                        RegistrationID: {type: string, format: uuid}
+                        Status: {type: string, enum: [PENDING, SENDING, SUCCESS, FAILED, SKIPPED, UNKNOWN]}
+                        StatusReason: {type: string}
+                        DispatchedAt: {type: [string, "null"], format: date-time}
+                  next_cursor: {type: string}
+                  has_more: {type: boolean}
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "500":
+          $ref: "#/components/responses/TextError"
+        "503":
           $ref: "#/components/responses/TextError"
 
   /v1/live-activity/tokens:
@@ -717,6 +790,10 @@ paths:
           $ref: "#/components/responses/TextError"
 
 components:
+  securitySchemes:
+    TenantKey:
+      type: http
+      scheme: bearer
   parameters:
     UserID:
       name: userID
@@ -1020,6 +1097,12 @@ components:
           type: integer
         SuccessCount:
           type: integer
+        SkippedCount:
+          type: integer
+          description: Recipients whose ownership or registration changed before submission.
+        UnknownCount:
+          type: integer
+          description: Submissions whose provider outcome could not be confirmed.
         FailureCount:
           type: integer
         CreatedAt:

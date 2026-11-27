@@ -11,6 +11,8 @@
 			"value": "http://localhost:8080",
 			"type": "string"
 		},
+		{"key": "tenantServerKey", "value": "", "type": "string"},
+		{"key": "tenantUserUID", "value": "", "type": "string"},
 		{
 			"key": "userID",
 			"value": "550e8400-e29b-41d4-a716-446655440000",
@@ -423,6 +425,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"},
 							{
 								"key": "Content-Type",
 								"value": "application/json"
@@ -433,9 +436,9 @@
 							"raw": "{\n    \"title\": \"Direct Message\",\n    \"body\": \"This notification is sent directly to all your devices.\"\n}"
 						},
 						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"raw": "{{baseUrl}}/v1/users/{{tenantUserUID}}/send",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{userID}}", "send"]
+							"path": ["v1", "users", "{{tenantUserUID}}", "send"]
 						},
 						"description": "Queue a basic notification to be sent to all of a user's devices. Returns {\"status\": \"queued\", \"job_id\": \"...\"} immediately."
 					},
@@ -446,6 +449,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"},
 							{
 								"key": "Content-Type",
 								"value": "application/json"
@@ -456,9 +460,9 @@
 							"raw": "{\n    \"title\": \"Order Shipped! 📦\",\n    \"body\": \"Your order #12345 is on the way\",\n    \"image_url\": \"https://example.com/shipped.png\",\n    \"sound\": \"default\",\n    \"badge\": 1,\n    \"data\": {\n        \"order_id\": \"12345\",\n        \"deep_link\": \"/orders/12345\"\n    },\n    \"collapse_id\": \"order-12345-status\",\n    \"thread_id\": \"order-12345\",\n    \"priority\": \"high\"\n}"
 						},
 						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"raw": "{{baseUrl}}/v1/users/{{tenantUserUID}}/send",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{userID}}", "send"]
+							"path": ["v1", "users", "{{tenantUserUID}}", "send"]
 						},
 						"description": "Send a rich notification with image, sound, badge, custom data, and grouping options.\n\nAvailable fields:\n- title, body: Required (unless silent)\n- image_url: URL to image (FCM native, APNs via mutable-content)\n- sound: \"default\" or custom sound filename\n- badge: App icon badge number (null = don't change, 0 = clear)\n- data: Custom key-value data passed to app\n- silent: true for background/silent notification\n- collapse_id: Replace previous notification with same ID\n- priority: \"high\" (default) or \"normal\"\n- ttl: Seconds until notification expires\n- thread_id: Group related notifications\n- category: Actionable notification category"
 					},
@@ -469,6 +473,7 @@
 					"request": {
 						"method": "POST",
 						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"},
 							{
 								"key": "Content-Type",
 								"value": "application/json"
@@ -479,9 +484,9 @@
 							"raw": "{\n    \"title\": \"\",\n    \"body\": \"\",\n    \"silent\": true,\n    \"data\": {\n        \"action\": \"sync_messages\",\n        \"conversation_id\": \"abc123\"\n    }\n}"
 						},
 						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{userID}}/send",
+							"raw": "{{baseUrl}}/v1/users/{{tenantUserUID}}/send",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{userID}}", "send"]
+							"path": ["v1", "users", "{{tenantUserUID}}", "send"]
 						},
 						"description": "Send a silent/background notification to trigger app-side data sync without showing a visible notification."
 					},
@@ -595,13 +600,13 @@
 					"name": "Get Notification Job",
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [{"key": "Authorization", "value": "Bearer {{tenantServerKey}}", "disabled": true}],
 						"url": {
 							"raw": "{{baseUrl}}/v1/notifications/{{jobID}}",
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "notifications", "{{jobID}}"]
 						},
-						"description": "Get a notification job by ID.\n\nStatus values:\n- QUEUED\n- SCHEDULED\n- IN_PROGRESS\n- DISPATCHED\n- COMPLETED\n- FAILED\n\nAlso returns total_count, success_count, failure_count for delivery stats."
+						"description": "Enable the Authorization header with a read-scoped tenant key to get a tenant job. Leave the header disabled for an unscoped job.\n\nStatus values:\n- QUEUED\n- SCHEDULED\n- IN_PROGRESS\n- DISPATCHED\n- COMPLETED\n- FAILED\n\nAlso returns total_count, success_count, failure_count for delivery stats."
 					},
 					"response": []
 				}

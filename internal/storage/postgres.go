@@ -13,6 +13,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/google/uuid"
 	pq "github.com/lib/pq"
 	"github.com/mithileshchellappan/pushboy/internal/model"
 )
@@ -75,6 +76,7 @@ func scanPublishJob(scanner interface{ Scan(dest ...any) error }) (*PublishJob, 
 	var status string
 	var completedAt sql.NullTime
 	var scheduledAt sql.NullTime
+	var tenantID uuid.NullUUID
 
 	err := scanner.Scan(
 		&job.ID,
@@ -88,11 +90,15 @@ func scanPublishJob(scanner interface{ Scan(dest ...any) error }) (*PublishJob, 
 		&job.CreatedAt,
 		&completedAt,
 		&scheduledAt,
+		&tenantID,
+		&job.SkippedCount,
+		&job.UnknownCount,
 	)
 	if err != nil {
 		return nil, err
 	}
 
+	job.TenantID = tenantID.UUID
 	job.Status = model.NotificationJobStatus(status)
 	job.CreatedAt = job.CreatedAt.UTC()
 	job.CompletedAt = nullTimePtr(completedAt)
@@ -629,8 +635,8 @@ func (s *PostgresStore) CreateUserPublishJob(ctx context.Context, job *PublishJo
 }
 
 func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]PublishJob, error) {
-	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at
-		FROM publish_jobs WHERE status = 'PENDING' LIMIT $1`
+	query := `SELECT id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at, tenant_id, skipped_count, unknown_count
+		FROM publish_jobs WHERE tenant_id IS NULL AND status = 'PENDING' LIMIT $1`
 	rows, err := s.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("error fetching pending jobs: %w", err)
@@ -652,9 +658,9 @@ func (s *PostgresStore) FetchPendingJobs(ctx context.Context, limit int) ([]Publ
 func (s *PostgresStore) UpdateJobStatus(ctx context.Context, jobID string, status model.NotificationJobStatus) error {
 	var query string
 	if status == model.NotificationJobStatusCompleted {
-		query = `UPDATE publish_jobs SET status = $1, completed_at = NOW() WHERE id = $2`
+		query = `UPDATE publish_jobs SET status = $1, completed_at = NOW() WHERE id = $2 AND tenant_id IS NULL`
 	} else {
-		query = `UPDATE publish_jobs SET status = $1 WHERE id = $2`
+		query = `UPDATE publish_jobs SET status = $1 WHERE id = $2 AND tenant_id IS NULL`
 	}
 	_, err := s.db.ExecContext(ctx, query, string(status), jobID)
 	return err
@@ -664,7 +670,7 @@ func (s *PostgresStore) FinalizeJobDispatch(ctx context.Context, jobID string, t
 	if totalCount == 0 {
 		_, err := s.db.ExecContext(
 			ctx,
-			`UPDATE publish_jobs SET total_count = $1, status = 'COMPLETED', completed_at = NOW() WHERE id = $2`,
+			`UPDATE publish_jobs SET total_count = $1, status = 'COMPLETED', completed_at = NOW() WHERE id = $2 AND tenant_id IS NULL`,
 			totalCount,
 			jobID,
 		)
@@ -676,7 +682,7 @@ func (s *PostgresStore) FinalizeJobDispatch(ctx context.Context, jobID string, t
 
 	_, err := s.db.ExecContext(
 		ctx,
-		`UPDATE publish_jobs SET total_count = $1, status = 'DISPATCHED' WHERE id = $2`,
+		`UPDATE publish_jobs SET total_count = $1, status = 'DISPATCHED' WHERE id = $2 AND tenant_id IS NULL`,
 		totalCount,
 		jobID,
 	)
@@ -699,9 +705,12 @@ func (s *PostgresStore) GetJobStatus(ctx context.Context, jobID string) (*Publis
 			pj.failure_count,
 			pj.created_at,
 			pj.completed_at,
-			pj.scheduled_at
+			pj.scheduled_at,
+			pj.tenant_id,
+			pj.skipped_count,
+			pj.unknown_count
 		FROM publish_jobs pj
-		WHERE pj.id = $1`
+		WHERE pj.id = $1 AND pj.tenant_id IS NULL`
 
 	row := s.db.QueryRowContext(ctx, query, jobID)
 
@@ -730,9 +739,12 @@ func (s *PostgresStore) ListTopicNotifications(ctx context.Context, topicID stri
 			pj.failure_count,
 			pj.created_at,
 			pj.completed_at,
-			pj.scheduled_at
+			pj.scheduled_at,
+			pj.tenant_id,
+			pj.skipped_count,
+			pj.unknown_count
 		FROM publish_jobs pj
-		WHERE pj.topic_id = $1
+		WHERE pj.topic_id = $1 AND pj.tenant_id IS NULL
 			AND ($2 = '' OR pj.status = $2)
 			AND (
 				$3::timestamptz IS NULL
@@ -781,7 +793,7 @@ func (s *PostgresStore) ListUserNotifications(ctx context.Context, userID string
 				pj.scheduled_at,
 				COALESCE(pj.scheduled_at, pj.created_at) AS effective_at
 			FROM publish_jobs pj
-			WHERE pj.user_id = $1
+			WHERE pj.user_id = $1 AND pj.tenant_id IS NULL
 
 			UNION ALL
 
@@ -802,7 +814,7 @@ func (s *PostgresStore) ListUserNotifications(ctx context.Context, userID string
 			INNER JOIN user_topic_subscriptions sub
 				ON sub.topic_id = pj.topic_id
 				AND sub.user_id = $1
-			WHERE pj.topic_id IS NOT NULL
+			WHERE pj.topic_id IS NOT NULL AND pj.tenant_id IS NULL
 				AND COALESCE(pj.scheduled_at, pj.created_at) >= sub.created_at
 		)
 		SELECT
@@ -816,7 +828,10 @@ func (s *PostgresStore) ListUserNotifications(ctx context.Context, userID string
 			failure_count,
 			created_at,
 			completed_at,
-			scheduled_at
+			scheduled_at,
+			NULL::uuid,
+			0,
+			0
 		FROM eligible_jobs
 		WHERE ($2 = '' OR status = $2)
 			AND (
@@ -849,7 +864,15 @@ func (s *PostgresStore) ListUserNotifications(ctx context.Context, userID string
 }
 
 func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []model.DeliveryReceipt) error {
-	if len(receipts) == 0 {
+	legacy := make([]model.DeliveryReceipt, 0, len(receipts))
+	for _, receipt := range receipts {
+		if receipt.TenantID == uuid.Nil {
+			legacy = append(legacy, receipt)
+		} else if err := s.applyTenantPushOutcome(ctx, receipt); err != nil {
+			return err
+		}
+	}
+	if len(legacy) == 0 {
 		return nil
 	}
 
@@ -859,7 +882,11 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 	}
 	defer tx.Rollback()
 
-	deltas, failureReceipts := summarizePushReceipts(receipts)
+	legacy, err = filterLegacyPushOutcomes(ctx, tx, legacy)
+	if err != nil {
+		return fmt.Errorf("check legacy push outcome scope: %w", err)
+	}
+	deltas, failureReceipts := summarizePushReceipts(legacy)
 	if err := s.bulkInsertReceiptsTx(ctx, tx, failureReceipts); err != nil {
 		return fmt.Errorf("error bulk recording failure receipts: %w", err)
 	}
@@ -867,7 +894,7 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 	for jobID, delta := range deltas {
 		if _, err := tx.ExecContext(
 			ctx,
-			`UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`,
+			`UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3 AND tenant_id IS NULL`,
 			delta.success,
 			delta.failure,
 			jobID,
@@ -879,7 +906,7 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 			ctx,
 			`UPDATE publish_jobs
 			SET status = 'COMPLETED', completed_at = NOW()
-			WHERE id = $1
+			WHERE id = $1 AND tenant_id IS NULL
 			AND status = 'DISPATCHED'
 			AND success_count + failure_count >= total_count`,
 			jobID,
@@ -893,6 +920,48 @@ func (s *PostgresStore) ApplyPushOutcomeBatch(ctx context.Context, receipts []mo
 	}
 
 	return nil
+}
+
+func filterLegacyPushOutcomes(ctx context.Context, tx *sql.Tx, receipts []model.DeliveryReceipt) ([]model.DeliveryReceipt, error) {
+	jobs := make([]string, 0, len(receipts))
+	tokens := make([]string, 0, len(receipts))
+	for _, receipt := range receipts {
+		jobs = append(jobs, receipt.JobID)
+		tokens = append(tokens, receipt.TokenID)
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, true FROM publish_jobs WHERE id = ANY($1) AND tenant_id IS NOT NULL
+		UNION ALL
+		SELECT id, false FROM tokens WHERE id = ANY($2) AND tenant_id IS NOT NULL`, pq.Array(jobs), pq.Array(tokens))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	scopedJobs := make(map[string]bool)
+	scopedTokens := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		var isJob bool
+		if err := rows.Scan(&id, &isJob); err != nil {
+			return nil, err
+		}
+		if isJob {
+			scopedJobs[id] = true
+		} else {
+			scopedTokens[id] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	legacy := receipts[:0]
+	for _, receipt := range receipts {
+		if !scopedJobs[receipt.JobID] && !scopedTokens[receipt.TokenID] {
+			legacy = append(legacy, receipt)
+		}
+	}
+	return legacy, nil
 }
 
 func (s *PostgresStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, receipts []model.DeliveryReceipt) error {
@@ -925,7 +994,7 @@ func (s *PostgresStore) bulkInsertReceiptsTx(ctx context.Context, tx *sql.Tx, re
 }
 
 func (s *PostgresStore) IncrementJobCounters(ctx context.Context, jobID string, success int, failure int) error {
-	query := `UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3`
+	query := `UPDATE publish_jobs SET success_count = success_count + $1, failure_count = failure_count + $2 WHERE id = $3 AND tenant_id IS NULL`
 	_, err := s.db.ExecContext(ctx, query, success, failure, jobID)
 	return err
 }
@@ -935,7 +1004,7 @@ func (s *PostgresStore) CompleteJobIfDone(ctx context.Context, jobID string) err
 		ctx,
 		`UPDATE publish_jobs
 		SET status = 'COMPLETED', completed_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND tenant_id IS NULL
 		AND status = 'DISPATCHED'
 		AND success_count + failure_count >= total_count`,
 		jobID,
@@ -949,13 +1018,17 @@ func (s *PostgresStore) CompleteJobIfDone(ctx context.Context, jobID string) err
 // Delivery receipt operations
 
 func (s *PostgresStore) RecordDeliveryReceipt(ctx context.Context, receipt *model.DeliveryReceipt) error {
-	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at) VALUES($1, $2, $3, $4, $5, $6)`
+	query := `INSERT INTO delivery_receipts(id, job_id, token_id, status, status_reason, dispatched_at)
+		SELECT $1, $2, $3, $4, $5, $6
+		WHERE NOT EXISTS (SELECT 1 FROM publish_jobs WHERE id = $2 AND tenant_id IS NOT NULL)
+			AND NOT EXISTS (SELECT 1 FROM tokens WHERE id = $3 AND tenant_id IS NOT NULL)`
 	_, err := s.db.ExecContext(ctx, query, receipt.ID, receipt.JobID, receipt.TokenID, string(receipt.Status), receipt.StatusReason, requiredTime(receipt.DispatchedAt))
 	return err
 }
 
 func (s *PostgresStore) GetScheduledJobs(ctx context.Context) ([]PublishJob, error) {
-	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, ''), payload, status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at`
+	query := `UPDATE publish_jobs SET status = 'QUEUED' WHERE id IN (SELECT id FROM publish_jobs WHERE status = 'SCHEDULED' AND scheduled_at IS NOT NULL AND scheduled_at <= NOW() FOR UPDATE SKIP LOCKED) RETURNING id, COALESCE(topic_id, ''), COALESCE(user_id, user_uid::text, ''), payload,
+		    status, total_count, success_count, failure_count, created_at, completed_at, scheduled_at, tenant_id, skipped_count, unknown_count`
 
 	rows, err := s.db.QueryContext(ctx, query)
 
