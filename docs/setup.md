@@ -128,7 +128,7 @@ Use a key with `send` for `POST /v1/users/{uid}/send` and a key with `read` for 
 
 ## Tenant migration rollback
 
-Drain and stop pre-25 API processes, schedulers and workers before accepting tenant user sends. Earlier releases can read or claim jobs belonging to a tenant. Migration 25 preserves the creation time for version-1 tenant tokens. For later registration versions, schema 24 lacks the last confirmation time, so migration 25 uses the upgrade time. Subsequent registrations record their actual confirmation time.
+Drain and stop pre-25 API processes, schedulers and workers before accepting tenant user sends. Earlier releases can read or claim jobs belonging to a tenant. Migration 25 preserves the creation time for first registrations and rotations with no later confirmation. If the device reconfirmed the same endpoint, schema 24 lacks that confirmation time, so migration 25 uses the upgrade time. Subsequent registrations record their actual confirmation time.
 
 Migration 24 replaces the legacy token uniqueness index while holding a table lock. Measure the lock window on a restored database with representative data before scheduling the migration. Drain and stop the old processes and workers before starting the new release. An older binary cannot start against schema 24 with its pre-migration bundle.
 

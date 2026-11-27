@@ -409,7 +409,13 @@ func oauthExchangeError(err error) error {
 		Code        string `json:"error"`
 		Description string `json:"error_description"`
 	}
-	if json.Unmarshal(exchange.Body, &problem) == nil && problem.Code == "invalid_grant" && problem.Description == "Invalid JWT Signature." {
+	if json.Unmarshal(exchange.Body, &problem) != nil {
+		return model.ErrProviderUnavailable
+	}
+	switch {
+	case problem.Code == "invalid_grant" && problem.Description == "Invalid JWT Signature.",
+		problem.Code == "disabled_client" && problem.Description == "The OAuth client was disabled.",
+		problem.Code == "deleted_client":
 		return model.ErrProviderAuthorization
 	}
 	return model.ErrProviderUnavailable

@@ -1,7 +1,13 @@
 ALTER TABLE tokens ADD COLUMN registration_confirmed_at TIMESTAMPTZ;
-UPDATE tokens SET registration_confirmed_at = CASE
-    WHEN registration_version = 1 THEN created_at ELSE statement_timestamp() END
-WHERE tenant_id IS NOT NULL AND superseded_at IS NULL;
+WITH history AS (
+    SELECT id, registration_version, lag(registration_version, 1, 0::bigint) OVER (
+        PARTITION BY tenant_id, device_id ORDER BY registration_version
+    ) AS previous_version
+    FROM tokens WHERE tenant_id IS NOT NULL
+)
+UPDATE tokens t SET registration_confirmed_at = CASE
+    WHEN h.registration_version - h.previous_version = 1 THEN t.created_at ELSE statement_timestamp() END
+FROM history h WHERE h.id = t.id AND t.superseded_at IS NULL;
 
 ALTER TABLE publish_jobs
     ADD COLUMN tenant_id UUID,

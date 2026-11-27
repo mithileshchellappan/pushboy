@@ -255,8 +255,9 @@ func TestFCMLostReplyDoesNotRetryOrLoseUncertainty(t *testing.T) {
 	}
 }
 
-func TestFCMOAuthSigningKeyRejection(t *testing.T) {
+func TestFCMOAuthCredentialRejection(t *testing.T) {
 	const invalidSignature = `{"error":"invalid_grant","error_description":"Invalid JWT Signature.","extra":"secret-body-sentinel"}`
+	const disabledClient = `{"error":"disabled_client","error_description":"The OAuth client was disabled."}`
 	for _, tc := range []struct {
 		name      string
 		status    int
@@ -265,12 +266,16 @@ func TestFCMOAuthSigningKeyRejection(t *testing.T) {
 		want      error
 	}{
 		{"invalid signature", http.StatusBadRequest, invalidSignature, false, model.ErrProviderAuthorization},
+		{"disabled client", http.StatusBadRequest, disabledClient, false, model.ErrProviderAuthorization},
+		{"deleted client", http.StatusBadRequest, `{"error":"deleted_client"}`, false, model.ErrProviderAuthorization},
+		{"ambiguous disabled client", http.StatusBadRequest, `{"error":"disabled_client"}`, false, model.ErrProviderUnavailable},
+		{"temporary HTTP failure", http.StatusServiceUnavailable, disabledClient, false, model.ErrProviderUnavailable},
 		{"clock skew", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid JWT: Token must be a short-lived token (60 minutes) and in a reasonable timeframe."}`, false, model.ErrProviderUnavailable},
 		{"generic invalid grant", http.StatusBadRequest, `{"error":"invalid_grant"}`, false, model.ErrProviderUnavailable},
 		{"other grant error", http.StatusBadRequest, `{"error":"invalid_client","error_description":"Invalid JWT Signature."}`, false, model.ErrProviderUnavailable},
 		{"other error description", http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid JWT Signature. Extra text."}`, false, model.ErrProviderUnavailable},
 		{"wrong status", http.StatusUnauthorized, invalidSignature, false, model.ErrProviderUnavailable},
-		{"untrusted endpoint", http.StatusBadRequest, invalidSignature, true, model.ErrProviderUnavailable},
+		{"untrusted endpoint", http.StatusBadRequest, disabledClient, true, model.ErrProviderUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			auth := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

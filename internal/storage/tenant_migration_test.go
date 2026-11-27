@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -160,19 +162,42 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		t.Fatalf("apply scoped push registration migration: %v", err)
 	}
 	legacyTime := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	operationID := uuid.New()
-	if _, err := db.ExecContext(ctx, `
-        WITH op AS (
-            INSERT INTO tenant_push_registration_operations(tenant_id, device_id, operation_id, request_digest)
-            VALUES ($1, $2, $3, decode(repeat('00', 32), 'hex'))
-            RETURNING tenant_id, device_id, operation_id
-        )
-        INSERT INTO tokens(id, tenant_id, device_id, provider_config_id, registration_id, platform, token,
-            token_fingerprint, registration_version, registration_operation_id, created_at)
-        SELECT 'v24-registration', tenant_id, device_id, $4, gen_random_uuid(), 'apns', 'a1',
-            decode(repeat('01', 32), 'hex'), 1, operation_id, $5 FROM op`,
-		tenant.ID, deviceID, operationID, providerID, legacyTime); err != nil {
-		t.Fatal(err)
+	registrations := []struct {
+		deviceID uuid.UUID
+		versions []int
+		exact    bool
+	}{
+		{deviceID, []int{1}, true},
+		{uuid.New(), []int{2, 3}, true},
+		{uuid.New(), []int{1, 3}, false},
+	}
+	for i, fixture := range registrations {
+		if fixture.deviceID != deviceID {
+			if _, err := db.ExecContext(ctx, `INSERT INTO tenant_devices(tenant_id, id, user_uid, origin) VALUES ($1,$2,$3,'registered')`, tenant.ID, fixture.deviceID, priorUID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for j, version := range fixture.versions {
+			token := fmt.Sprintf("%02x%02x", i, j)
+			fingerprint := sha256.Sum256([]byte(token))
+			var supersededAt *time.Time
+			if j+1 < len(fixture.versions) {
+				supersededAt = &legacyTime
+			}
+			if _, err := db.ExecContext(ctx, `
+                WITH op AS (
+                    INSERT INTO tenant_push_registration_operations(tenant_id, device_id, operation_id, request_digest)
+                    VALUES ($1, $2, gen_random_uuid(), $3)
+                    RETURNING tenant_id, device_id, operation_id
+                )
+                INSERT INTO tokens(id, tenant_id, device_id, provider_config_id, registration_id, platform, token,
+                    token_fingerprint, registration_version, registration_operation_id, created_at, superseded_at)
+                SELECT gen_random_uuid()::text, tenant_id, device_id, $4, gen_random_uuid(), 'apns', $5,
+                    $3, $6, operation_id, $7, $8 FROM op`,
+				tenant.ID, fixture.deviceID, fingerprint[:], providerID, token, version, legacyTime, supersededAt); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 
 	if _, err := db.ExecContext(ctx, `
@@ -209,9 +234,13 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	if err := m.Migrate(25); err != nil {
 		t.Fatalf("apply scoped push job migration: %v", err)
 	}
-	var confirmedAt time.Time
-	if err := db.QueryRowContext(ctx, `SELECT registration_confirmed_at FROM tokens WHERE id = 'v24-registration'`).Scan(&confirmedAt); err != nil || !confirmedAt.Equal(legacyTime) {
-		t.Fatalf("version-1 confirmation time = %v, want %v, err=%v", confirmedAt, legacyTime, err)
+	for _, fixture := range registrations {
+		var confirmedAt time.Time
+		err := db.QueryRowContext(ctx, `SELECT registration_confirmed_at FROM tokens
+            WHERE tenant_id = $1 AND device_id = $2 AND superseded_at IS NULL`, tenant.ID, fixture.deviceID).Scan(&confirmedAt)
+		if err != nil || (fixture.exact && !confirmedAt.Equal(legacyTime)) || (!fixture.exact && !confirmedAt.After(legacyTime)) {
+			t.Fatalf("versions %v confirmation time = %v, err=%v", fixture.versions, confirmedAt, err)
+		}
 	}
 
 	checkPre25Rows()
@@ -232,8 +261,8 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 	rollBack(25, false)
 	checkPre25Rows()
 	if _, err := db.ExecContext(ctx, `
-        WITH removed AS (DELETE FROM tokens WHERE id = 'v24-registration' RETURNING registration_operation_id)
-        DELETE FROM tenant_push_registration_operations WHERE operation_id IN (SELECT registration_operation_id FROM removed)`); err != nil {
+        WITH removed AS (DELETE FROM tokens WHERE tenant_id = $1 RETURNING registration_operation_id)
+        DELETE FROM tenant_push_registration_operations WHERE operation_id IN (SELECT registration_operation_id FROM removed)`, tenant.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -249,10 +278,10 @@ func TestPostgresTenantMigrationRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	rollBack(23, false)
-	if res, err := db.ExecContext(ctx, "DELETE FROM tenant_devices WHERE tenant_id = $1 AND id = $2", tenant.ID, deviceID); err != nil {
+	if res, err := db.ExecContext(ctx, "DELETE FROM tenant_devices WHERE tenant_id = $1", tenant.ID); err != nil {
 		t.Fatal(err)
-	} else if count, err := res.RowsAffected(); count != 1 || err != nil {
-		t.Fatalf("expected installation to survive migration and rollback, deleted %d rows: %v", count, err)
+	} else if count, err := res.RowsAffected(); count != int64(len(registrations)) || err != nil {
+		t.Fatalf("expected installations to survive migration and rollback, deleted %d rows: %v", count, err)
 	}
 	rollBack(22, false)
 	rollBack(21, false)
