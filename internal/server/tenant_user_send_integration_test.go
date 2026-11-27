@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,6 +132,7 @@ func TestTenantUserSendIsolation(t *testing.T) {
 		"/3/device/" + aTabletToken: a,
 		"/3/device/" + bPhoneToken:  b,
 	}
+	var invalidSince atomic.Int64
 	calls := make(chan string, 10)
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		expected, ok := deliveryKeys[r.URL.Path]
@@ -165,6 +167,14 @@ func TestTenantUserSendIsolation(t *testing.T) {
 		}
 		var call string
 		switch {
+		case expected.id == b.id && payload.APS.Alert != nil && payload.APS.Alert.Title == "expired":
+			w.WriteHeader(http.StatusGone)
+			if ts := invalidSince.Load(); ts > 0 {
+				fmt.Fprintf(w, `{"reason":"Unregistered","timestamp":%d}`, ts)
+			} else {
+				fmt.Fprint(w, `{"reason":"Unregistered"}`)
+			}
+			return
 		case expected.id == a.id && payload.APS.Alert != nil && payload.APS.Alert.Title == "tenant A":
 			call = "tenant A tablet"
 		case expected.id == a.id && payload.APS.Alert != nil && payload.APS.Alert.Title == retryTitle:
@@ -386,6 +396,30 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	if registration, err := store.GetPushRegistration(ctx, b.id, phoneID); err != nil || !registration.Valid {
 		t.Fatalf("unknown outcome changed tenant B registration validity: %v", err)
 	}
+
+	priorInvalidation := time.Now().UnixMilli()
+	_, err = store.RegisterPush(ctx, b.id, phoneID, storage.TenantPushRegistrationChange{
+		OperationID: uuid.New(), ProviderConfigID: b.routeID, Token: bPhoneToken,
+		ExpectedRegistrationID: &bPhoneReg.ID, ExpectedRegistrationVersion: bPhoneReg.RegistrationVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmedBy := time.Now()
+	assertGone := func(ts int64, preserve bool) {
+		t.Helper()
+		invalidSince.Store(ts)
+		job := submit(b, `{"title":"expired"}`, 1)
+		dispatchTasks(fanout(job, 1))
+		current, err := store.GetPushRegistration(ctx, b.id, phoneID)
+		if err != nil || current.Valid != preserve || diagnoseJob(job.ID, b.bearer).FailureCount != 1 {
+			t.Fatalf("APNs 410 timestamp %d: valid=%t, want %t, err=%v", ts, current.Valid, preserve, err)
+		}
+	}
+	assertGone(priorInvalidation, true)
+	assertGone(0, true)
+	time.Sleep(time.Until(confirmedBy.Truncate(time.Millisecond).Add(time.Millisecond)))
+	assertGone(time.Now().UnixMilli(), false)
 
 	for _, suffix := range []string{"", "/receipts"} {
 		request(http.MethodGet, jobPath(aJob.ID)+suffix, b.bearer, "", http.StatusNotFound, nil)

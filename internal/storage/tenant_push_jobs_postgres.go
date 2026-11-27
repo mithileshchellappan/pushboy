@@ -160,32 +160,59 @@ func (s *PostgresStore) GetTenantPushRecipientBatch(ctx context.Context, tenantI
 	return ids, rows.Err()
 }
 
-const tenantPushRecipientSelect = `
-	SELECT t.token, t.platform, p.id, p.credential_version
-	FROM delivery_receipts r
-	JOIN publish_jobs j ON j.id = r.job_id AND j.tenant_id = r.tenant_id
-	JOIN tenant_devices d ON d.tenant_id = r.tenant_id AND d.id = r.device_id AND d.user_uid = j.user_uid
-		AND d.ownership_version = r.ownership_version AND d.origin = 'registered' AND d.retired_at IS NULL
-	JOIN tokens t ON t.id = r.token_id AND t.tenant_id = r.tenant_id AND t.device_id = r.device_id
-		AND t.registration_id = r.registration_id AND t.registration_version = r.registration_version
-		AND t.provider_config_id = r.provider_config_id AND t.superseded_at IS NULL AND NOT t.is_deleted
-	JOIN provider_configs p ON p.tenant_id = r.tenant_id AND p.id = r.provider_config_id AND p.provider = t.platform
-		AND p.credential_version = r.credential_version AND p.enabled AND NOT p.authorization_failed
-	JOIN tenants a ON a.id = r.tenant_id AND a.disabled_at IS NULL
-	WHERE r.tenant_id = $1 AND r.job_id = $2 AND r.id = $3 AND r.claim_id = $4 AND r.status = 'SENDING'`
+var (
+	tenantPushRecipientSelect    = tenantPushRecipientQuery("", "", "", "")
+	tenantPushAdmissionSelect    = tenantPushRecipientQuery("FOR SHARE OF d", "FOR SHARE OF t", "FOR SHARE OF p", "FOR SHARE OF a")
+	tenantPushInvalidationSelect = tenantPushRecipientQuery("FOR SHARE OF d", "FOR NO KEY UPDATE OF t", "FOR SHARE OF p", "FOR SHARE OF a")
+)
+
+func tenantPushRecipientQuery(installationLock, registrationLock, routeLock, tenantLock string) string {
+	return fmt.Sprintf(`
+		WITH recipient AS MATERIALIZED (
+			SELECT r.tenant_id, r.device_id, r.ownership_version, r.token_id, r.registration_id,
+				r.registration_version, r.provider_config_id, r.credential_version, j.user_uid
+			FROM delivery_receipts r
+			JOIN publish_jobs j ON j.id = r.job_id AND j.tenant_id = r.tenant_id
+			WHERE r.tenant_id = $1 AND r.job_id = $2 AND r.id = $3 AND r.claim_id = $4 AND r.status = 'SENDING'
+		), installation AS MATERIALIZED (
+			SELECT r.* FROM recipient r
+			JOIN tenant_devices d ON d.tenant_id = r.tenant_id AND d.id = r.device_id AND d.user_uid = r.user_uid
+				AND d.ownership_version = r.ownership_version AND d.origin = 'registered' AND d.retired_at IS NULL
+			%s
+		), registration AS MATERIALIZED (
+			SELECT d.tenant_id, d.provider_config_id, d.credential_version, t.token, t.platform
+			FROM installation d
+			JOIN tokens t ON t.id = d.token_id AND t.tenant_id = d.tenant_id AND t.device_id = d.device_id
+				AND t.registration_id = d.registration_id AND t.registration_version = d.registration_version
+				AND t.provider_config_id = d.provider_config_id AND t.superseded_at IS NULL AND NOT t.is_deleted
+			%s
+		), route AS MATERIALIZED (
+			SELECT t.tenant_id, t.token, t.platform, p.id, p.credential_version
+			FROM registration t
+			JOIN provider_configs p ON p.tenant_id = t.tenant_id AND p.id = t.provider_config_id AND p.provider = t.platform
+				AND p.credential_version = t.credential_version AND p.enabled AND NOT p.authorization_failed
+			%s
+		)
+		SELECT r.token, r.platform, r.id, r.credential_version
+		FROM route r JOIN tenants a ON a.id = r.tenant_id AND a.disabled_at IS NULL
+		%s`, installationLock, registrationLock, routeLock, tenantLock)
+}
 
 type tenantPushRecipientReader interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 func readTenantPushRecipient(ctx context.Context, db tenantPushRecipientReader, tenantID uuid.UUID, jobID, receiptID string, claimID uuid.UUID, lockForInvalidation bool) (TenantPushAttempt, error) {
-	attempt := TenantPushAttempt{ProviderRef: model.ProviderRef{TenantID: tenantID}}
 	query := tenantPushRecipientSelect
 	if lockForInvalidation {
-		query += ` FOR SHARE OF d, p, a FOR NO KEY UPDATE OF t`
+		query = tenantPushInvalidationSelect
 	}
-	err := db.QueryRowContext(ctx, query, tenantID, jobID, receiptID, claimID).
-		Scan(&attempt.Token, &attempt.Platform, &attempt.ProviderRef.RouteID, &attempt.CredentialVersion)
+	return scanTenantPushAttempt(db.QueryRowContext(ctx, query, tenantID, jobID, receiptID, claimID), tenantID)
+}
+
+func scanTenantPushAttempt(row *sql.Row, tenantID uuid.UUID) (TenantPushAttempt, error) {
+	attempt := TenantPushAttempt{ProviderRef: model.ProviderRef{TenantID: tenantID}}
+	err := row.Scan(&attempt.Token, &attempt.Platform, &attempt.ProviderRef.RouteID, &attempt.CredentialVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TenantPushAttempt{}, ErrTenantPushRecipientStale
 	}
@@ -243,7 +270,7 @@ func (s *PostgresStore) ClaimTenantPushRecipient(ctx context.Context, tenantID u
 }
 
 func (s *PostgresStore) CheckTenantPushRecipient(ctx context.Context, tenantID uuid.UUID, jobID, receiptID string, claimID uuid.UUID) (TenantPushAttempt, error) {
-	return readTenantPushRecipient(ctx, s.db, tenantID, jobID, receiptID, claimID, false)
+	return scanTenantPushAttempt(s.db.QueryRowContext(ctx, tenantPushAdmissionSelect, tenantID, jobID, receiptID, claimID), tenantID)
 }
 
 func (s *PostgresStore) FinalizeTenantJobDispatch(ctx context.Context, tenantID uuid.UUID, jobID string) error {

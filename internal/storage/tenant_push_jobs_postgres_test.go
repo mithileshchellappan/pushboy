@@ -378,3 +378,111 @@ func TestPostgresTenantPushGuardedInvalidationAndDuplicateClaims(t *testing.T) {
 		t.Fatalf("empty job did not finish: %+v, %v", finished, err)
 	}
 }
+
+func TestPostgresTenantPushAdmissionWaitsForConcurrentChanges(t *testing.T) {
+	store := tenantKeyManagementStore(t)
+	const changeOwner = `
+		UPDATE tenant_devices SET user_uid = $3, ownership_version = ownership_version + 1
+		WHERE tenant_id = $1 AND id = $2`
+	for _, tt := range []struct {
+		name    string
+		update  string
+		args    []string
+		discard bool
+	}{
+		{name: "ownership changed", update: changeOwner, args: []string{"device", "owner"}},
+		{name: "ownership rollback", update: changeOwner, args: []string{"device", "owner"}, discard: true},
+		{name: "registration changed", args: []string{"registration"}, update: `
+			UPDATE tokens SET registration_version = registration_version + 1 WHERE tenant_id = $1 AND registration_id = $2`},
+		{name: "credential rotated", args: []string{"route"}, update: `
+			UPDATE provider_configs SET credential_version = credential_version + 1 WHERE tenant_id = $1 AND id = $2`},
+		{name: "tenant disabled", update: `UPDATE tenants SET disabled_at = clock_timestamp() WHERE id = $1`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			tenant := tenantPushJobTestTenant(t, store)
+			device := enrollPushRegistrationTestDevice(t, store, tenant)
+			other := enrollPushRegistrationTestDevice(t, store, tenant)
+			route := pushRegistrationTestProvider(t, store, tenant, model.FCM, "production", "push-project")
+			registration, err := store.RegisterPush(ctx, tenant, device.ID, TenantPushRegistrationChange{
+				OperationID: uuid.New(), ProviderConfigID: route, Token: "concurrent-endpoint",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			job, err := store.CreateTenantUserJob(ctx, tenant, device.UID, &model.NotificationPayload{Title: "Test"}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids, err := store.GetTenantPushRecipientBatch(ctx, tenant, job.ID, "", 2)
+			if err != nil || len(ids) != 1 {
+				t.Fatalf("fetch recipient: %v, %v", ids, err)
+			}
+			claimID := uuid.New()
+			if _, err := store.ClaimTenantPushRecipient(ctx, tenant, job.ID, ids[0], claimID); err != nil {
+				t.Fatal(err)
+			}
+
+			change, err := store.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer change.Rollback()
+			fixture := map[string]uuid.UUID{"device": device.ID, "owner": other.UID, "registration": registration.ID, "route": route}
+			args := []any{tenant}
+			for _, key := range tt.args {
+				args = append(args, fixture[key])
+			}
+			if _, err := change.ExecContext(ctx, tt.update, args...); err != nil {
+				t.Fatal(err)
+			}
+			var blocker int
+			if err := change.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&blocker); err != nil {
+				t.Fatal(err)
+			}
+
+			admission := make(chan error, 1)
+			go func() {
+				_, err := store.CheckTenantPushRecipient(ctx, tenant, job.ID, ids[0], claimID)
+				admission <- err
+			}()
+			wait := time.NewTicker(20 * time.Millisecond)
+			defer wait.Stop()
+			for {
+				var blocked bool
+				if err := store.db.QueryRowContext(ctx, `
+					SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`,
+					blocker).Scan(&blocked); err != nil {
+					t.Fatal(err)
+				}
+				if blocked {
+					break
+				}
+				select {
+				case err := <-admission:
+					t.Fatalf("admission finished before the open update: %v", err)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				case <-wait.C:
+				}
+			}
+			if tt.discard {
+				err = change.Rollback()
+			} else {
+				err = change.Commit()
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-admission:
+				if tt.discard && err != nil || !tt.discard && !errors.Is(err, ErrTenantPushRecipientStale) {
+					t.Fatalf("admission after concurrent update: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}

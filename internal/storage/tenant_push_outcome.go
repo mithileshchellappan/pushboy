@@ -53,8 +53,9 @@ func (s *PostgresStore) applyTenantPushOutcome(ctx context.Context, receipt mode
 		if err == nil {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE tokens SET is_deleted = TRUE
-				WHERE tenant_id = $1 AND id = $2 AND provider_config_id = $3`,
-				receipt.TenantID, tokenID, current.ProviderRef.RouteID); err != nil {
+				WHERE tenant_id = $1 AND id = $2 AND provider_config_id = $3
+				  AND ($4::timestamptz IS NULL OR registration_confirmed_at <= $4)`,
+				receipt.TenantID, tokenID, current.ProviderRef.RouteID, optionalTime(receipt.TokenInvalidSince)); err != nil {
 				return fmt.Errorf("invalidate tenant push registration: %w", err)
 			}
 		}

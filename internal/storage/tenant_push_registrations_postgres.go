@@ -162,7 +162,8 @@ func (s *PostgresStore) RegisterPush(ctx context.Context, tenantID, deviceID uui
 	if sameEndpoint {
 		registration.ID = current.ID
 		_, err = tx.ExecContext(ctx, `
-			UPDATE tokens SET registration_version = $3, registration_operation_id = $4, is_deleted = false
+			UPDATE tokens SET registration_version = $3, registration_operation_id = $4, is_deleted = false,
+			    registration_confirmed_at = clock_timestamp()
 			WHERE tenant_id = $1 AND registration_id = $2
 		`, tenantID, registration.ID, registration.RegistrationVersion, change.OperationID)
 	} else {
@@ -183,8 +184,8 @@ func (s *PostgresStore) RegisterPush(ctx context.Context, tenantID, deviceID uui
 		}
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO tokens (id, tenant_id, device_id, provider_config_id, registration_id, platform, token,
-			    token_fingerprint, registration_version, registration_operation_id, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp())
+			    token_fingerprint, registration_version, registration_operation_id, created_at, registration_confirmed_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, statement_timestamp(), statement_timestamp())
 		`, tokenID.String(), tenantID, deviceID, change.ProviderConfigID, registration.ID, registration.Provider, token,
 			fingerprint[:], registration.RegistrationVersion, change.OperationID)
 	}

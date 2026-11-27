@@ -32,3 +32,5 @@ ALTER TABLE publish_jobs
     DROP COLUMN skipped_count,
     DROP COLUMN unknown_count,
     ADD CONSTRAINT chk_job_target CHECK (num_nonnulls(topic_id, user_id) = 1);
+
+ALTER TABLE tokens DROP COLUMN registration_confirmed_at;

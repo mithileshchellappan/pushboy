@@ -98,6 +98,10 @@ func DispatchTenantPush(ctx context.Context, store tenantPushDispatchStore, rout
 	case errors.Is(err, model.ErrProviderInvalidToken):
 		receipt.StatusReason = model.TenantPushReasonInvalidRegistration
 		receipt.InvalidateRegistration = true
+		var dated *model.TokenInvalidSince
+		if errors.As(err, &dated) {
+			receipt.TokenInvalidSince = &dated.Time
+		}
 	case errors.Is(err, model.ErrProviderRouteUnavailable), errors.Is(err, model.ErrProviderAuthorization),
 		errors.Is(err, model.ErrProviderAdmissionCheck), errors.Is(err, model.ErrProviderUnavailable),
 		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

@@ -36,7 +36,7 @@ type Client struct {
 	projectID   string
 	maxRetries  int
 	oauthGate   chan struct{}
-	oauthToken  *oauth2.Token
+	oauthToken  atomic.Pointer[oauth2.Token]
 	loadToken   func(context.Context) (*oauth2.Token, error)
 }
 
@@ -255,8 +255,9 @@ func (c *Client) sendMessageWithAdmission(ctx context.Context, message FcmMessag
 	}
 
 	backoff := 500 * time.Millisecond
+	retriedBearer := false
 
-	for attempt := 0; ; attempt++ {
+	for retries := 0; ; {
 		req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf(fcmEndpoint, url.PathEscape(c.projectID)), bytes.NewReader(payloadBytes))
 		if err != nil {
 			return model.ErrProviderFailed
@@ -268,25 +269,27 @@ func (c *Client) sendMessageWithAdmission(ctx context.Context, message FcmMessag
 		case <-ctx.Done():
 			return ctx.Err()
 		}
+		var bearer *oauth2.Token
 		if c.loadToken != nil {
-			token, err := c.accessToken(ctx)
+			bearer, err = c.accessToken(ctx)
 			if err != nil {
 				<-c.sem
 				return err
 			}
-			token.SetAuthHeader(req)
+			bearer.SetAuthHeader(req)
 		}
 		resp, retry, err := c.attempt(req, admit)
 		<-c.sem
 
 		if err != nil {
-			if attempt < c.maxRetries && retry && ctx.Err() == nil {
+			if retries < c.maxRetries && retry && ctx.Err() == nil {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
 				case <-time.After(backoff):
 				}
 				backoff *= 2
+				retries++
 				continue
 			}
 			if ctx.Err() != nil && err == model.ErrProviderFailed {
@@ -300,7 +303,7 @@ func (c *Client) sendMessageWithAdmission(ctx context.Context, message FcmMessag
 		if resp.StatusCode == http.StatusOK {
 			return nil
 		}
-		if attempt < c.maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
+		if retries < c.maxRetries && (resp.StatusCode == http.StatusTooManyRequests ||
 			resp.StatusCode == http.StatusServiceUnavailable ||
 			resp.StatusCode == http.StatusInternalServerError) {
 			select {
@@ -309,9 +312,21 @@ func (c *Client) sendMessageWithAdmission(ctx context.Context, message FcmMessag
 			case <-time.After(backoff):
 			}
 			backoff *= 2
+			retries++
 			continue
 		}
-		return parseFCMError(body, resp.StatusCode)
+		err = parseFCMError(body, resp.StatusCode)
+		if err != errBearerRejected {
+			return err
+		}
+		if bearer == nil {
+			return model.ErrProviderUnavailable
+		}
+		c.evictBearer(bearer.AccessToken)
+		if retriedBearer {
+			return model.ErrProviderUnavailable
+		}
+		retriedBearer = true
 	}
 }
 
@@ -355,41 +370,32 @@ func (c *Client) accessToken(ctx context.Context) (*oauth2.Token, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if c.oauthToken.Valid() {
-		return c.oauthToken, nil
+	if cached := c.oauthToken.Load(); cached.Valid() {
+		return cached, nil
 	}
 	token, err := c.loadToken(ctx)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, tokenSourceError(err)
+		return nil, model.ErrProviderUnavailable
 	}
 	if !token.Valid() {
 		return nil, model.ErrProviderUnavailable
 	}
-	c.oauthToken = token
+	c.oauthToken.Store(token)
 	return token, nil
 }
 
-func tokenSourceError(err error) error {
-	var tokenErr *oauth2.RetrieveError
-	if errors.As(err, &tokenErr) && tokenErr.Response != nil {
-		if tokenErr.Response.StatusCode == http.StatusUnauthorized {
-			return model.ErrProviderAuthorization
-		}
-		if tokenErr.Response.StatusCode == http.StatusBadRequest {
-			var response struct {
-				Error string `json:"error"`
-			}
-			if tokenErr.ErrorCode == "invalid_grant" ||
-				(json.Unmarshal(tokenErr.Body, &response) == nil && response.Error == "invalid_grant") {
-				return model.ErrProviderAuthorization
-			}
+func (c *Client) evictBearer(rejected string) {
+	for cached := c.oauthToken.Load(); cached != nil && cached.AccessToken == rejected; cached = c.oauthToken.Load() {
+		if c.oauthToken.CompareAndSwap(cached, nil) {
+			return
 		}
 	}
-	return model.ErrProviderUnavailable
 }
+
+var errBearerRejected = errors.New("FCM bearer rejected")
 
 type unregisteredTokenError struct{}
 
@@ -423,8 +429,10 @@ func parseFCMError(body []byte, status int) error {
 			return model.ErrProviderFailed
 		}
 	}
-	if (status == http.StatusUnauthorized && response.Error.Status == "UNAUTHENTICATED") ||
-		(status == http.StatusForbidden && response.Error.Status == "PERMISSION_DENIED") {
+	if status == http.StatusUnauthorized && response.Error.Status == "UNAUTHENTICATED" {
+		return errBearerRejected
+	}
+	if status == http.StatusForbidden && response.Error.Status == "PERMISSION_DENIED" {
 		return model.ErrProviderAuthorization
 	}
 	return model.ErrProviderFailed

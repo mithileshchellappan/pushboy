@@ -72,4 +72,5 @@ type DeliveryReceipt struct {
 	TenantID               uuid.UUID
 	ClaimID                uuid.UUID
 	InvalidateRegistration bool
+	TokenInvalidSince      *time.Time
 }

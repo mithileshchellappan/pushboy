@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -17,6 +18,13 @@ var (
 	ErrProviderFailed           = errors.New("provider request failed")
 	ErrProviderOutcomeUnknown   = errors.New("provider delivery outcome unknown")
 )
+
+type TokenInvalidSince struct {
+	Time time.Time
+}
+
+func (e *TokenInvalidSince) Error() string { return ErrProviderInvalidToken.Error() }
+func (e *TokenInvalidSince) Unwrap() error { return ErrProviderInvalidToken }
 
 type ProviderRef struct {
 	TenantID uuid.UUID

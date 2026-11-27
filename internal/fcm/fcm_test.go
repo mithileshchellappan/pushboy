@@ -34,6 +34,7 @@ func TestParseFCMError(t *testing.T) {
 		{"typed unregistered", unregisteredBody, http.StatusNotFound, true, "registration-token-not-registered"},
 		{"wrong status", unregisteredBody, http.StatusBadRequest, false, "provider request failed"},
 		{"wrong detail type", `{"error":{"details":[{"errorCode":"UNREGISTERED"}]}}`, http.StatusNotFound, false, "provider request failed"},
+		{"third-party auth rejection", `{"error":{"status":"UNAUTHENTICATED","details":[{` + fcmDetails + `,"errorCode":"THIRD_PARTY_AUTH_ERROR"}]}}`, http.StatusUnauthorized, false, "provider request failed"},
 		{"wrong namespace", `{"error":{"status":"PERMISSION_DENIED","details":[{` + fcmDetails + `,"errorCode":"SENDER_ID_MISMATCH"}]}}`, http.StatusForbidden, false, "provider request failed"},
 		{"provider message only", `{"error":{"message":"secret-body-sentinel UNREGISTERED","status":"secret-status-sentinel"}}`, http.StatusNotFound, false, "provider request failed"},
 		{"malformed json", `secret-error-sentinel`, http.StatusInternalServerError, false, "provider request failed"},
@@ -122,6 +123,68 @@ func TestSendWithAdmissionRunsAfterCapacityAndCredentialsAndBeforeRetry(t *testi
 	}
 }
 
+func TestFCMRejectedBearerRefresh(t *testing.T) {
+	const rejectedBody = `{"error":{"status":"UNAUTHENTICATED","message":"secret-provider-sentinel"}}`
+	const permissionDenied = `{"error":{"status":"PERMISSION_DENIED","message":"secret-provider-sentinel"}}`
+	for _, tc := range []struct {
+		name                        string
+		repeat, stale, refreshed    bool
+		denied                      bool
+		attempts, checks, exchanges int
+		want                        error
+	}{
+		{name: "refresh and re-admit", attempts: 2, checks: 2, exchanges: 2},
+		{name: "stale after refresh", stale: true, attempts: 1, checks: 2, exchanges: 2, want: model.ErrProviderAdmission},
+		{name: "one refresh per send", repeat: true, attempts: 2, checks: 2, exchanges: 2, want: model.ErrProviderUnavailable},
+		{name: "late rejection keeps newer bearer", refreshed: true, attempts: 2, checks: 2, exchanges: 1},
+		{name: "permanent IAM rejection", denied: true, attempts: 1, checks: 1, exchanges: 1, want: model.ErrProviderAuthorization},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts, checks, exchanges := 0, 0, 0
+			client := newClient("target-project", 1, 1, 0, nil)
+			client.oauthGate = make(chan struct{}, 1)
+			client.loadToken = func(context.Context) (*oauth2.Token, error) {
+				exchanges++
+				return &oauth2.Token{AccessToken: fmt.Sprintf("bearer%d", exchanges)}, nil
+			}
+			client.httpClients[0].Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				attempts++
+				wantBearer := fmt.Sprintf("Bearer bearer%d", attempts)
+				if req.Header.Get("Authorization") != wantBearer || checks != attempts {
+					t.Fatalf("send %d did not use a fresh, admitted bearer", attempts)
+				}
+				status, body := http.StatusOK, ""
+				switch {
+				case tc.denied:
+					status, body = http.StatusForbidden, permissionDenied
+				case attempts == 1 || tc.repeat:
+					status, body = http.StatusUnauthorized, rejectedBody
+				}
+				if tc.refreshed && attempts == 1 {
+					client.oauthToken.Store(&oauth2.Token{AccessToken: "bearer2"})
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			err := client.SendWithAdmission(t.Context(), "registration", &model.NotificationPayload{}, func(context.Context) error {
+				checks++
+				if exchanges == 0 || len(client.sem) != 1 {
+					t.Fatal("admission ran before OAuth credentials or capacity were ready")
+				}
+				if tc.stale && checks == 2 {
+					return model.ErrProviderAdmission
+				}
+				return nil
+			})
+			if err != tc.want || attempts != tc.attempts || checks != tc.checks || exchanges != tc.exchanges {
+				t.Fatalf("send returned %v, attempts=%d checks=%d exchanges=%d", err, attempts, checks, exchanges)
+			}
+			if tc.repeat && client.oauthToken.Load() != nil {
+				t.Fatal("the second rejected bearer remained cached")
+			}
+		})
+	}
+}
+
 func TestFCMTransportAndOAuthErrorsRedactRawText(t *testing.T) {
 	admit := func(context.Context) error { return nil }
 	secret := errors.New("secret-transport-sentinel https://not-real/api/secret-token-sentinel")
@@ -139,7 +202,7 @@ func TestFCMTransportAndOAuthErrorsRedactRawText(t *testing.T) {
 	if err := client.SendWithAdmission(t.Context(), "device-token-sentinel", &model.NotificationPayload{}, admit); err != model.ErrProviderOutcomeUnknown {
 		t.Fatalf("transport error = %v, want safe unknown outcome", err)
 	}
-	client.oauthToken = nil
+	client.oauthToken.Store(nil)
 	client.loadToken = func(context.Context) (*oauth2.Token, error) {
 		return nil, &oauth2.RetrieveError{
 			Response:  &http.Response{StatusCode: http.StatusBadRequest},
@@ -147,8 +210,8 @@ func TestFCMTransportAndOAuthErrorsRedactRawText(t *testing.T) {
 			ErrorCode: "invalid_grant",
 		}
 	}
-	if err := client.SendWithAdmission(t.Context(), "device-token-sentinel", &model.NotificationPayload{}, admit); err != model.ErrProviderAuthorization {
-		t.Fatalf("OAuth error = %v, want safe authorization failure", err)
+	if err := client.SendWithAdmission(t.Context(), "device-token-sentinel", &model.NotificationPayload{}, admit); err != model.ErrProviderUnavailable {
+		t.Fatalf("OAuth error = %v, want provider unavailable", err)
 	}
 	client.loadToken = func(context.Context) (*oauth2.Token, error) {
 		return nil, fmt.Errorf("oauth-secret-sentinel: %w", context.DeadlineExceeded)

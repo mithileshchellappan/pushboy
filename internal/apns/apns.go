@@ -69,8 +69,9 @@ type ApsPayload struct {
 type ApnsRequest map[string]interface{}
 
 type responseError struct {
-	status int
-	reason string
+	timestamp int64
+	status    int
+	reason    string
 }
 
 func (e *responseError) Error() string {
@@ -126,7 +127,8 @@ func (e *responseError) Is(target error) bool {
 
 func newResponseError(status int, body []byte) *responseError {
 	var response struct {
-		Reason string `json:"reason"`
+		Reason    string `json:"reason"`
+		Timestamp int64  `json:"timestamp"`
 	}
 	if json.Unmarshal(body, &response) != nil {
 		return &responseError{status: status}
@@ -140,7 +142,7 @@ func newResponseError(status int, body []byte) *responseError {
 		"MissingDeviceToken", "MissingProviderToken", "MissingPushType", "MissingTopic", "PayloadEmpty", "PayloadTooLarge",
 		"ServiceUnavailable", "Shutdown", "TooManyProviderTokenUpdates", "TooManyRequests", "TopicDisallowed", "TopicMismatch",
 		"Unregistered":
-		return &responseError{status: status, reason: response.Reason}
+		return &responseError{status: status, reason: response.Reason, timestamp: response.Timestamp}
 	}
 	return &responseError{status: status}
 }
@@ -370,6 +372,13 @@ func (c *Client) SendWithAdmission(ctx context.Context, token string, payload *m
 
 	err = c.sendWithRetryAdmission(ctx, endpoint, payloadBytes, jwtToken, headers, admit)
 	if admit != nil {
+		var refusal *responseError
+		if errors.As(err, &refusal) && refusal.status == http.StatusGone && errors.Is(err, model.ErrProviderInvalidToken) {
+			if refusal.timestamp <= 0 || refusal.timestamp > time.Now().UnixMilli() {
+				return model.ErrProviderFailed
+			}
+			return &model.TokenInvalidSince{Time: time.UnixMilli(refusal.timestamp).UTC()}
+		}
 		return model.SafeProviderError(err)
 	}
 	return err
