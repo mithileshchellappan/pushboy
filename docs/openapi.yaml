@@ -8,9 +8,10 @@ info:
     url: https://opensource.org/license/mit/
   description: |
     Pushboy exposes a small HTTP API for users, device tokens, topics,
-    notification jobs, and Live Activity dispatches. Tenant user sends and receipt
-    reads require a backend bearer key. Keep the deployment behind a trusted
-    network or authenticated gateway for the other routes.
+    notification jobs, and Live Activity dispatches. Tenant user CRUD, direct
+    user sends, and receipt reads require a tenant backend bearer key. Keep the
+    deployment behind a trusted network or authenticated gateway for legacy
+    routes.
 servers:
   - url: http://localhost:8080
     description: Local development
@@ -40,79 +41,135 @@ paths:
   /v1/users:
     get:
       tags: [Users]
-      summary: List users
+      summary: List tenant users
+      description: Requires a backend key with read scope. Pass next_cursor back with the same tenant's key to continue listing users.
+      security:
+        - TenantKey: []
       parameters:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
       responses:
         "200":
-          description: Users ordered by creation time descending.
+          description: Users for the authenticated tenant, ordered by creation time descending.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PaginatedUsers"
+                $ref: "#/components/schemas/PaginatedTenantUsers"
         "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
           $ref: "#/components/responses/TextError"
         "500":
           $ref: "#/components/responses/TextError"
-
-  /v1/users/:
+        "503":
+          $ref: "#/components/responses/TextError"
     post:
       tags: [Users]
-      summary: Create a user
+      summary: Create a tenant user
+      description: Requires a backend key with users:write scope. Pushboy generates the UID. Provide an identity from your backend to create an identified user. An empty body or empty JSON object creates an anonymous user.
+      security:
+        - TenantKey: []
       requestBody:
         required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateUserRequest"
+              $ref: "#/components/schemas/CreateTenantUserRequest"
+            examples:
+              anonymous:
+                value: {}
+              identified:
+                value:
+                  identity:
+                    namespace: account
+                    externalId: abc
       responses:
         "201":
           description: User created.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/TenantUser"
         "400":
           $ref: "#/components/responses/TextError"
-        "409":
+        "401":
           $ref: "#/components/responses/TextError"
+        "403":
+          $ref: "#/components/responses/TextError"
+        "409":
+          description: The tenant already has a user with this identity.
+          content:
+            text/plain:
+              schema:
+                type: string
         "500":
+          $ref: "#/components/responses/TextError"
+        "503":
           $ref: "#/components/responses/TextError"
 
   /v1/users/{userID}:
     parameters:
-      - $ref: "#/components/parameters/UserID"
+      - name: userID
+        in: path
+        required: true
+        description: Pushboy-generated UID of the tenant user.
+        schema: {type: string, format: uuid}
     get:
       tags: [Users]
-      summary: Get a user
+      summary: Get a tenant user
+      description: Requires a backend key with read scope. An invalid UID or a user outside the authenticated tenant returns 404.
+      security:
+        - TenantKey: []
       responses:
         "200":
           description: User found.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/User"
+                $ref: "#/components/schemas/TenantUser"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
+          $ref: "#/components/responses/TextError"
         "404":
           $ref: "#/components/responses/TextError"
         "500":
+          $ref: "#/components/responses/TextError"
+        "503":
           $ref: "#/components/responses/TextError"
     delete:
       tags: [Users]
-      summary: Delete a user
+      summary: Delete a tenant user
+      description: Requires a backend key with users:write scope. An invalid UID or a user outside the authenticated tenant returns 404. An installation or notification job reference blocks deletion.
+      security:
+        - TenantKey: []
       responses:
         "204":
           description: User deleted.
+        "401":
+          $ref: "#/components/responses/TextError"
+        "403":
+          $ref: "#/components/responses/TextError"
         "404":
           $ref: "#/components/responses/TextError"
+        "409":
+          description: An installation or notification job still references the user.
+          content:
+            text/plain:
+              schema:
+                type: string
         "500":
+          $ref: "#/components/responses/TextError"
+        "503":
           $ref: "#/components/responses/TextError"
 
   /v1/users/tokens:
     post:
       tags: [Tokens]
-      summary: Register a push token
-      description: Creates the user if the provided id does not exist. Generates a user id if id is omitted.
+      summary: Register a legacy push token
+      description: Uses the legacy user namespace. Creates a legacy user if the provided id does not exist, or generates a legacy user ID if id is omitted. Tenant push registrations use the backend storage layer.
       requestBody:
         required: true
         content:
@@ -144,7 +201,7 @@ paths:
       - $ref: "#/components/parameters/UserID"
     get:
       tags: [Tokens]
-      summary: List a user's push tokens
+      summary: List a legacy user's push tokens
       responses:
         "200":
           description: Tokens for the user. Unknown users currently return an empty list.
@@ -163,7 +220,7 @@ paths:
       - $ref: "#/components/parameters/TokenID"
     delete:
       tags: [Tokens]
-      summary: Delete a push token
+      summary: Delete a legacy push token
       description: The current handler deletes by tokenID; userID is part of the route but is not used for authorization.
       responses:
         "204":
@@ -227,8 +284,8 @@ paths:
       - $ref: "#/components/parameters/UserID"
     get:
       tags: [Notifications]
-      summary: List notifications eligible for a user
-      description: Returns direct user sends and topic sends where the user is currently subscribed and the job effective time is on or after the subscription time. This is eligibility, not delivery history.
+      summary: List notifications eligible for a legacy user
+      description: Uses the global user ID. For a tenant direct send, use the job ID returned by the send endpoint to read its status and receipts. Returns legacy direct user sends and topic sends where the user is currently subscribed and the job effective time is on or after the subscription time. This is eligibility, not delivery history.
       parameters:
         - $ref: "#/components/parameters/NotificationStatus"
         - $ref: "#/components/parameters/Cursor"
@@ -871,13 +928,27 @@ components:
       type: string
       enum: [apns, fcm]
 
-    CreateUserRequest:
+    CreateTenantUserRequest:
       type: object
+      additionalProperties: false
       properties:
-        id:
-          type: string
-          description: Optional caller-provided user id. A UUID is generated when omitted.
-          example: user-123
+        identity:
+          type: [object, "null"]
+          additionalProperties: false
+          required: [namespace, externalId]
+          properties:
+            namespace:
+              type: string
+              minLength: 1
+              maxLength: 128
+              description: Non-blank account namespace. The legacy namespace is reserved.
+              example: account
+            externalId:
+              type: string
+              minLength: 1
+              maxLength: 512
+              description: Non-blank external account identifier.
+              example: abc
 
     RegisterTokenRequest:
       type: object
@@ -995,14 +1066,26 @@ components:
           type: string
           example: "2026-05-01T10:30:00Z"
 
-    PaginatedUsers:
+    TenantUser:
+      type: object
+      required: [uid, kind]
+      properties:
+        uid:
+          type: string
+          format: uuid
+          example: 018f7b7a-a9b7-7a22-9d6f-6fb3c9b6b9c0
+        kind:
+          type: string
+          enum: [anonymous, identified]
+
+    PaginatedTenantUsers:
       type: object
       required: [items, next_cursor, has_more]
       properties:
         items:
           type: array
           items:
-            $ref: "#/components/schemas/User"
+            $ref: "#/components/schemas/TenantUser"
         next_cursor:
           type: string
           example: ""

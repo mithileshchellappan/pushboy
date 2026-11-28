@@ -19,7 +19,7 @@ import (
 )
 
 type Server struct {
-	userJobs      userJobStore
+	tenantUsers   tenantUserStore
 	service       *service.PushboyService
 	jobPipeline   pipeline.Pipeline[model.JobItem]
 	laJobPipeline pipeline.Pipeline[model.LAJobItem]
@@ -29,8 +29,8 @@ type Server struct {
 
 const immediateEnqueueTimeout = 2 * time.Second
 
-func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], userJobs userJobStore) *Server {
-	return &Server{userJobs: userJobs, service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
+func New(s *service.PushboyService, jobPipeline pipeline.Pipeline[model.JobItem], laJobPipeline pipeline.Pipeline[model.LAJobItem], tenantUsers tenantUserStore) *Server {
+	return &Server{tenantUsers: tenantUsers, service: s, jobPipeline: jobPipeline, laJobPipeline: laJobPipeline}
 }
 
 func (s *Server) Start(addr string) error {
@@ -120,7 +120,7 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 
 		var updateErr error
 		if jobItem.TenantID != uuid.Nil {
-			updateErr = s.userJobs.FailTenantJobDispatch(statusCtx, jobItem.TenantID, jobID)
+			updateErr = s.tenantUsers.FailTenantJobDispatch(statusCtx, jobItem.TenantID, jobID)
 		} else {
 			updateErr = s.service.UpdateJobStatus(statusCtx, jobID, model.NotificationJobStatusFailed)
 		}
@@ -136,96 +136,6 @@ func (s *Server) enqueueImmediateJob(jobID string, jobItem model.JobItem) error 
 // Health check
 func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("pong"))
-}
-
-// User handlers
-
-func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		ID string `json:"id,omitempty"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
-		http.Error(w, "Bad request", http.StatusBadRequest)
-		return
-	}
-
-	user, err := s.service.CreateUser(r.Context(), req.ID)
-	if err != nil {
-		if errors.Is(err, storage.Errors.AlreadyExists) {
-			http.Error(w, "User already exists", http.StatusConflict)
-			return
-		}
-		http.Error(w, "Error creating user", http.StatusInternalServerError)
-		log.Printf("Error creating user: %v", err)
-		return
-	}
-
-	s.respond(w, r, toUserResponse(*user), http.StatusCreated)
-}
-
-func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	const route = "/v1/users"
-
-	query, limit, err := pageQueryFromRequest(r, route)
-	if err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
-		return
-	}
-
-	users, err := s.service.ListUsers(r.Context(), query)
-	if err != nil {
-		http.Error(w, "Error listing users", http.StatusInternalServerError)
-		log.Printf("Error listing users: %v", err)
-		return
-	}
-
-	response := makeMappedListResponse(users, limit, route, "", func(user storage.User) (time.Time, string) {
-		return user.CreatedAt, user.ID
-	}, toUserResponse)
-	s.respond(w, r, response, http.StatusOK)
-}
-
-func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
-	if userID == "" {
-		http.Error(w, "userID is required", http.StatusBadRequest)
-		return
-	}
-
-	user, err := s.service.GetUser(r.Context(), userID)
-	if err != nil {
-		if errors.Is(err, storage.Errors.NotFound) {
-			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "Error getting user", http.StatusInternalServerError)
-		log.Printf("Error getting user: %v", err)
-		return
-	}
-
-	s.respond(w, r, toUserResponse(*user), http.StatusOK)
-}
-
-func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
-	userID := chi.URLParam(r, "userID")
-	if userID == "" {
-		http.Error(w, "userID is required", http.StatusBadRequest)
-		return
-	}
-
-	err := s.service.DeleteUser(r.Context(), userID)
-	if err != nil {
-		if errors.Is(err, storage.Errors.NotFound) {
-			http.Error(w, "User not found", http.StatusNotFound)
-			return
-		}
-		http.Error(w, "Error deleting user", http.StatusInternalServerError)
-		log.Printf("Error deleting user: %v", err)
-		return
-	}
-
-	s.respond(w, r, nil, http.StatusNoContent)
 }
 
 // Token handlers
@@ -429,13 +339,12 @@ type SendNotificationRequest struct {
 }
 
 func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := s.authorizeUserJob(w, r, "send")
+	tenantID, ok := s.authorizeTenantUser(w, r, "send")
 	if !ok {
 		return
 	}
-	rawUID := chi.URLParam(r, "userID")
-	userID, err := uuid.Parse(rawUID)
-	if err != nil || len(rawUID) != 36 || userID == uuid.Nil {
+	userID, ok := tenantUserUID(r)
+	if !ok {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
 	}
@@ -458,7 +367,7 @@ func (s *Server) handleSendToUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	job, err := s.userJobs.CreateTenantUserJob(r.Context(), tenantID, userID, payload, scheduledAt)
+	job, err := s.tenantUsers.CreateTenantUserJob(r.Context(), tenantID, userID, payload, scheduledAt)
 	if err != nil {
 		if errors.Is(err, storage.Errors.NotFound) {
 			http.Error(w, "User not found", http.StatusNotFound)
@@ -743,11 +652,11 @@ func (s *Server) handleGetJobStatus(w http.ResponseWriter, r *http.Request) {
 	var job *storage.PublishJob
 	var err error
 	if len(r.Header.Values("Authorization")) > 0 {
-		tid, ok := s.authorizeUserJob(w, r, "read")
+		tid, ok := s.authorizeTenantUser(w, r, "read")
 		if !ok {
 			return
 		}
-		job, err = s.userJobs.GetTenantUserJob(r.Context(), tid, jobID)
+		job, err = s.tenantUsers.GetTenantUserJob(r.Context(), tid, jobID)
 	} else {
 		job, err = s.service.GetJobStatus(r.Context(), jobID)
 	}

@@ -14,25 +14,29 @@ import (
 	"github.com/mithileshchellappan/pushboy/internal/storage"
 )
 
-type userJobStore interface {
+type tenantUserStore interface {
 	AuthenticateServerKey(context.Context, string) (storage.ServerKeyAccess, error)
+	CreateTenantUser(context.Context, uuid.UUID, *storage.TenantUserIdentity, *uuid.UUID) (storage.TenantUser, error)
+	ListTenantUsers(context.Context, uuid.UUID, storage.PageQuery) ([]storage.TenantUserListItem, error)
+	GetTenantUser(context.Context, uuid.UUID, uuid.UUID) (storage.TenantUser, error)
+	DeleteTenantUser(context.Context, uuid.UUID, uuid.UUID) error
 	CreateTenantUserJob(context.Context, uuid.UUID, uuid.UUID, *model.NotificationPayload, *time.Time) (*storage.PublishJob, error)
 	GetTenantUserJob(context.Context, uuid.UUID, string) (*storage.PublishJob, error)
 	ListTenantUserJobReceipts(context.Context, uuid.UUID, string, string, int) ([]storage.TenantJobReceipt, error)
 	FailTenantJobDispatch(context.Context, uuid.UUID, string) error
 }
 
-func (s *Server) authorizeUserJob(w http.ResponseWriter, r *http.Request, scope string) (uuid.UUID, bool) {
+func (s *Server) authorizeTenantUser(w http.ResponseWriter, r *http.Request, scope string) (uuid.UUID, bool) {
 	w.Header().Set("Cache-Control", "no-store")
 	headers := r.Header.Values("Authorization")
 	if len(headers) == 1 {
 		fields := strings.Fields(headers[0])
 		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
-			if s.userJobs == nil {
+			if s.tenantUsers == nil {
 				http.Error(w, "Key verification unavailable", http.StatusServiceUnavailable)
 				return uuid.Nil, false
 			}
-			actor, err := s.userJobs.AuthenticateServerKey(r.Context(), fields[1])
+			actor, err := s.tenantUsers.AuthenticateServerKey(r.Context(), fields[1])
 			if err == nil {
 				if !slices.Contains(actor.Scopes, scope) {
 					http.Error(w, "Forbidden", http.StatusForbidden)
@@ -52,7 +56,7 @@ func (s *Server) authorizeUserJob(w http.ResponseWriter, r *http.Request, scope 
 }
 
 func (s *Server) handleUserJobReceipts(w http.ResponseWriter, r *http.Request) {
-	tid, ok := s.authorizeUserJob(w, r, "read")
+	tid, ok := s.authorizeTenantUser(w, r, "read")
 	if !ok {
 		return
 	}
@@ -69,7 +73,7 @@ func (s *Server) handleUserJobReceipts(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	items, err := s.userJobs.ListTenantUserJobReceipts(r.Context(), tid, chi.URLParam(r, "jobID"), cursor, limit+1)
+	items, err := s.tenantUsers.ListTenantUserJobReceipts(r.Context(), tid, chi.URLParam(r, "jobID"), cursor, limit+1)
 	if errors.Is(err, storage.Errors.NotFound) {
 		http.Error(w, "Job not found", http.StatusNotFound)
 		return

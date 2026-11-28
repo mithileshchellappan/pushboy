@@ -77,7 +77,9 @@ npx --yes @redocly/cli@2.30.6 lint docs/openapi.yaml
 git diff --check
 ```
 
-Add focused regression tests for changed behavior.
+Add a regression test that fails for the reported behavior. After changing a workflow that spans API routes, build and start Pushboy against disposable PostgreSQL and call those routes over HTTP. Pass the ID returned by one call into the next. Check both the result and what another tenant can see.
+
+For the user send flow, set `PUSHBOY_SMOKE_KEY` and `PUSHBOY_SMOKE_OTHER_KEY` to backend keys from two different disposable tenants. Run `bash scripts/smoke-user-send.sh http://127.0.0.1:8080/v1`. It creates an anonymous user and a job with zero devices, then checks the job, receipts, and tenant isolation. CI runs the same script against the built container.
 
 For the CI container setup, use Docker Compose 2.24.4 or later with `compose.yaml` and `compose.ci.yaml`. The API is exposed at `http://127.0.0.1:18080`.
 

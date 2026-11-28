@@ -22,6 +22,56 @@ func tenantPushJobTestTenant(t *testing.T, store *PostgresStore) uuid.UUID {
 	return tenant
 }
 
+func TestPostgresTenantSendWhileUserIsBeingDeleted(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	store := tenantKeyManagementStore(t)
+	tenant := tenantPushJobTestTenant(t, store)
+	user, err := store.CreateTenantUser(ctx, tenant, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletion, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deletion.Rollback()
+	var blocker int
+	if err := deletion.QueryRowContext(ctx, `DELETE FROM tenant_users WHERE tenant_id = $1 AND uid = $2 RETURNING pg_backend_pid()`, tenant, user.UID).Scan(&blocker); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := store.CreateTenantUserJob(ctx, tenant, user.UID, &model.NotificationPayload{Title: "Hello"}, nil)
+		result <- err
+	}()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		var waiting bool
+		if err := store.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("send finished before deletion committed: %v", err)
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-poll.C:
+		}
+	}
+	if err := deletion.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-result; !errors.Is(err, Errors.NotFound) {
+		t.Fatalf("send after deletion committed = %v, want not found", err)
+	}
+}
+
 func TestPostgresTenantPushScheduledSnapshotAndLegacyIsolation(t *testing.T) {
 	ctx := t.Context()
 	store := tenantKeyManagementStore(t)

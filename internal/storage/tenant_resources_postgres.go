@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -118,6 +119,56 @@ func (s *PostgresStore) GetTenantUser(ctx context.Context, tenantID, uid uuid.UU
 		return TenantUser{}, fmt.Errorf("get tenant user: %w", err)
 	}
 	return user, nil
+}
+
+type TenantUserListItem struct {
+	TenantUser
+	CreatedAt time.Time
+}
+
+func (s *PostgresStore) ListTenantUsers(ctx context.Context, tenantID uuid.UUID, query PageQuery) ([]TenantUserListItem, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT uid, kind, created_at
+		FROM tenant_users
+		WHERE tenant_id = $1
+		  AND ($2::timestamptz IS NULL OR (created_at, uid) < ($2, NULLIF($3, '')::uuid))
+		ORDER BY created_at DESC, uid DESC
+		LIMIT $4`,
+		tenantID, cursorTimeArg(query.Cursor.SortValue), query.Cursor.ID, query.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tenant users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []TenantUserListItem
+	for rows.Next() {
+		var user TenantUserListItem
+		if err := rows.Scan(&user.UID, &user.Kind, &user.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan tenant user: %w", err)
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+func (s *PostgresStore) DeleteTenantUser(ctx context.Context, tenantID, uid uuid.UUID) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM tenant_users WHERE tenant_id = $1 AND uid = $2`, tenantID, uid)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+			return Errors.Conflict
+		}
+		return fmt.Errorf("delete tenant user: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count deleted tenant users: %w", err)
+	}
+	if deleted == 0 {
+		return Errors.NotFound
+	}
+	return nil
 }
 
 func (s *PostgresStore) CreateTenantTopic(ctx context.Context, tenantID uuid.UUID, id, name string) (TenantTopic, error) {

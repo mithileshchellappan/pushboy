@@ -39,6 +39,35 @@ func TestTenantUserSendIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	jobs := pipeline.NewMemoryPipeline[model.JobItem](4)
+	router := New(service.NewPushBoyService(store, "", nil), jobs, nil, store).setupRouter()
+
+	var secrets []string
+	request := func(method, path, bearer, body string, want int, response any) {
+		t.Helper()
+		req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		res := httptest.NewRecorder()
+		router.ServeHTTP(res, req)
+		for _, secret := range secrets {
+			if strings.Contains(res.Body.String(), secret) {
+				t.Fatalf("%s %s leaked provider or key material", method, path)
+			}
+		}
+		if res.Code != want {
+			t.Fatalf("%s %s returned %d, want %d: %s", method, path, res.Code, want, res.Body)
+		}
+		if response != nil {
+			if err := json.Unmarshal(res.Body.Bytes(), response); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	const usersPath = "/v1/users"
+	const identityBody = `{"identity":{"namespace":"account","externalId":"shared-customer"}}`
 	const bundle = "com.example.shared"
 	const lostTitle = "received-without-reply"
 	const retryTitle = "ownership-changed-before-retry"
@@ -57,11 +86,16 @@ func TestTenantUserSendIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		user, err := store.CreateTenantUser(ctx, f.id, &storage.TenantUserIdentity{
-			Namespace: "account", ExternalID: "shared-customer",
-		}, nil)
-		if err != nil {
-			t.Fatal(err)
+		secrets = append(secrets, f.bearer, f.kid)
+		var user storage.TenantUser
+		request(http.MethodPost, usersPath, f.bearer, identityBody, http.StatusCreated, &user)
+		if user.UID == uuid.Nil || user.Kind != "identified" {
+			t.Fatalf("unexpected created user: %+v", user)
+		}
+		var fetched storage.TenantUser
+		request(http.MethodGet, usersPath+"/"+user.UID.String(), f.bearer, "", http.StatusOK, &fetched)
+		if fetched != user {
+			t.Fatalf("fetched user %+v differs from created user %+v", fetched, user)
 		}
 		f.uid = user.UID
 		f.signingKey, err = ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -85,6 +119,7 @@ func TestTenantUserSendIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.routeID = route.ID
+		secrets = append(secrets, route.ID.String())
 		return f
 	}
 	a := createTenant("user-send-a", "AAAA000001")
@@ -92,6 +127,78 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	if a.uid == b.uid {
 		t.Fatal("tenants with the same external identity share a UID")
 	}
+
+	aUserPath := usersPath + "/" + a.uid.String()
+	bUserPath := usersPath + "/" + b.uid.String()
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		request(method, aUserPath, b.bearer, "", http.StatusNotFound, nil)
+		request(method, bUserPath, a.bearer, "", http.StatusNotFound, nil)
+		request(method, usersPath+"/invalid-uid", a.bearer, "", http.StatusNotFound, nil)
+		request(method, aUserPath, "", "", http.StatusUnauthorized, nil)
+	}
+	request(http.MethodGet, usersPath, "", "", http.StatusUnauthorized, nil)
+	request(http.MethodPost, usersPath, "", "{}", http.StatusUnauthorized, nil)
+	request(http.MethodPost, usersPath, a.bearer, identityBody, http.StatusConflict, nil)
+	for _, body := range []string{
+		`{"id":"chosen-id"}`,
+		`{"uid":"chosen-uid"}`,
+		`{"identity":{"namespace":"account","externalId":"customer","extra":true}}`,
+		`{"identity":{"namespace":"account"}}`,
+		`{} {}`,
+		`null`,
+	} {
+		request(http.MethodPost, usersPath, a.bearer, body, http.StatusBadRequest, nil)
+	}
+
+	actor, err := store.AuthenticateServerKey(ctx, a.bearer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, readKey, err := store.IssueServerKey(ctx, actor, []string{"read"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeKey, err := store.IssueServerKey(ctx, actor, []string{"users:write"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secrets = append(secrets, readKey, writeKey)
+	request(http.MethodGet, aUserPath, readKey, "", http.StatusOK, nil)
+	request(http.MethodGet, aUserPath, writeKey, "", http.StatusForbidden, nil)
+	request(http.MethodGet, usersPath, writeKey, "", http.StatusForbidden, nil)
+	request(http.MethodPost, usersPath, readKey, "{}", http.StatusForbidden, nil)
+	request(http.MethodDelete, aUserPath, readKey, "", http.StatusForbidden, nil)
+
+	var anonymous storage.TenantUser
+	request(http.MethodPost, usersPath, writeKey, "{}", http.StatusCreated, &anonymous)
+	if anonymous.Kind != "anonymous" || anonymous.UID == uuid.Nil {
+		t.Fatalf("unexpected anonymous user: %+v", anonymous)
+	}
+
+	for _, body := range []string{"", `{"identity":null}`} {
+		var user storage.TenantUser
+		request(http.MethodPost, usersPath, writeKey, body, http.StatusCreated, &user)
+		if user.Kind != "anonymous" || user.UID == uuid.Nil || user.UID == anonymous.UID {
+			t.Fatalf("unexpected anonymous user: %+v", user)
+		}
+		path := usersPath + "/" + user.UID.String()
+		request(http.MethodDelete, path, writeKey, "", http.StatusNoContent, nil)
+		request(http.MethodGet, path, readKey, "", http.StatusNotFound, nil)
+		request(http.MethodDelete, path, writeKey, "", http.StatusNotFound, nil)
+	}
+
+	var firstPage, secondPage listResponse[storage.TenantUser]
+	request(http.MethodGet, usersPath+"?limit=1", readKey, "", http.StatusOK, &firstPage)
+	if len(firstPage.Items) != 1 || firstPage.Items[0] != anonymous || !firstPage.HasMore || firstPage.NextCursor == "" {
+		t.Fatalf("unexpected first user page: %+v", firstPage)
+	}
+	nextUsers := usersPath + "?limit=1&cursor=" + url.QueryEscape(firstPage.NextCursor)
+	request(http.MethodGet, nextUsers, readKey, "", http.StatusOK, &secondPage)
+	if len(secondPage.Items) != 1 || secondPage.Items[0].UID != a.uid || secondPage.HasMore || secondPage.NextCursor != "" {
+		t.Fatalf("unexpected second user page: %+v", secondPage)
+	}
+	request(http.MethodGet, nextUsers, b.bearer, "", http.StatusBadRequest, nil)
+	request(http.MethodGet, usersPath+"?cursor=not-a-cursor", readKey, "", http.StatusBadRequest, nil)
 
 	enroll := func(f tenantFixture, deviceID uuid.UUID, token string) (storage.TenantInstallation, storage.TenantPushRegistration) {
 		t.Helper()
@@ -119,6 +226,8 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	aPhone, aPhoneReg := enroll(a, phoneID, aPhoneToken)
 	aTablet, aTabletReg := enroll(a, tabletID, aTabletToken)
 	_, bPhoneReg := enroll(b, phoneID, bPhoneToken)
+	secrets = append(secrets, aPhoneToken, aTabletToken, bPhoneToken)
+	request(http.MethodDelete, aUserPath, writeKey, "", http.StatusConflict, nil)
 
 	switchOwner := func(ctx context.Context, device storage.TenantInstallation) error {
 		_, err := store.IdentifyInstallation(ctx, a.id, device.ID, storage.InstallationOwnershipChange{
@@ -210,34 +319,9 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	}))
 	defer stub.Close()
 
-	jobs := pipeline.NewMemoryPipeline[model.JobItem](4)
 	routes := dispatch.NewTenantChannelRouter(providers, &config.Config{
 		APNSEndpoint: stub.URL, APNSClientPool: 1, APNSMaxConcurrent: 1, MaxRetryNotification: 1,
 	})
-	router := New(service.NewPushBoyService(store, "", nil), jobs, nil, store).setupRouter()
-
-	request := func(method, path, bearer, body string, want int, response any) {
-		t.Helper()
-		req := httptest.NewRequestWithContext(ctx, method, path, strings.NewReader(body))
-		if bearer != "" {
-			req.Header.Set("Authorization", "Bearer "+bearer)
-		}
-		res := httptest.NewRecorder()
-		router.ServeHTTP(res, req)
-		if res.Code != want {
-			t.Fatalf("%s %s returned %d, want %d: %s", method, path, res.Code, want, res.Body)
-		}
-		for _, secret := range []string{aPhoneToken, aTabletToken, bPhoneToken, a.bearer, b.bearer, a.kid, b.kid, a.routeID.String(), b.routeID.String()} {
-			if strings.Contains(res.Body.String(), secret) {
-				t.Fatalf("%s %s leaked provider or key material", method, path)
-			}
-		}
-		if response != nil {
-			if err := json.Unmarshal(res.Body.Bytes(), response); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
 	userSendPath := func(uid string) string { return "/v1/users/" + uid + "/send" }
 	jobPath := func(jobID string) string { return "/v1/notifications/" + jobID }
 	diagnoseJob := func(jobID, bearer string) publishJobResponse {
@@ -321,6 +405,9 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	dispatchTasks(fanout(lostJob, 1))
 	retryJob := submit(a, fmt.Sprintf(`{"title":%q}`, retryTitle), 1)
 	dispatchTasks(fanout(retryJob, 1))
+
+	request(http.MethodDelete, aUserPath, writeKey, "", http.StatusConflict, nil)
+	request(http.MethodGet, aUserPath, readKey, "", http.StatusOK, nil)
 
 	counts := make(map[string]int)
 	for len(calls) > 0 {

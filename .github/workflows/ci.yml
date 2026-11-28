@@ -146,11 +146,10 @@ jobs:
             exit 1
           fi
 
-          user_id="ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          curl -fsS "$api/users/" \
-            -H 'Content-Type: application/json' \
-            -d "{\"id\":\"${user_id}\"}" | jq -e --arg id "$user_id" '.ID == $id'
-          curl -fsS "$api/users/$user_id" | jq -e --arg id "$user_id" '.ID == $id'
+          export PUSHBOY_SMOKE_KEY PUSHBOY_SMOKE_OTHER_KEY
+          PUSHBOY_SMOKE_KEY=$(docker compose exec -T pushboy /app/pushboy bootstrap "Smoke A" | sed -n 's/^server_key: //p')
+          PUSHBOY_SMOKE_OTHER_KEY=$(docker compose exec -T pushboy /app/pushboy bootstrap "Smoke B" | sed -n 's/^server_key: //p')
+          bash scripts/smoke-user-send.sh "$api"
           curl -fsS "$api/topics/" | jq -e 'any(.[]; .ID == "broadcast")'
 
           docker compose exec -T postgres sh -ec '
