@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: pushboy_test
           POSTGRES_PASSWORD: pushboy_test

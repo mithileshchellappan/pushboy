@@ -130,10 +130,12 @@ Create an identified user from a verified backend account with a key that has `u
 curl -fsS -X POST http://localhost:8080/v1/users \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"identity":{"namespace":"account","externalId":"abc"}}'
+  -d '{"identity":{"namespace":"account","externalId":"abc"},"requestId":"32a9bc2e-22fa-4a69-9a67-a3a198984ccb"}'
 ```
 
-For an anonymous user, send `{}` instead. Both requests return HTTP 201 with a Pushboy-generated `uid` and a `kind` of `identified` or `anonymous`. An identity already used in the same tenant returns HTTP 409.
+For an anonymous user, send `{}` instead. Both requests return HTTP 201 with a Pushboy-generated `uid` and a `kind` of `identified` or `anonymous`. A separate create request for an existing identity in the same tenant returns HTTP 409.
+
+To retry creation, supply a nonzero, lowercase hyphenated UUID as `requestId`. Repeating the same identity or anonymous request with that ID in the same tenant returns HTTP 201 and the original UID. Reusing the ID with a different valid identity or user kind returns HTTP 409. Each tenant has its own request IDs. Deleting an unused user releases its request ID, so a later retry creates a new user. Omit `requestId` or set it to `null` to create without replay.
 
 For a specific user, set `PUSHBOY_USER_UID` in your shell to the returned `uid`. List or fetch users with a key that has `read` scope:
 
@@ -147,14 +149,14 @@ curl -fsS "http://localhost:8080/v1/users/$PUSHBOY_USER_UID" \
 
 The list returns `items` in newest-first order, plus `next_cursor` and `has_more`. When `has_more` is true, pass `next_cursor` as the next request's `cursor` query parameter with a key for the same tenant.
 
-Delete a user with a key that has `users:write` scope:
+Clean up an unused user with a key that has `users:write` scope:
 
 ```bash
 curl -fsS -X DELETE "http://localhost:8080/v1/users/$PUSHBOY_USER_UID" \
   -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
 ```
 
-Deletion returns HTTP 204, or HTTP 409 if an installation or notification job still references the user. Fetch and delete return HTTP 404 for an invalid UID or a user outside the authenticated tenant. A missing or invalid bearer key returns HTTP 401. A valid key without the required scope returns HTTP 403.
+Deletion returns HTTP 204, or HTTP 409 if retained installations or notification job history still reference the user. Fetch and delete return HTTP 404 for an invalid UID or a user outside the authenticated tenant. A missing or invalid bearer key returns HTTP 401. A valid key without the required scope returns HTTP 403. [Full account retirement is tracked in issue #49](https://github.com/mithileshchellappan/pushboy/issues/49).
 
 Use a key with `send` for `POST /v1/users/{uid}/send` and a key with `read` for `GET /v1/notifications/{jobID}` or `GET /v1/notifications/{jobID}/receipts`. Pushboy snapshots recipients for scheduled and immediate sends when it accepts the job. It skips installations whose ownership, registration or route changed before submission. A lost provider reply produces an unknown outcome and the worker avoids replaying that attempt. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
 

@@ -5,7 +5,10 @@ api=${1:?Pass the disposable server /v1 URL}
 tenant=(-H "Authorization: Bearer ${PUSHBOY_SMOKE_KEY:?Set the first tenant backend key}")
 other=(-H "Authorization: Bearer ${PUSHBOY_SMOKE_OTHER_KEY:?Set the second tenant backend key}")
 
-uid=$(curl -fsS "${tenant[@]}" --json '{}' "$api/users" | jq -er 'select(.kind == "anonymous") | .uid | strings | select(length > 0)')
+request_id=$(uuidgen | tr '[:upper:]' '[:lower:]')
+create=$(jq -nc --arg id "$request_id" '{requestId:$id}')
+uid=$(curl -fsS "${tenant[@]}" --json "$create" "$api/users" | jq -er 'select(.kind == "anonymous") | .uid | strings | select(length > 0)')
+curl -fsS "${tenant[@]}" --json "$create" "$api/users" | jq -e --arg uid "$uid" '.uid == $uid' >/dev/null
 curl -fsS "${tenant[@]}" "$api/users/$uid" | jq -e --arg uid "$uid" '.uid == $uid and .kind == "anonymous"' >/dev/null
 
 payload='{"title":"Pushboy HTTP smoke check"}'
@@ -37,4 +40,4 @@ if [[ $status != 409 ]]; then
   echo "Deleting a user with job history returned HTTP $status (expected 409)" >&2
   exit 1
 fi
-echo "Created and read user $uid, completed job $job with zero devices, and verified second-tenant isolation."
+echo "Created, retried, and read user $uid, completed job $job with zero devices, and verified second-tenant isolation."

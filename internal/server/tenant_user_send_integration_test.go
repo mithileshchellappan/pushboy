@@ -68,6 +68,8 @@ func TestTenantUserSendIsolation(t *testing.T) {
 
 	const usersPath = "/v1/users"
 	const identityBody = `{"identity":{"namespace":"account","externalId":"shared-customer"}}`
+	const identifiedRequest = `{"requestId":"27ab5444-384b-4a2e-bd05-f91a73e1a60c","identity":{"namespace":"account","externalId":"shared-customer"}}`
+	const anonymousRequest = `{"requestId":"6751e98e-ca46-48e7-8854-5b7e60160cc9"}`
 	const bundle = "com.example.shared"
 	const lostTitle = "received-without-reply"
 	const retryTitle = "ownership-changed-before-retry"
@@ -88,9 +90,14 @@ func TestTenantUserSendIsolation(t *testing.T) {
 		}
 		secrets = append(secrets, f.bearer, f.kid)
 		var user storage.TenantUser
-		request(http.MethodPost, usersPath, f.bearer, identityBody, http.StatusCreated, &user)
+		request(http.MethodPost, usersPath, f.bearer, identifiedRequest, http.StatusCreated, &user)
 		if user.UID == uuid.Nil || user.Kind != "identified" {
 			t.Fatalf("unexpected created user: %+v", user)
+		}
+		var replay storage.TenantUser
+		request(http.MethodPost, usersPath, f.bearer, identifiedRequest, http.StatusCreated, &replay)
+		if replay != user {
+			t.Fatalf("identified user replay = %+v, want %+v", replay, user)
 		}
 		var fetched storage.TenantUser
 		request(http.MethodGet, usersPath+"/"+user.UID.String(), f.bearer, "", http.StatusOK, &fetched)
@@ -139,9 +146,16 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	request(http.MethodGet, usersPath, "", "", http.StatusUnauthorized, nil)
 	request(http.MethodPost, usersPath, "", "{}", http.StatusUnauthorized, nil)
 	request(http.MethodPost, usersPath, a.bearer, identityBody, http.StatusConflict, nil)
+	request(http.MethodPost, usersPath, a.bearer, strings.Replace(identifiedRequest, "shared-customer", "other-customer", 1), http.StatusConflict, nil)
+	request(http.MethodPost, usersPath, a.bearer, `{"requestId":"27ab5444-384b-4a2e-bd05-f91a73e1a60c"}`, http.StatusConflict, nil)
 	for _, body := range []string{
 		`{"id":"chosen-id"}`,
 		`{"uid":"chosen-uid"}`,
+		`{"requestId":""}`,
+		`{"requestId":"00000000-0000-0000-0000-000000000000"}`,
+		`{"requestId":"27AB5444-384B-4A2E-BD05-F91A73E1A60C"}`,
+		`{"requestId":"27ab5444384b4a2ebd05f91a73e1a60c"}`,
+		`{"requestId":42}`,
 		`{"identity":{"namespace":"account","externalId":"customer","extra":true}}`,
 		`{"identity":{"namespace":"account"}}`,
 		`{} {}`,
@@ -169,13 +183,27 @@ func TestTenantUserSendIsolation(t *testing.T) {
 	request(http.MethodPost, usersPath, readKey, "{}", http.StatusForbidden, nil)
 	request(http.MethodDelete, aUserPath, readKey, "", http.StatusForbidden, nil)
 
-	var anonymous storage.TenantUser
-	request(http.MethodPost, usersPath, writeKey, "{}", http.StatusCreated, &anonymous)
-	if anonymous.Kind != "anonymous" || anonymous.UID == uuid.Nil {
-		t.Fatalf("unexpected anonymous user: %+v", anonymous)
+	var anonymous, otherAnonymous storage.TenantUser
+	for _, tenant := range []struct {
+		bearer string
+		user   *storage.TenantUser
+	}{{writeKey, &anonymous}, {b.bearer, &otherAnonymous}} {
+		request(http.MethodPost, usersPath, tenant.bearer, anonymousRequest, http.StatusCreated, tenant.user)
+		if tenant.user.Kind != "anonymous" || tenant.user.UID == uuid.Nil {
+			t.Fatalf("unexpected anonymous user: %+v", tenant.user)
+		}
+		var replay storage.TenantUser
+		request(http.MethodPost, usersPath, tenant.bearer, anonymousRequest, http.StatusCreated, &replay)
+		if replay != *tenant.user {
+			t.Fatalf("anonymous user replay = %+v, want %+v", replay, *tenant.user)
+		}
 	}
+	if anonymous.UID == otherAnonymous.UID {
+		t.Fatal("tenants with the same request ID share an anonymous UID")
+	}
+	request(http.MethodPost, usersPath, writeKey, `{"requestId":"6751e98e-ca46-48e7-8854-5b7e60160cc9","identity":{"namespace":"account","externalId":"other-customer"}}`, http.StatusConflict, nil)
 
-	for _, body := range []string{"", `{"identity":null}`} {
+	for _, body := range []string{"", "{}", `{"identity":null,"requestId":null}`} {
 		var user storage.TenantUser
 		request(http.MethodPost, usersPath, writeKey, body, http.StatusCreated, &user)
 		if user.Kind != "anonymous" || user.UID == uuid.Nil || user.UID == anonymous.UID {

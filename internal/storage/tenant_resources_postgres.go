@@ -156,7 +156,7 @@ func (s *PostgresStore) DeleteTenantUser(ctx context.Context, tenantID, uid uuid
 	result, err := s.db.ExecContext(ctx, `DELETE FROM tenant_users WHERE tenant_id = $1 AND uid = $2`, tenantID, uid)
 	if err != nil {
 		var pqErr *pq.Error
-		if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+		if errors.As(err, &pqErr) && (pqErr.Code == "23001" || pqErr.Code == "23503") {
 			return Errors.Conflict
 		}
 		return fmt.Errorf("delete tenant user: %w", err)

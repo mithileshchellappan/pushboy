@@ -86,14 +86,14 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"identity\": {\n        \"namespace\": \"account\",\n        \"externalId\": \"abc\"\n    }\n}"
+							"raw": "{\n    \"identity\": {\n        \"namespace\": \"account\",\n        \"externalId\": \"abc\"\n    },\n    \"requestId\": \"32a9bc2e-22fa-4a69-9a67-a3a198984ccb\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/v1/users",
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users"]
 						},
-						"description": "Requires users:write scope. Creates a tenant user for the supplied backend account identity and returns its Pushboy-generated uid and kind. A duplicate identity in the same tenant returns HTTP 409."
+						"description": "Requires users:write scope. Returns the Pushboy-generated uid and kind. Repeating the same identity and requestId in the same tenant returns HTTP 201 with the original UID. Using the requestId with a different valid identity or user kind returns HTTP 409. Use a nonzero lowercase hyphenated UUID, or omit requestId or set it to null to create without replay."
 					},
 					"response": []
 				},
@@ -117,7 +117,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users"]
 						},
-						"description": "Requires users:write scope. Creates an anonymous tenant user and returns its Pushboy-generated uid and kind."
+						"description": "Requires users:write scope. Creates an anonymous tenant user and returns its Pushboy-generated uid and kind. Include a unique requestId to make repeated submissions return the same user within this tenant."
 					},
 					"response": []
 				},
@@ -176,7 +176,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "{{tenantUserUID}}"]
 						},
-						"description": "Requires users:write scope. Returns HTTP 204 when the user is deleted or HTTP 409 when another resource references the user."
+						"description": "Requires users:write scope. Cleans up unused tenant users and releases their creation request IDs. Returns HTTP 204 on deletion or HTTP 409 if retained installations or notification job history still reference the user."
 					},
 					"response": []
 				}

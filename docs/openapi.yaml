@@ -68,7 +68,12 @@ paths:
     post:
       tags: [Users]
       summary: Create a tenant user
-      description: Requires a backend key with users:write scope. Pushboy generates the UID. Provide an identity from your backend to create an identified user. An empty body or empty JSON object creates an anonymous user.
+      description: |
+        Requires a backend key with users:write scope. Pushboy generates the UID.
+        Provide an identity from your backend to create an identified user. An empty body
+        or empty JSON object creates an anonymous user. To retry safely, reuse the same
+        requestId and identity in the same tenant. Each successful replay returns HTTP 201
+        with the original UID. Request IDs are scoped to each tenant and released when the user is deleted.
       security:
         - TenantKey: []
       requestBody:
@@ -85,9 +90,10 @@ paths:
                   identity:
                     namespace: account
                     externalId: abc
+                  requestId: 32a9bc2e-22fa-4a69-9a67-a3a198984ccb
       responses:
         "201":
-          description: User created.
+          description: User created or returned by a successful replay.
           content:
             application/json:
               schema:
@@ -99,7 +105,7 @@ paths:
         "403":
           $ref: "#/components/responses/TextError"
         "409":
-          description: The tenant already has a user with this identity.
+          description: The tenant already has a user with this identity, or the requestId was used with a different identity or user kind.
           content:
             text/plain:
               schema:
@@ -142,7 +148,7 @@ paths:
     delete:
       tags: [Users]
       summary: Delete a tenant user
-      description: Requires a backend key with users:write scope. An invalid UID or a user outside the authenticated tenant returns 404. An installation or notification job reference blocks deletion.
+      description: Requires a backend key with users:write scope. This endpoint cleans up unused users. An invalid UID or a user outside the authenticated tenant returns 404. Retained installations and notification job history block deletion.
       security:
         - TenantKey: []
       responses:
@@ -932,6 +938,14 @@ components:
       type: object
       additionalProperties: false
       properties:
+        requestId:
+          type: [string, "null"]
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          not:
+            const: 00000000-0000-0000-0000-000000000000
+          description: Optional nonzero UUID in lowercase hyphenated form. Omit or set to null to create without replay.
+          example: 32a9bc2e-22fa-4a69-9a67-a3a198984ccb
         identity:
           type: [object, "null"]
           additionalProperties: false

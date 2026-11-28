@@ -20,7 +20,8 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type createUserRequest struct {
-		Identity *storage.TenantUserIdentity `json:"identity"`
+		Identity  *storage.TenantUserIdentity `json:"identity"`
+		RequestID *string                     `json:"requestId"`
 	}
 	req := &createUserRequest{}
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
@@ -34,7 +35,17 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.tenantUsers.CreateTenantUser(r.Context(), tenantID, req.Identity, nil)
+	var requestID *uuid.UUID
+	if req.RequestID != nil {
+		id, err := uuid.Parse(*req.RequestID)
+		if err != nil || id == uuid.Nil || id.String() != *req.RequestID {
+			http.Error(w, "Invalid requestId", http.StatusBadRequest)
+			return
+		}
+		requestID = &id
+	}
+
+	user, err := s.tenantUsers.CreateTenantUser(r.Context(), tenantID, req.Identity, requestID)
 	switch {
 	case errors.Is(err, storage.ErrInvalidTenantResource):
 		http.Error(w, "Invalid user identity", http.StatusBadRequest)
