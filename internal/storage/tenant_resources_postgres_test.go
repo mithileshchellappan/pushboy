@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -206,6 +207,51 @@ func TestTenantUserCreationReplay(t *testing.T) {
 	}
 	if got, err := store.CreateTenantUser(ctx, first, &identity, &requestID); err != nil || got != user {
 		t.Fatalf("replay after user changes = %+v, %v, want original %+v", got, err, user)
+	}
+}
+
+func TestTenantUserCreationReplayWhenConflictingRowDisappears(t *testing.T) {
+	ctx := t.Context()
+	store := tenantKeyManagementStore(t)
+	tenant := createTenantResourceTestTenant(t, store)
+	requestID := uuid.New()
+	identity := TenantUserIdentity{Namespace: "account", ExternalID: "account-42"}
+	user, err := store.CreateTenantUser(ctx, tenant, &identity, &requestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var backendPID int
+	if err := store.db.QueryRowContext(ctx, `SELECT pg_backend_pid()`).Scan(&backendPID); err != nil {
+		t.Fatal(err)
+	}
+	name := "delete_replayed_user_" + strings.ReplaceAll(user.UID.String(), "-", "")
+	_, err = store.db.ExecContext(ctx, `CREATE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			DELETE FROM tenant_users WHERE tenant_id = '`+tenant.String()+`' AND uid = '`+user.UID.String()+`';
+			RETURN NULL;
+		END $$;
+		CREATE TRIGGER `+name+` AFTER INSERT ON tenant_users FOR EACH STATEMENT
+		WHEN (pg_backend_pid() = `+strconv.Itoa(backendPID)+`) EXECUTE FUNCTION `+name+`()`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := store.db.Exec(`DROP FUNCTION ` + name + `() CASCADE`); err != nil {
+			t.Error(err)
+		}
+	})
+
+	replacement, err := store.CreateTenantUser(ctx, tenant, &identity, &requestID)
+	if err != nil || replacement.UID == uuid.Nil || replacement.UID == user.UID {
+		t.Fatalf("replay after deletion returned %+v, %v", replacement, err)
+	}
+	var identityUID uuid.UUID
+	err = store.db.QueryRowContext(ctx, `
+		SELECT user_uid FROM tenant_user_identities WHERE tenant_id = $1 AND namespace = $2 AND external_id = $3`,
+		tenant, identity.Namespace, identity.ExternalID).Scan(&identityUID)
+	if err != nil || identityUID != replacement.UID {
+		t.Fatalf("identity after replay = %s, %v, want %s", identityUID, err, replacement.UID)
 	}
 }
 

@@ -69,26 +69,34 @@ func (s *PostgresStore) CreateTenantUser(ctx context.Context, tenantID uuid.UUID
 	}
 	defer tx.Rollback()
 
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO tenant_users (tenant_id, uid, kind, creation_request_id, creation_request_digest)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (tenant_id, creation_request_id) WHERE creation_request_id IS NOT NULL DO NOTHING
-		RETURNING uid`, tenantID, uid, kind, requestID, requestDigest).Scan(&uid)
-	if errors.Is(err, sql.ErrNoRows) {
-		err := tx.QueryRowContext(ctx, `
-			SELECT uid FROM tenant_users
-			WHERE tenant_id = $1 AND creation_request_id = $2 AND creation_request_digest = $3`,
-			tenantID, requestID, requestDigest).Scan(&uid)
-		if errors.Is(err, sql.ErrNoRows) {
-			return TenantUser{}, Errors.AlreadyExists
+	for {
+		err = tx.QueryRowContext(ctx, `
+			INSERT INTO tenant_users (tenant_id, uid, kind, creation_request_id, creation_request_digest)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (tenant_id, creation_request_id) WHERE creation_request_id IS NOT NULL DO NOTHING
+			RETURNING uid`, tenantID, uid, kind, requestID, requestDigest).Scan(&uid)
+		if err == nil {
+			break
 		}
-		if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return TenantUser{}, fmt.Errorf("create tenant user: %w", err)
+		}
+
+		var matches bool
+		err = tx.QueryRowContext(ctx, `
+			SELECT uid, creation_request_digest = $3 FROM tenant_users
+			WHERE tenant_id = $1 AND creation_request_id = $2`,
+			tenantID, requestID, requestDigest).Scan(&uid, &matches)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			continue
+		case err != nil:
 			return TenantUser{}, fmt.Errorf("get tenant user creation replay: %w", err)
+		case !matches:
+			return TenantUser{}, Errors.AlreadyExists
+		default:
+			return TenantUser{UID: uid, Kind: kind}, nil
 		}
-		return TenantUser{UID: uid, Kind: kind}, nil
-	}
-	if err != nil {
-		return TenantUser{}, fmt.Errorf("create tenant user: %w", err)
 	}
 	if identity != nil {
 		_, err := tx.ExecContext(ctx, `
