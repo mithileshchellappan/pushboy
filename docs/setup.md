@@ -2,7 +2,7 @@
 
 This guide gets Pushboy running locally, then shows how to connect real APNS and FCM credentials when you are ready to send to devices.
 
-Direct user sends require an app-specific server key. Other routes, including topic and Live Activity sends, still accept unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
+Tenant user management, direct user sends, and receipt reads require an app-specific server key. Legacy routes, including topic and Live Activity sends, still accept unauthenticated requests. Run Pushboy on a private network or behind an authenticated gateway. The deployment handles TLS termination and rate limiting.
 
 ## Requirements
 
@@ -45,14 +45,6 @@ Expected response:
 
 ```text
 pong
-```
-
-Create a smoke-test user:
-
-```bash
-curl -X POST http://localhost:8080/v1/users/ \
-  -H "Content-Type: application/json" \
-  -d '{"id":"demo-user"}'
 ```
 
 List topics:
@@ -122,9 +114,53 @@ Set `DATABASE_URL` to the intended PostgreSQL database before creating the app a
 go run ./cmd/pushboy bootstrap "Example App"
 ```
 
-Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. Use the key as a bearer credential for direct user sends. The target is a tenant user's Pushboy UID. Tenant user, installation, push registration and encrypted provider provisioning currently use the backend storage layer. Global token registrations remain on the existing delivery path.
+If you started Pushboy with Docker Compose, run the bootstrap command inside the service:
+
+```bash
+docker compose exec pushboy /app/pushboy bootstrap "Example App"
+```
+
+Bootstrap stores the tenant and its first server key. Save the printed key in your backend's secret manager. For the examples below, set `PUSHBOY_SERVER_KEY` in your shell to the printed key.
+
+## Tenant user API
+
+Create an identified user from a verified backend account with a key that has `users:write` scope:
+
+```bash
+curl -fsS -X POST http://localhost:8080/v1/users \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"identity":{"namespace":"account","externalId":"abc"},"requestId":"32a9bc2e-22fa-4a69-9a67-a3a198984ccb"}'
+```
+
+For an anonymous user, send `{}` instead. Both requests return HTTP 201 with a Pushboy-generated `uid` and a `kind` of `identified` or `anonymous`. A separate create request for an existing identity in the same tenant returns HTTP 409.
+
+To retry creation, supply a nonzero, lowercase hyphenated UUID as `requestId`. Repeating the same identity or anonymous request with that ID in the same tenant returns HTTP 201 and the original UID. Reusing the ID with a different valid identity or user kind returns HTTP 409. Each tenant has its own request IDs. Deleting an unused user releases its request ID, so a later retry creates a new user. Omit `requestId` or set it to `null` to create without replay.
+
+For a specific user, set `PUSHBOY_USER_UID` in your shell to the returned `uid`. List or fetch users with a key that has `read` scope:
+
+```bash
+curl -fsS "http://localhost:8080/v1/users?limit=20" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
+
+curl -fsS "http://localhost:8080/v1/users/$PUSHBOY_USER_UID" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
+```
+
+The list returns `items` in newest-first order, plus `next_cursor` and `has_more`. When `has_more` is true, pass `next_cursor` as the next request's `cursor` query parameter with a key for the same tenant.
+
+Clean up an unused user with a key that has `users:write` scope:
+
+```bash
+curl -fsS -X DELETE "http://localhost:8080/v1/users/$PUSHBOY_USER_UID" \
+  -H "Authorization: Bearer $PUSHBOY_SERVER_KEY"
+```
+
+Deletion returns HTTP 204, or HTTP 409 if retained installations or notification job history still reference the user. Fetch and delete return HTTP 404 for an invalid UID or a user outside the authenticated tenant. A missing or invalid bearer key returns HTTP 401. A valid key without the required scope returns HTTP 403. [Full account retirement is tracked in issue #49](https://github.com/mithileshchellappan/pushboy/issues/49).
 
 Use a key with `send` for `POST /v1/users/{uid}/send` and a key with `read` for `GET /v1/notifications/{jobID}` or `GET /v1/notifications/{jobID}/receipts`. Pushboy snapshots recipients for scheduled and immediate sends when it accepts the job. It skips installations whose ownership, registration or route changed before submission. A lost provider reply produces an unknown outcome and the worker avoids replaying that attempt. If your database contains encrypted tenant provider credentials, retain their key IDs and values in a separate secret store for as long as backups reference them.
+
+Tenant installation setup, push registration, and encrypted provider provisioning use the backend storage layer. The legacy token registration example below creates a user in the legacy user namespace.
 
 ## Tenant migration rollback
 
@@ -260,15 +296,11 @@ Health check:
 curl http://localhost:8080/v1/ping
 ```
 
-Create a user:
+To verify authenticated user management, follow the [tenant user API examples](#tenant-user-api).
 
-```bash
-curl -X POST http://localhost:8080/v1/users/ \
-  -H "Content-Type: application/json" \
-  -d '{"id":"user-123"}'
-```
+### Legacy token registration and topic publishing
 
-Register a token:
+Register a token to create a legacy user with the supplied legacy user ID:
 
 ```bash
 curl -X POST http://localhost:8080/v1/users/tokens \

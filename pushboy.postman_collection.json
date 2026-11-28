@@ -70,13 +70,15 @@
 			]
 		},
 		{
-			"name": "Users",
+			"name": "Tenant Users",
+			"description": "Set tenantServerKey to a backend key for this tenant. Copy the uid returned by a create request into tenantUserUID for the get, delete, and direct send examples. The Legacy Tokens folder uses the separate userID variable.",
 			"item": [
 				{
-					"name": "Create User",
+					"name": "Create Identified User",
 					"request": {
 						"method": "POST",
 						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"},
 							{
 								"key": "Content-Type",
 								"value": "application/json"
@@ -84,22 +86,23 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\"\n}"
+							"raw": "{\n    \"identity\": {\n        \"namespace\": \"account\",\n        \"externalId\": \"abc\"\n    },\n    \"requestId\": \"32a9bc2e-22fa-4a69-9a67-a3a198984ccb\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/v1/users",
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users"]
 						},
-						"description": "Create a new user with an optional ID. If no ID is provided, a UUID will be auto-generated."
+						"description": "Requires users:write scope. Returns the Pushboy-generated uid and kind. Repeating the same identity and requestId in the same tenant returns HTTP 201 with the original UID. Using the requestId with a different valid identity or user kind returns HTTP 409. Use a nonzero lowercase hyphenated UUID, or omit requestId or set it to null to create without replay."
 					},
 					"response": []
 				},
 				{
-					"name": "Create User (auto-generate ID)",
+					"name": "Create Anonymous User",
 					"request": {
 						"method": "POST",
 						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"},
 							{
 								"key": "Content-Type",
 								"value": "application/json"
@@ -114,15 +117,17 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users"]
 						},
-						"description": "Create a new user with an auto-generated UUID."
+						"description": "Requires users:write scope. Creates an anonymous tenant user and returns its Pushboy-generated uid and kind. Include a unique requestId to make repeated submissions return the same user within this tenant."
 					},
 					"response": []
 				},
 				{
-					"name": "List Users",
+					"name": "List Tenant Users",
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"}
+						],
 						"url": {
 							"raw": "{{baseUrl}}/v1/users?limit={{limit}}",
 							"host": ["{{baseUrl}}"],
@@ -139,42 +144,47 @@
 								}
 							]
 						},
-						"description": "List users with keyset pagination. Responses use {\"items\": [], \"next_cursor\": \"\", \"has_more\": false}."
+						"description": "Requires read scope. Lists this tenant's users newest first. Responses use {\"items\": [], \"next_cursor\": \"\", \"has_more\": false}. When has_more is true, set cursor to next_cursor and enable the cursor parameter."
 					},
 					"response": []
 				},
 				{
-					"name": "Get User",
+					"name": "Get Tenant User",
 					"request": {
 						"method": "GET",
-						"header": [],
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"}
+						],
 						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{userID}}",
+							"raw": "{{baseUrl}}/v1/users/{{tenantUserUID}}",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{userID}}"]
+							"path": ["v1", "users", "{{tenantUserUID}}"]
 						},
-						"description": "Get a user by ID"
+						"description": "Requires read scope. Fetches a tenant user by its Pushboy UID and returns its uid and kind."
 					},
 					"response": []
 				},
 				{
-					"name": "Delete User",
+					"name": "Delete Tenant User",
 					"request": {
 						"method": "DELETE",
-						"header": [],
+						"header": [
+							{"key": "Authorization", "value": "Bearer {{tenantServerKey}}"}
+						],
 						"url": {
-							"raw": "{{baseUrl}}/v1/users/{{userID}}",
+							"raw": "{{baseUrl}}/v1/users/{{tenantUserUID}}",
 							"host": ["{{baseUrl}}"],
-							"path": ["v1", "users", "{{userID}}"]
+							"path": ["v1", "users", "{{tenantUserUID}}"]
 						},
-						"description": "Delete a user (cascades to tokens and subscriptions)"
+						"description": "Requires users:write scope. Cleans up unused tenant users and releases their creation request IDs. Returns HTTP 204 on deletion or HTTP 409 if retained installations or notification job history still reference the user."
 					},
 					"response": []
 				}
 			]
 		},
 		{
-			"name": "Tokens",
+			"name": "Legacy Tokens",
+			"description": "These requests use the legacy user namespace and userID variable. Tenant push registrations use the backend storage layer.",
 			"item": [
 				{
 					"name": "Register Token (with user ID)",
@@ -188,14 +198,14 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"platform\": \"apns\",\n    \"token\": \"device_token_ios_123\"\n}"
+							"raw": "{\n    \"id\": \"{{userID}}\",\n    \"platform\": \"apns\",\n    \"token\": \"device_token_ios_123\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/v1/users/tokens",
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "tokens"]
 						},
-						"description": "Register a device token. Creates the user if they don't exist. If user exists, adds the token as a new device."
+						"description": "Register a device token for a legacy user. Creates that legacy user if needed."
 					},
 					"response": []
 				},
@@ -218,7 +228,7 @@
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "tokens"]
 						},
-						"description": "Register a device token with auto-generated user ID. Returns the new user and token."
+						"description": "Register a device token with an auto-generated legacy user ID. Returns the new legacy user and token."
 					},
 					"response": []
 				},
@@ -234,14 +244,14 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"platform\": \"fcm\",\n    \"token\": \"second_device_token_789\"\n}"
+							"raw": "{\n    \"id\": \"{{userID}}\",\n    \"platform\": \"fcm\",\n    \"token\": \"second_device_token_789\"\n}"
 						},
 						"url": {
 							"raw": "{{baseUrl}}/v1/users/tokens",
 							"host": ["{{baseUrl}}"],
 							"path": ["v1", "users", "tokens"]
 						},
-						"description": "Register another device for an existing user (same user ID, different token)"
+						"description": "Register another device for an existing legacy user with the same legacy user ID."
 					},
 					"response": []
 				},

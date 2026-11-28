@@ -35,7 +35,7 @@ APNS and FCM deliver to devices, but most apps still need a backend layer that o
 - Tracks users, device tokens, topics, subscriptions, publish jobs, counters, and delivery receipts.
 - Supports user-scoped and topic-scoped fanout.
 - Supports APNS and FCM Live Activity flows through the same job pipeline.
-- Auto-subscribes new users to a configurable broadcast topic.
+- Auto-subscribes new legacy users to a configurable broadcast topic.
 - Uses Postgres as the first-class storage backend today, with a `Store` interface for adding other databases.
 - Exposes a compact HTTP API with an OpenAPI 3.1 spec in [docs/openapi.yaml](docs/openapi.yaml).
 - Runs as a single binary or Docker container.
@@ -159,9 +159,11 @@ The image runs as a non-root user, exposes port `8080`, copies Postgres migratio
 | `FCM_MAX_CONCURRENT` | `360` | Push-lane FCM in-flight cap; `0` derives from its pool. |
 | `LA_FCM_CLIENT_POOL` | `FCM_CLIENT_POOL` | Live Activity FCM HTTP client transports. |
 | `LA_FCM_MAX_CONCURRENT` | `FCM_MAX_CONCURRENT` | Live Activity FCM in-flight cap. |
-| `BROADCAST_TOPIC_NAME` | `broadcast` | New users are subscribed to this topic when configured. |
+| `BROADCAST_TOPIC_NAME` | `broadcast` | New legacy users are subscribed to this topic when configured. |
 
 ## API Examples
+
+Create, list, fetch, and delete tenant users with a backend bearer key. Pushboy assigns each tenant user a UUID. See the [tenant user API examples](docs/setup.md#tenant-user-api).
 
 <details>
 <summary>Create a topic</summary>
@@ -175,7 +177,9 @@ curl -X POST http://localhost:8080/v1/topics/ \
 </details>
 
 <details>
-<summary>Register an APNS or FCM device token</summary>
+<summary>Register an APNS or FCM device token for the legacy topic API</summary>
+
+This request uses a legacy user ID and creates the legacy user if needed.
 
 ```bash
 curl -X POST http://localhost:8080/v1/users/tokens \
@@ -190,7 +194,9 @@ curl -X POST http://localhost:8080/v1/users/tokens \
 </details>
 
 <details>
-<summary>Send a notification to one user</summary>
+<summary>Send a notification to one tenant user</summary>
+
+Set `PUSHBOY_USER_UID` to the UID returned by tenant user creation and use a `PUSHBOY_SERVER_KEY` with `send` scope. The send targets installations with push registrations provisioned for that tenant.
 
 ```bash
 curl -X POST "http://localhost:8080/v1/users/$PUSHBOY_USER_UID/send" \

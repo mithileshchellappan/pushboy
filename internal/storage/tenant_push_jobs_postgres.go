@@ -54,7 +54,8 @@ func (s *PostgresStore) CreateTenantUserJob(ctx context.Context, tenantID, userU
 			failure_count, created_at, scheduled_at)
 		SELECT $3, u.tenant_id, u.uid, $4, $5, 0, 0, 0, clock_timestamp(), $6
 		FROM tenant_users u JOIN tenants a ON a.id = u.tenant_id
-		WHERE u.tenant_id = $1 AND u.uid = $2 AND a.disabled_at IS NULL`,
+		WHERE u.tenant_id = $1 AND u.uid = $2 AND a.disabled_at IS NULL
+		FOR KEY SHARE OF u`,
 		tenantID, userUID, jobID, payloadJSON, status, optionalTime(scheduledAt))
 	if err != nil {
 		return nil, fmt.Errorf("create tenant push job: %w", err)
